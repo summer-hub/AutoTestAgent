@@ -1,0 +1,50 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<title>AutoTest 平台 — 预览产品图总览</title>
+<style>
+body{background:#0e1015;color:#e8ebf2;font-family:'Segoe UI','PingFang SC','Microsoft YaHei',sans-serif;margin:0;padding:28px 34px 60px}
+h1{font-size:20px;margin:0 0 6px}
+.sub{color:#6b7689;font-size:13px;margin-bottom:24px}
+.g{display:grid;grid-template-columns:repeat(auto-fill,minmax(420px,1fr));gap:22px}
+.card{background:#161a22;border:1px solid #242b38;border-radius:12px;overflow:hidden}
+.card .cap{padding:11px 14px;font-size:13px;font-weight:600;border-bottom:1px solid #242b38;display:flex;align-items:center;gap:8px}
+.card .cap .no{background:#4f8dff;color:#fff;border-radius:6px;font-size:11px;padding:2px 8px}
+.card img{width:100%;display:block}
+.card .tip{padding:9px 14px;font-size:11.5px;color:#6b7689;border-top:1px solid #242b38}
+a{color:#6aa5ff}
+.tags{margin-bottom:26px}
+.tag{display:inline-block;background:#1b202a;border:1px solid #2e3748;border-radius:20px;padding:5px 14px;font-size:12px;color:#aab3c4;margin:0 8px 8px 0}
+</style>
+</head>
+<body>
+<h1>AutoTest 平台 · 预览产品图总览</h1>
+<div class="sub">鸿蒙三方库自动化测试平台 — 仿 DeepSeek Harness 风格 · 高保真交互原型截图 · 11 个页面 + 2 个弹窗</div>
+<div class="tags">
+  <span class="tag">📦 400 三方库</span>
+  <span class="tag">🧪 42,356 用例（按用例粒度版本迭代 V1/V2/V3…）</span>
+  <span class="tag">⚡ 立即/定时/单独/批量/全量执行</span>
+  <span class="tag">🔍 多粒度 AI 归因</span>
+  <span class="tag">🐞 执行轨迹 + 思考过程调试</span>
+  <span class="tag">📱 设备管理</span>
+</div>
+<div class="g">
+  <div class="card"><div class="cap"><span class="no">01</span>首页 — 工作台</div><img src="shots/01-home.png" alt="首页"><div class="tip">KPI 概览 · 执行趋势 · 用例来源分布 · 最近任务 · 快捷入口</div></div>
+  <div class="card"><div class="cap"><span class="no">02</span>任务管理</div><img src="shots/02-tasks.png" alt="任务管理"><div class="tip">对话输入 + 5 类预置卡片（拉取/更新代码、编写/更新用例、转自动化脚本）</div></div>
+  <div class="card"><div class="cap"><span class="no">03</span>测试用例</div><img src="shots/03-cases.png" alt="测试用例"><div class="tip">400 库导航 · 来源分类（新需求/存量/问题单/AI）· 版本按单条用例迭代（自动递增 V1→V2→V3…）· Excel 导入导出</div></div>
+  <div class="card"><div class="cap"><span class="no">04</span>执行计划</div><img src="shots/04-plans.png" alt="执行计划"><div class="tip">立即/定时/单独/批量/全量执行 · Cron · 设备选择 · 失败处理策略</div></div>
+  <div class="card"><div class="cap"><span class="no">05</span>数据分析</div><img src="shots/05-analysis.png" alt="数据分析"><div class="tip">三方库 PR 更新分析 · 用例更新分析（版本递增统计）· 更新点 + 可能影响 + 风险等级</div></div>
+  <div class="card"><div class="cap"><span class="no">06</span>归因分析</div><img src="shots/06-attribution.png" alt="归因分析"><div class="tip">三粒度切换：单用例 → 单库用例集 → 多库共性 · AI 根因 + 置信度</div></div>
+  <div class="card"><div class="cap"><span class="no">07</span>调试会话</div><img src="shots/07-debug.png" alt="调试会话"><div class="tip">左侧执行轨迹（闹钟示例 11 步）· 右侧 AI 思考过程 · 下方追问判定依据</div></div>
+  <div class="card"><div class="cap"><span class="no">08</span>设备管理</div><img src="shots/08-devices.png" alt="设备管理"><div class="tip">在线设备 · 一键识别（hdc 扫描）· 历史设备保留 · 执行记录</div></div>
+  <div class="card"><div class="cap"><span class="no">09</span>Prompt 管理</div><img src="shots/09-prompts.png" alt="Prompt 管理"><div class="tip">Agent 提示词模板 · 变量注入 · 内置/自定义</div></div>
+  <div class="card"><div class="cap"><span class="no">12</span>设置（仿 DeepSeek Harness）</div><img src="shots/12-settings.png" alt="设置"><div class="tip">按 DSH 源码 1:1 还原：居中模态 24px 圆角 · 188px 左侧导航栏（通用/模型/Agent 与任务/数据与缓存/设备与执行/关于）· 行卡片 + 胶囊按钮 + 凭据状态点；模型连通性测试已并入「模型」分区（原 API 测试模块已移除）</div></div>
+  <div class="card"><div class="cap"><span class="no">13</span>用例版本历史（单条用例粒度）</div><img src="shots/13-case-history.png" alt="用例版本历史"><div class="tip">右侧抽屉：单条用例的 V1→V2→V3 时间线 · 每次更新自动递增 · 任一条目可回滚/对比 · 显示更新点与操作者</div></div>
+</div>
+<p style="margin-top:26px;font-size:12.5px;color:#6b7689">
+  📂 可交互原型：<a href="index.html">preview/index.html</a>（双击打开，点击左侧菜单切换页面，可直接运行体验所有交互）·
+  源码：D:\code\HarmonyProject\20260604\AutoTestAgent\preview\index.html
+</p>
+</body>
+</html>

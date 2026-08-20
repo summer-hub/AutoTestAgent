@@ -1,0 +1,4 @@
+# dsh-autotest bundle patch：注册本插件行（依赖 base 层的 webServer 与 llm 服务）
+- insert:
+    - id: dsh-autotest
+      name: 'dsh-autotest'

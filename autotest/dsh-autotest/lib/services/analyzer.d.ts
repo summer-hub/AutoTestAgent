@@ -1,0 +1,46 @@
+import type { LlmCall } from './llmHarness.js';
+export interface PrFile {
+    filename: string;
+    additions: number;
+    deletions: number;
+}
+export interface GitCodePr {
+    number: number;
+    title: string;
+    state: string;
+    body: string;
+    created_at: string;
+    merged_at: string | null;
+    added_lines: number;
+    removed_lines: number;
+    web_url: string;
+    files: PrFile[];
+}
+/** 从仓库 URL 提取 GitCode owner/repo；非 GitCode 地址返回 null。 */
+export declare function parseRepoPath(repoUrl: string | null | undefined): string | null;
+/** 拉取仓库 PR 列表 + 每个 PR 的变更文件（并发拉取文件，失败不影响主体）。 */
+export declare function fetchPrs(repoPath: string, limit?: number, timeoutMs?: number): Promise<GitCodePr[]>;
+export interface LibraryRow {
+    id: number;
+    name: string;
+    repo_url: string;
+    current_version: string;
+    description: string;
+}
+export interface AnalyzeResult {
+    analyzed: number;
+    prs: number;
+    source: 'llm' | 'fallback';
+    message: string;
+}
+/** PR 数据分析：每个 PR 产出「更新点 / 影响 / 建议用例更新 / 风险」。 */
+export declare function analyzePrChanges(llm: LlmCall, library: LibraryRow, prs: GitCodePr[]): Promise<AnalyzeResult>;
+/** 用例更新分析：结合 PR 变更与现有用例，产出需要更新的用例及理由。 */
+export declare function analyzeCaseUpdates(llm: LlmCall, library: LibraryRow, prs: GitCodePr[]): Promise<AnalyzeResult>;
+export interface AttributionOptions {
+    granularity: 'single' | 'lib' | 'multi';
+    libraryId?: number | null;
+    caseId?: number | null;
+}
+/** 归因分析：按粒度（单用例/单库/多库）对失败执行做 AI 归因。 */
+export declare function analyzeAttribution(llm: LlmCall, opts: AttributionOptions): Promise<AnalyzeResult>;

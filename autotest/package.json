@@ -1,0 +1,21 @@
+{
+  "name": "autotest-platform",
+  "version": "0.1.0",
+  "private": true,
+  "description": "鸿蒙三方库 AutoTest 平台 — DeepSeek Harness 插件（服务端 + client）+ 嵌入版前端",
+  "workspaces": [
+    "web",
+    "shared"
+  ],
+  "scripts": {
+    "build:embed": "npm run build:embed -w web",
+    "build:plugin": "cd dsh-autotest && npm run build"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "allowScripts": {
+    "better-sqlite3@11.10.0": true,
+    "esbuild@0.28.2": true
+  }
+}

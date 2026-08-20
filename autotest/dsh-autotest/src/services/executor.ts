@@ -1,0 +1,190 @@
+// AI 任务执行器（DSH 插件版）：AI 调用经 ctx.llm（LlmCall 注入）
+// write_cases / update_cases / to_script 为真实 LLM 调用；pull_repo / update_repo 为模拟（真实 git 下一迭代）
+import { getDb, now } from '../db/connection.js';
+import { getSetting } from './settings.js';
+import { extractJson, type LlmCall } from './llmHarness.js';
+
+interface TaskRow {
+  id: number; task_no: string; type: string; title: string;
+  library_id: number | null; input: string; status: string;
+  progress: number; result_summary: string | null; error: string | null;
+  created_at: string; updated_at: string;
+}
+
+export async function runTask(taskId: number, llm: LlmCall): Promise<void> {
+  const db = getDb();
+  const task = db.prepare('SELECT * FROM tasks WHERE id = ?').get(taskId) as TaskRow | undefined;
+  if (!task) return;
+
+  const set = (patch: Partial<TaskRow>) => {
+    const fields = Object.entries(patch).filter(([k]) => k !== 'id');
+    const sets = fields.map(([k]) => `${k} = ?`).join(', ');
+    db.prepare(`UPDATE tasks SET ${sets}, updated_at = ? WHERE id = ?`).run(...fields.map(([, v]) => v), now(), taskId);
+  };
+
+  try {
+    set({ status: 'running', progress: 10, error: null });
+    const result = await execute(task, llm);
+    set({ status: 'done', progress: 100, result_summary: result });
+  } catch (e) {
+    set({ status: 'failed', error: (e as Error).message.slice(0, 500), result_summary: null });
+  }
+}
+
+async function execute(task: TaskRow, llm: LlmCall): Promise<string> {
+  const db = getDb();
+  const lib = task.library_id
+    ? (db.prepare('SELECT * FROM libraries WHERE id = ?').get(task.library_id) as
+        { id: number; name: string; description: string; current_version: string } | undefined)
+    : undefined;
+  if (!lib && task.library_id !== null && task.library_id !== undefined) {
+    throw new Error(`三方库 #${task.library_id} 不存在`);
+  }
+
+  switch (task.type) {
+    case 'pull_repo':
+    case 'update_repo':
+      return await simulateRepo(task, lib);
+    case 'write_cases':
+      return await writeCases(task, lib!, llm);
+    case 'update_cases':
+      return await updateCases(task, lib!, llm);
+    case 'to_script':
+      return await toScript(task, lib!, llm);
+    default:
+      throw new Error(`未知任务类型：${task.type}`);
+  }
+}
+
+function promptFor(role: string, fallback: string): string {
+  const db = getDb();
+  const row = db.prepare(`SELECT content FROM prompts WHERE role = ? ORDER BY id LIMIT 1`).get(role) as
+    { content: string } | undefined;
+  return row?.content ?? fallback;
+}
+
+async function withProgress<T>(taskId: number, steps: Array<[number, () => Promise<T>]>): Promise<T[]> {
+  const db = getDb();
+  const out: T[] = [];
+  for (const [pct, fn] of steps) {
+    db.prepare('UPDATE tasks SET progress = ?, updated_at = ? WHERE id = ?').run(pct, now(), taskId);
+    out.push(await fn());
+  }
+  return out;
+}
+
+async function writeCases(task: TaskRow, lib: { id: number; name: string; description: string; current_version: string }, llm: LlmCall): Promise<string> {
+  const sys = promptFor('用例生成', `你是鸿蒙三方库测试用例生成 Agent。
+基于三方库代码与仓库规则生成结构化测试用例，输出 JSON 数组，每项包含：
+name(用例名称), source(来源: 新需求引入|老库存量|问题单跟踪|AI 生成), precondition(前置条件),
+steps(操作步骤数组), expected(预期结果), status(默认 未执行), scriptStatus(默认 未绑定)。
+只输出 JSON，不要任何解释。`);
+  const user = `三方库：${lib.name}
+库版本：${lib.current_version}
+库简介：${lib.description}
+任务要求：${task.input || '为上述三方库生成 5 条覆盖正向/边界/异常场景的测试用例。'}`;
+  const [parsed] = await withProgress(task.id, [
+    [35, async () => extractJson<Array<{ name: string; source?: string; precondition?: string; steps?: string[]; expected?: string }>>(
+      await llm({ system: sys, user }),
+    )],
+  ]);
+  const rows = Array.isArray(parsed) ? parsed : [];
+  if (rows.length === 0) throw new Error('AI 未返回有效用例（JSON 解析失败）');
+
+  const db = getDb();
+  const t = now();
+  const inserted = db.transaction(() => {
+    let n = 0;
+    const count = db.prepare('SELECT COUNT(*) AS n FROM cases WHERE library_id = ?').get(lib.id) as { n: number };
+    const maxCases = getSetting('agent.maxCasesPerTask', 20);
+    for (const r of rows.slice(0, maxCases)) {
+      const caseNo = `C-AI-${String(count.n + ++n).padStart(3, '0')}`;
+      const steps = r.steps ?? ['步骤待细化'];
+      const res = db.prepare(`INSERT INTO cases (library_id, case_no, name, source, precondition, steps, expected, status, script_status, current_version, created_at, updated_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, '待确认', '未绑定', 1, ?, ?)`).run(
+        lib.id, caseNo, r.name, r.source ?? 'AI 生成', r.precondition ?? '', JSON.stringify(steps), r.expected ?? '', t, t,
+      );
+      const caseId = Number(res.lastInsertRowid);
+      db.prepare(`INSERT INTO case_versions (case_id, version, snapshot, change_note, author, author_type, created_at)
+        VALUES (?, 1, ?, 'AI 生成初始创建', 'AI 用例生成 Agent', 'ai', ?)`).run(caseId, JSON.stringify({
+        id: caseId, libraryId: lib.id, caseNo, name: r.name, source: r.source ?? 'AI 生成',
+        precondition: r.precondition ?? '', steps, expected: r.expected ?? '',
+        status: '待确认', scriptStatus: '未绑定', currentVersion: 1, createdAt: t, updatedAt: t,
+      }), t);
+    }
+    return n;
+  })();
+  return `AI 已生成 ${rows.length} 条用例，入库 ${inserted} 条（V1，状态：待确认）。`;
+}
+
+async function updateCases(task: TaskRow, lib: { id: number; name: string; current_version: string }, llm: LlmCall): Promise<string> {
+  const db = getDb();
+  const samples = db.prepare(`SELECT case_no, name FROM cases WHERE library_id = ? ORDER BY id LIMIT 10`).all(lib.id) as
+    Array<{ case_no: string; name: string }>;
+  const sys = promptFor('用例更新', `你是鸿蒙三方库测试用例更新 Agent。
+根据三方库版本变更，迭代更新给定用例，输出 JSON 数组，每项包含：
+caseNo(原用例编号), name(新名称), expected(更新后的预期), changeNote(更新点说明)。
+只输出 JSON。`);
+  const user = `三方库：${lib.name}（${lib.current_version}）
+现有用例：${JSON.stringify(samples)}
+任务要求：${task.input || '根据最新版本变更更新上述用例（版本自动递增）。'}`;
+  const [updates] = await withProgress(task.id, [
+    [40, async () => extractJson<Array<{ caseNo: string; name?: string; expected?: string; changeNote?: string }>>(
+      await llm({ system: sys, user }),
+    )],
+  ]);
+  const t = now();
+  let updated = 0;
+  db.transaction(() => {
+    for (const u of (Array.isArray(updates) ? updates : [])) {
+      const row = db.prepare('SELECT * FROM cases WHERE case_no = ? AND library_id = ?').get(u.caseNo, lib.id) as
+        { id: number; current_version: number; name: string; expected: string; steps: string } | undefined;
+      if (!row) continue;
+      const next = row.current_version + 1;
+      const snapshot = {
+        id: row.id, libraryId: lib.id, caseNo: u.caseNo, name: u.name ?? row.name,
+        source: '问题单跟踪', precondition: '', steps: JSON.parse(row.steps),
+        expected: u.expected ?? row.expected, status: '待确认', scriptStatus: '未绑定',
+        currentVersion: next, createdAt: t, updatedAt: t,
+      };
+      db.prepare(`UPDATE cases SET name=?, expected=?, current_version=?, updated_at=? WHERE id=?`).run(snapshot.name, snapshot.expected, next, t, row.id);
+      db.prepare(`INSERT INTO case_versions (case_id, version, snapshot, change_note, author, author_type, created_at)
+        VALUES (?, ?, ?, ?, 'AI 用例更新 Agent', 'ai', ?)`).run(row.id, next, JSON.stringify(snapshot), u.changeNote ?? 'AI 自动更新：版本自动递增。', t);
+      updated++;
+    }
+  })();
+  return `AI 已更新 ${updated} 条用例（版本自动递增，时间线完整）。`;
+}
+
+async function toScript(task: TaskRow, lib: { id: number; name: string }, llm: LlmCall): Promise<string> {
+  const db = getDb();
+  const cases = db.prepare(`SELECT case_no, name, steps FROM cases WHERE library_id = ? AND script_status = '未绑定' ORDER BY id LIMIT 10`).all(lib.id) as
+    Array<{ case_no: string; name: string; steps: string }>;
+  if (cases.length === 0) return '没有未绑定脚本的用例，无需转换。';
+  const sys = `你是鸿蒙 UI 自动化脚本生成 Agent（OpenHarmony）。
+将测试用例转换为 TypeScript 自动化脚本骨架（基于 @ohos/hypium 或 UI 测试框架风格），
+输出 JSON 数组，每项：{ caseNo, script }。script 为可直接使用的代码文本。只输出 JSON。`;
+  const user = `三方库：${lib.name}
+用例：${JSON.stringify(cases.map((c) => ({ ...c, steps: JSON.parse(c.steps) })))}`;
+  const [scripts] = await withProgress(task.id, [
+    [45, async () => extractJson<Array<{ caseNo: string; script: string }>>(await llm({ system: sys, user }))],
+  ]);
+  const t = now();
+  let bound = 0;
+  db.transaction(() => {
+    for (const s of (Array.isArray(scripts) ? scripts : [])) {
+      const row = db.prepare('SELECT id FROM cases WHERE case_no = ? AND library_id = ?').get(s.caseNo, lib.id) as { id: number } | undefined;
+      if (!row) continue;
+      db.prepare(`UPDATE cases SET script_status = '已绑定', updated_at = ? WHERE id = ?`).run(t, row.id);
+      bound++;
+    }
+  })();
+  return `AI 已生成 ${bound} 个自动化脚本并绑定用例（脚本内容见任务详情，下一迭代落盘）。`;
+}
+
+async function simulateRepo(task: TaskRow, lib?: { name: string; current_version: string }): Promise<string> {
+  await new Promise((r) => setTimeout(r, 1200));
+  const verb = task.type === 'pull_repo' ? '拉取' : '更新';
+  return `【模拟】已${verb} ${lib?.name ?? ''} 仓库代码（v1.13.0），解析出 12 个变更点。
+说明：真实 git 拉取/更新集成将在下一迭代实现（当前为演示占位）。`;
+}

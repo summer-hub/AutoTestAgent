@@ -1,0 +1,50 @@
+name: build-and-release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: |
+            autotest/package-lock.json
+            autotest/dsh-autotest/package-lock.json
+
+      - name: Install workspace deps
+        working-directory: autotest
+        run: npm ci
+
+      - name: Build embed frontend
+        working-directory: autotest
+        run: npm run build:embed
+
+      - name: Install & build plugin
+        working-directory: autotest/dsh-autotest
+        run: npm ci && npm run build
+
+      - name: Pack plugin tarball
+        working-directory: autotest/dsh-autotest
+        run: npm pack
+
+      - name: Publish GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" autotest/dsh-autotest/dsh-autotest-*.tgz \
+            --repo "$GITHUB_REPOSITORY" \
+            --title "dsh-autotest $GITHUB_REF_NAME" \
+            --generate-notes
