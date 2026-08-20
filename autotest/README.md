@@ -44,23 +44,26 @@ dsh --profile autotest-test          # 验证：curl http://localhost:3290/api/a
 
 ## 从 GitHub 迁移到新 DSH 环境
 
-仓库已提交 `dsh-autotest/lib/` 构建产物（服务端编译 + client 包 + 嵌入版前端），新机器无需重新构建前端，装好原生依赖即可用：
+仓库已提交 `dsh-autotest/lib/` 构建产物（服务端编译 + client 包 + 嵌入版前端），新机器无需本地构建即可直接安装：
 
 ```bash
-# 1. 克隆（任意目录）
-git clone https://github.com/summer-hub/AutoTestAgent.git
-cd AutoTestAgent/autotest/dsh-autotest
-npm install        # better-sqlite3 是原生模块，必须在目标机器上安装
+# 1. 一键安装（等价于在 profile 目录执行 pnpm add）
+dsh plugin --profile web add github:summer-hub/AutoTestAgent#path:/autotest/dsh-autotest
 
-# 2. profile 声明依赖 + bundle（~/.dsh/profiles/<name>/package.json）
-#    "dsh-autotest": "link:<你的克隆路径>/AutoTestAgent/autotest/dsh-autotest"
-#    "dsh": { "profile": { "bundles": ["@deepseek-ai/dsh-base", "dsh-autotest"] } }
+# 2. 注册 bundle：~/.dsh/profiles/web/package.json 的
+#    dsh.profile.bundles 数组加 "dsh-autotest"
 
-# 3. 安装并重启 DSH
-cd ~/.dsh/profiles/<name> && npm install
+# 3. 放行原生依赖构建：~/.dsh/profiles/web/pnpm-workspace.yaml 追加
+#    onlyBuiltDependencies: [better-sqlite3]
+#    （或 cd ~/.dsh/profiles/web && pnpm approve-builds 交互勾选）
+
+# 4. 安装并重启 DSH
+dsh plugin --profile web install
 ```
 
-> 跨平台坑：`better-sqlite3` 是原生模块，node_modules 不能跨机器/跨系统拷贝，到新机器一律重新 `npm install`。要求 Node ≥ 20。
+> 跨平台坑：`better-sqlite3` 是原生模块，node_modules 不能跨机器/跨系统拷贝，到新机器一律重新安装。要求 Node ≥ 20。
+>
+> 国内网络访问 GitHub 需要代理时：`git config --global http.proxy http://127.0.0.1:7890`。
 
 ### 方式二：GitHub Release 单文件安装（适合"只装不开发"的环境）
 
