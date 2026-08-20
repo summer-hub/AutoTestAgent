@@ -54,10 +54,15 @@ const TITLES: Record<PageKey, string> = {
 // 模型管理不再提供自建入口（直接复用 DSH 设置 → 模型）。
 const EMBED = import.meta.env.VITE_EMBED === '1';
 
+// 兼容 '#cases' 与 '#/cases' 两种 hash 写法（深链接 / DSH iframe 内嵌）
+const parseHash = (): PageKey => {
+  const h = location.hash.replace(/^#\/?/, '') as PageKey;
+  return h in TITLES ? h : 'home';
+};
+
 export default function App() {
   const [page, setPage] = useState<PageKey>(() => {
-    const h = location.hash.replace('#', '') as PageKey;
-    return h in TITLES ? h : 'home';
+    return parseHash();
   });
   const [settingsOpen, setSettingsOpen] = useState(false);
 
@@ -68,11 +73,11 @@ export default function App() {
 
   useEffect(() => {
     const onHash = () => {
-      const h = location.hash.replace('#', '') as PageKey | 'settings';
+      const h = location.hash.replace(/^#\/?/, '') as PageKey | 'settings';
       if (h === 'settings') { setSettingsOpen(true); return; }
       if (h in TITLES) setPage(h);
     };
-    if (location.hash === '#settings') setSettingsOpen(true);
+    if (location.hash.replace(/^#\/?/, '') === 'settings') setSettingsOpen(true);
     window.addEventListener('hashchange', onHash);
     return () => window.removeEventListener('hashchange', onHash);
   }, []);
