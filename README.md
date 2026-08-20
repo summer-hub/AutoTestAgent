@@ -48,6 +48,39 @@ dsh plugin --profile web install
 >
 > 国内网络访问 GitHub 需要代理时，先给 git 配代理：`git config --global http.proxy http://127.0.0.1:7890`（按你的实际代理端口调整）。
 
+### 新机器安装检查清单（装完看不到插件时逐条排查）
+
+只往 `package.json` 里写依赖声明**不会**安装插件，以下步骤缺一不可（以 tar 包 URL 为例，git 方式同理）：
+
+```powershell
+# 1. 声明依赖：编辑 ~/.dsh/profiles/web/package.json 的 dependencies 加：
+#    "dsh-autotest": "https://github.com/summer-hub/AutoTestAgent/releases/download/v0.1.0/dsh-autotest-0.1.0.tgz"
+#    然后必须执行安装（光写不装等于没写）：
+cd $env:USERPROFILE\.dsh\profiles\web
+pnpm install
+
+# 2. 注册 bundle：同一个 package.json 里 dsh.profile.bundles 数组加 "dsh-autotest"
+#    （不加这行，DSH 根本不会加载插件）
+
+# 3. 放行原生模块：pnpm-workspace.yaml 里加 onlyBuiltDependencies: [better-sqlite3]
+#    然后重新 pnpm install（不然 better-sqlite3 没编译，插件启动即崩）
+
+# 4. 完全重启 DSH（杀进程重来，不是刷新浏览器），再 dsh --profile web
+
+# 5. 验证（最硬的判断标准）：health 接口返回 {"ok":true,...} 即插件已加载
+Invoke-RestMethod http://localhost:3080/api/autotest/health
+# 端口以你的 web profile 实际端口为准
+```
+
+常见坑：
+
+- `node_modules/dsh-autotest` 不存在 → 没执行安装，或 URL 下载失败（国内直连 GitHub 超时需代理，或改用本地 tgz 文件）。
+- 安装了但 `health` 不通 → 多半是 bundle 没注册，或 better-sqlite3 没编译（`pnpm install` 时留意 `Ignored build scripts` 警告）。
+- `health` 通了但侧边栏看不到 → GUI 缓存问题：强制刷新 / 清浏览器缓存，让 DSH Web 重新加载 client 插件。
+- 之前装过旧 tarball → pnpm 会缓存旧包，需 `pnpm update dsh-autotest` 或删掉 `node_modules/dsh-autotest` 重装（旧包缺 `cordis.patch.yml`，装了也起不来）。
+
+也可以把 tgz 下载到本地后用 `"dsh-autotest": "file:./dsh-autotest-0.1.0.tgz"` 或 `pnpm add ./dsh-autotest-0.1.0.tgz`，离线环境更稳；第 2~5 步不变。
+
 安装成功后：
 
 - 健康检查：`GET /api/autotest/health`
