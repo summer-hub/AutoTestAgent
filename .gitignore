@@ -16,6 +16,9 @@ schtasks-test.txt
 # SQLite 种子库（首次启动自动建表 + 种子，不入库）
 autotest/dsh-autotest/data/
 
+# 运行时工作区（仓库克隆 / 自动化脚本落盘）
+workspace/
+
 # 构建缓存
 *.tsbuildinfo
 .vite-temp/

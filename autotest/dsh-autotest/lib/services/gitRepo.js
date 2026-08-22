@@ -28,6 +28,39 @@ async function runGit(args, cwd, timeoutMs = 180000) {
 function repoName(name) {
     return name.replace(/[^\w.-]/g, '_');
 }
+/** 仓库本地目录（工作区 repos/<name>）。 */
+export function repoDirFor(name) {
+    return path.join(workspaceDir(), 'repos', repoName(name));
+}
+function hashCode(s) {
+    let h = 0;
+    for (let i = 0; i < s.length; i++)
+        h = (h * 31 + s.charCodeAt(i)) | 0;
+    return Math.abs(h);
+}
+function deriveName(url) {
+    const cleaned = url.trim().replace(/\/+$/, '').replace(/\.git$/, '');
+    const seg = cleaned.split(/[/\\]/).filter(Boolean).pop() ?? '';
+    const base = (seg || `repo-${hashCode(url) % 100000}`).replace(/[^\w.-]/g, '_');
+    return base || 'repo';
+}
+/** 按仓库地址解析三方库：已存在（repo_url 匹配）则复用，否则自动创建。 */
+export function ensureLibraryByRepoUrl(url) {
+    const db = getDb();
+    const t = now();
+    const trimmed = url.trim();
+    const existing = db.prepare('SELECT * FROM libraries WHERE repo_url = ?').get(trimmed);
+    if (existing)
+        return existing;
+    let name = deriveName(trimmed);
+    let n = 1;
+    while (db.prepare('SELECT id FROM libraries WHERE name = ?').get(name)) {
+        name = `${deriveName(trimmed)}-${++n}`;
+    }
+    db.prepare(`INSERT INTO libraries (name, repo_url, description, current_version, status, created_at, updated_at)
+    VALUES (?, ?, '由任务创建（拉取仓库代码）', 'v0.0.0', 'active', ?, ?)`).run(name, trimmed, t, t);
+    return db.prepare('SELECT * FROM libraries WHERE id = last_insert_rowid()').get();
+}
 async function describeVersion(dir, fallback) {
     try {
         const tag = await runGit(['describe', '--tags', '--abbrev=0'], dir);

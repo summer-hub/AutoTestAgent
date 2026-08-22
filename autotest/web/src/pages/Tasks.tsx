@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import type { Task, TaskType } from 'shared';
 import { api } from '../api';
+import RepoBrowser from '../components/RepoBrowser';
 
 const PRESETS: Array<{ type: TaskType; icon: string; title: string; desc: string }> = [
   { type: 'pull_repo', icon: '📦', title: '拉取仓库代码', desc: '拉取三方库最新代码' },
@@ -16,6 +17,7 @@ export default function TasksPage() {
   const [tasks, setTasks] = useState<Task[]>([]);
   const [input, setInput] = useState('');
   const [error, setError] = useState('');
+  const [repoDialog, setRepoDialog] = useState<null | { mode: 'input'; type: 'pull_repo' | 'update_repo' } | { mode: 'browse'; libId?: number }>(null);
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
   const load = useCallback(() => {
@@ -35,6 +37,20 @@ export default function TasksPage() {
       setInput('');
       load();
     } catch (e) { setError((e as Error).message); }
+  };
+
+  const submitRepoUrl = async (info: { type: 'pull_repo' | 'update_repo'; url: string; title: string }) => {
+    await api.createTask({ type: info.type, input: info.url, title: info.title });
+    setRepoDialog(null);
+    load();
+  };
+
+  const onPreset = (p: { type: TaskType; title: string }) => {
+    if (p.type === 'pull_repo' || p.type === 'update_repo') {
+      setRepoDialog({ mode: 'input', type: p.type });
+    } else {
+      void submit(p.type, p.title, input);
+    }
   };
 
   const retry = async (id: number) => {
@@ -58,10 +74,13 @@ export default function TasksPage() {
         />
         <div style={{ display: 'flex', gap: 8, marginTop: 10, flexWrap: 'wrap', alignItems: 'center' }}>
           {PRESETS.map((p) => (
-            <button key={p.type} className="btn sm" title={p.desc} onClick={() => submit(p.type, p.title, input)}>
+            <button key={p.type} className="btn sm" title={p.desc} onClick={() => onPreset(p)}>
               {p.icon} {p.title}
             </button>
           ))}
+          <button className="btn sm" title="查看服务器工作区已拉取的仓库本地目录" onClick={() => setRepoDialog({ mode: 'browse' })}>
+            📁 仓库目录
+          </button>
           <div style={{ flex: 1 }} />
           <button className="btn primary" onClick={() => submit('write_cases', '编写测试用例', input)}>发送 ▶</button>
         </div>
@@ -99,12 +118,25 @@ export default function TasksPage() {
               </div>
               <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-end', gap: 6, flexShrink: 0 }}>
                 <span className={`tag ${STATUS_TAG[t.status] ?? 'gray'}`}>{t.status === 'running' ? `运行中 ${t.progress}%` : t.status}</span>
+                {(t.type === 'pull_repo' || t.type === 'update_repo') && t.status === 'done' && t.libraryId && (
+                  <span className="link" style={{ fontSize: 12 }} onClick={() => setRepoDialog({ mode: 'browse', libId: t.libraryId ?? undefined })}>查看目录</span>
+                )}
                 {t.status === 'failed' && <button className="btn sm" onClick={() => retry(t.id)}>重试</button>}
               </div>
             </div>
           ))
         )}
       </div>
+
+      {repoDialog && (
+        <RepoBrowser
+          mode={repoDialog.mode}
+          taskType={repoDialog.mode === 'input' ? repoDialog.type : undefined}
+          targetLibId={repoDialog.mode === 'browse' ? repoDialog.libId : undefined}
+          onClose={() => setRepoDialog(null)}
+          onCreated={submitRepoUrl}
+        />
+      )}
     </>
   );
 }

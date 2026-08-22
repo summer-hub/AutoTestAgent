@@ -198,3 +198,29 @@ export interface Page<T> {
   page: number;
   pageSize: number;
 }
+
+/** 仓库本地目录信息（repos API） */
+export interface RepoInfo {
+  id: number;
+  name: string;
+  repoUrl: string;
+  dir: string;                 // 服务器本地目录
+  exists: boolean;             // 是否已拉取到本地
+  version: string;
+  lastCommit: string;
+  lastSyncedAt: string | null;
+}
+
+export interface RepoFileEntry {
+  name: string;
+  type: 'dir' | 'file';
+  size: number;
+  mtime: string;
+}
+
+export interface RepoFile {
+  name: string;
+  content: string;
+  truncated: boolean;
+  binary?: boolean;
+}

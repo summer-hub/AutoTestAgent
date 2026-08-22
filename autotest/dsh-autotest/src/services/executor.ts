@@ -4,7 +4,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { getDb, now } from '../db/connection.js';
-import { pullRepo, updateRepo, workspaceDir } from './gitRepo.js';
+import { ensureLibraryByRepoUrl, pullRepo, updateRepo, workspaceDir } from './gitRepo.js';
 import { getSetting } from './settings.js';
 import { extractJson, type LlmCall } from './llmHarness.js';
 
@@ -61,9 +61,20 @@ async function execute(task: TaskRow, llm: LlmCall): Promise<string> {
 }
 
 async function repoTask(task: TaskRow, lib?: { id: number; name: string; repo_url: string; current_version: string; last_commit: string }): Promise<string> {
-  if (!lib) throw new Error('仓库拉取/更新需要绑定三方库，请选择任务目标库。');
+  const db = getDb();
+  const url = (task.input || '').trim();
+  const looksLikeUrl = /^(https?:\/\/|git@|ssh:\/\/|git:\/\/)/i.test(url);
+  let target = lib;
+  if (!target && looksLikeUrl) {
+    target = ensureLibraryByRepoUrl(url);
+    db.prepare('UPDATE tasks SET library_id = ? WHERE id = ?').run(target.id, task.id);
+  } else if (target && !target.repo_url && looksLikeUrl) {
+    db.prepare('UPDATE libraries SET repo_url = ?, updated_at = ? WHERE id = ?').run(url, now(), target.id);
+    target = { ...target, repo_url: url };
+  }
+  if (!target) throw new Error('请选择三方库，或输入仓库地址（http/https/git/ssh URL）后重试。');
   const [r] = await withProgress(task.id, [
-    [25, async () => (task.type === 'pull_repo' ? pullRepo(lib) : updateRepo(lib))],
+    [25, async () => (task.type === 'pull_repo' ? pullRepo(target) : updateRepo(target))],
   ]);
   return r.summary;
 }

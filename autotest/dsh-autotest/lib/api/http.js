@@ -1,3 +1,5 @@
+import fs from 'node:fs';
+import path from 'node:path';
 import XLSX from 'xlsx';
 import { getDb, now, withRead } from '../db/connection.js';
 import { caseTableFor, shardOf, shardStats } from '../db/repository.js';
@@ -8,6 +10,7 @@ import { analyzeAttribution, analyzeCaseUpdates, analyzePrChanges, fetchPrs, par
 import { getAllSettings, setSetting } from '../services/settings.js';
 import { cacheDel, cacheGet, cacheSet } from '../services/cache.js';
 import { deviceInfo, hdcAvailable, listTargets } from '../services/hdc.js';
+import { repoDirFor } from '../services/gitRepo.js';
 const routes = [];
 function compile(pattern) {
     const keys = [];
@@ -477,6 +480,71 @@ function defineRoutes(llm) {
         db.prepare(`UPDATE tasks SET status='pending', progress=0, error=NULL, updated_at=? WHERE id=?`).run(now(), id);
         setImmediate(() => { runTask(id, llm).catch(() => { }); });
         return { ok: true };
+    });
+    // ---- 仓库本地目录（拉取仓库代码后查看）----
+    route('GET', '/repos', async () => {
+        const rows = getDb().prepare(`SELECT id, name, repo_url, current_version, last_commit, last_synced_at FROM libraries WHERE repo_url != '' ORDER BY name`).all();
+        return rows.map((r) => {
+            const dir = repoDirFor(r.name);
+            return {
+                id: r.id,
+                name: r.name,
+                repoUrl: r.repo_url,
+                dir,
+                exists: fs.existsSync(path.join(dir, '.git')),
+                version: r.current_version,
+                lastCommit: r.last_commit,
+                lastSyncedAt: r.last_synced_at,
+            };
+        }).sort((a, b) => Number(b.exists) - Number(a.exists) || a.name.localeCompare(b.name));
+    });
+    route('GET', '/repos/:id/files', async ({ params, query }) => {
+        const db = getDb();
+        const lib = db.prepare('SELECT id, name FROM libraries WHERE id = ?').get(Number(params.id));
+        if (!lib)
+            throw Object.assign(new Error('三方库不存在'), { statusCode: 404 });
+        const root = repoDirFor(lib.name);
+        if (!fs.existsSync(root))
+            throw Object.assign(new Error('仓库尚未拉取到本地，请先执行「拉取仓库代码」'), { statusCode: 404 });
+        const rel = (query.get('path') ?? '').replace(/^\/+/, '');
+        const dir = path.resolve(root, rel);
+        if (dir !== root && !dir.startsWith(root + path.sep))
+            throw Object.assign(new Error('非法路径'), { statusCode: 400 });
+        if (!fs.existsSync(dir) || !fs.statSync(dir).isDirectory())
+            throw Object.assign(new Error('目录不存在'), { statusCode: 404 });
+        const entries = fs.readdirSync(dir, { withFileTypes: true })
+            .filter((e) => e.name !== '.git')
+            .map((e) => {
+            const st = fs.statSync(path.join(dir, e.name));
+            return {
+                name: e.name,
+                type: e.isDirectory() ? 'dir' : 'file',
+                size: e.isDirectory() ? 0 : st.size,
+                mtime: st.mtime.toISOString(),
+            };
+        })
+            .sort((a, b) => (a.type === b.type ? a.name.localeCompare(b.name) : a.type === 'dir' ? -1 : 1));
+        return { path: rel, entries };
+    });
+    route('GET', '/repos/:id/file', async ({ params, query }) => {
+        const db = getDb();
+        const lib = db.prepare('SELECT id, name FROM libraries WHERE id = ?').get(Number(params.id));
+        if (!lib)
+            throw Object.assign(new Error('三方库不存在'), { statusCode: 404 });
+        const root = repoDirFor(lib.name);
+        const rel = (query.get('path') ?? '').replace(/^\/+/, '');
+        if (!rel)
+            throw Object.assign(new Error('缺少文件路径'), { statusCode: 400 });
+        const file = path.resolve(root, rel);
+        if (file !== root && !file.startsWith(root + path.sep))
+            throw Object.assign(new Error('非法路径'), { statusCode: 400 });
+        if (!fs.existsSync(file) || !fs.statSync(file).isFile())
+            throw Object.assign(new Error('文件不存在'), { statusCode: 404 });
+        const stat = fs.statSync(file);
+        const truncated = stat.size > 256 * 1024;
+        const buf = fs.readFileSync(file);
+        const content = buf.subarray(0, 256 * 1024).toString('utf8');
+        return { name: rel, content, truncated, binary: buf.includes(0) };
     });
     // ---- plans ----
     route('GET', '/plans', async () => {
