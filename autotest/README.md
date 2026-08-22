@@ -68,20 +68,20 @@ dsh plugin --profile web install
 ### 方式二：GitHub Release 单文件安装（适合"只装不开发"的环境）
 
 ```bash
-cd autotest/dsh-autotest && npm pack      # 产出 dsh-autotest-0.1.4.tgz
+cd autotest/dsh-autotest && npm pack      # 产出 dsh-autotest-0.1.5.tgz
 ```
 
 把 tarball 传到 GitHub Release，profile 直接写 URL（和你现在 `dsh-at-file` 的装法一样）：
 
 ```jsonc
 // ~/.dsh/profiles/<name>/package.json
-"dsh-autotest": "https://github.com/summer-hub/AutoTestAgent/releases/download/v0.1.4/dsh-autotest-0.1.4.tgz"
+"dsh-autotest": "https://github.com/summer-hub/AutoTestAgent/releases/download/v0.1.5/dsh-autotest-0.1.5.tgz"
 ```
 
 仓库已配好 GitHub Actions（打 `v*` tag 自动构建并发布 Release + tarball）：
 
 ```bash
-git tag v0.1.4 && git push origin v0.1.4
+git tag v0.1.5 && git push origin v0.1.5
 ```
 
 ## 目录结构

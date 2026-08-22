@@ -28,6 +28,7 @@ export default function RepoBrowser({ mode, taskType, targetLibId, onClose, onCr
   const [entries, setEntries] = useState<RepoFileEntry[] | null>(null);
   const [file, setFile] = useState<RepoFile | null>(null);
   const [busy, setBusy] = useState(false);
+  const [copied, setCopied] = useState(false);
 
   const loadFiles = useCallback(async (repo: RepoInfo, rel: string) => {
     setBusy(true); setErr(''); setFile(null);
@@ -66,6 +67,17 @@ export default function RepoBrowser({ mode, taskType, targetLibId, onClose, onCr
         .then(setFile)
         .catch((x) => setErr((x as Error).message))
         .finally(() => setBusy(false));
+    }
+  };
+
+  const copyDir = async () => {
+    if (!cur) return;
+    try {
+      await navigator.clipboard.writeText(cur.dir);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 1500);
+    } catch {
+      /* 剪贴板不可用时忽略 */
     }
   };
 
@@ -162,7 +174,12 @@ export default function RepoBrowser({ mode, taskType, targetLibId, onClose, onCr
                         <span className="link" onClick={() => void loadFiles(cur, arr.slice(0, i + 1).join('/'))}>{seg || 'root'}</span>
                       </span>
                     ))}
-                    <span className="muted" style={{ marginLeft: 'auto', maxWidth: '45%', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{cur.dir}</span>
+                    <span
+                      className="muted"
+                      title={cur.dir}
+                      onClick={() => void copyDir()}
+                      style={{ marginLeft: 'auto', maxWidth: '45%', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', cursor: 'copy' }}
+                    >{copied ? '已复制 ✓' : cur.dir}</span>
                   </>
                 ) : (
                   <span>选择左侧仓库查看本地目录</span>

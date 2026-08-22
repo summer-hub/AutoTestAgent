@@ -90,11 +90,20 @@ export async function pullRepo(lib) {
     const dir = path.join(workspaceDir(), 'repos', repoName(lib.name));
     const prev = lib.last_commit || '';
     let action;
-    if (fs.existsSync(path.join(dir, '.git'))) {
+    const gitDir = path.join(dir, '.git');
+    if (fs.existsSync(gitDir)) {
+        // 已有仓库 → 进入该目录 git pull
         await runGit(['pull', '--ff-only'], dir);
         action = 'pull';
     }
     else {
+        // 无仓库 → git clone；目录已存在但不是 git 仓库时给出明确错误
+        if (fs.existsSync(dir)) {
+            const leftovers = fs.readdirSync(dir).filter((n) => n !== '.git');
+            if (leftovers.length > 0) {
+                throw new Error(`本地目录已存在但不是 git 仓库（${dir}），请先清理该目录或更换工作区后再拉取。`);
+            }
+        }
         fs.mkdirSync(path.dirname(dir), { recursive: true });
         await runGit(['clone', lib.repo_url, dir]);
         action = 'clone';
