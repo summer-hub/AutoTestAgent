@@ -19,6 +19,7 @@ CREATE TABLE IF NOT EXISTS libraries (
   repo_url TEXT NOT NULL DEFAULT '',
   description TEXT NOT NULL DEFAULT '',
   current_version TEXT NOT NULL DEFAULT 'v0.0.0',
+  last_commit TEXT NOT NULL DEFAULT '',
   status TEXT NOT NULL DEFAULT 'active',
   last_synced_at TEXT,
   created_at TEXT NOT NULL,

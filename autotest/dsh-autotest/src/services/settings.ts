@@ -16,7 +16,8 @@ export const SETTING_DEFAULTS: Record<string, unknown> = {
   'data.redisUrl': '',
   'data.cacheTtlSeconds': 30,
   'data.shardCount': 16,
-  'device.execEngine': 'reserved',
+  'device.execEngine': 'hdc',
+  'device.appAbilities': '{}',
 };
 
 export type SettingValue = string | number | boolean | null;

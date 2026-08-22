@@ -1,6 +1,10 @@
 // AI 任务执行器（DSH 插件版）：AI 调用经 ctx.llm（LlmCall 注入）
-// write_cases / update_cases / to_script 为真实 LLM 调用；pull_repo / update_repo 为模拟（真实 git 下一迭代）
+// write_cases / update_cases / to_script 为真实 LLM 调用；
+// pull_repo / update_repo 走真实 git CLI（clone/pull + 变更解析）。
+import fs from 'node:fs';
+import path from 'node:path';
 import { getDb, now } from '../db/connection.js';
+import { pullRepo, updateRepo, workspaceDir } from './gitRepo.js';
 import { getSetting } from './settings.js';
 import { extractJson } from './llmHarness.js';
 export async function runTask(taskId, llm) {
@@ -33,7 +37,7 @@ async function execute(task, llm) {
     switch (task.type) {
         case 'pull_repo':
         case 'update_repo':
-            return await simulateRepo(task, lib);
+            return await repoTask(task, lib);
         case 'write_cases':
             return await writeCases(task, lib, llm);
         case 'update_cases':
@@ -43,6 +47,14 @@ async function execute(task, llm) {
         default:
             throw new Error(`未知任务类型：${task.type}`);
     }
+}
+async function repoTask(task, lib) {
+    if (!lib)
+        throw new Error('仓库拉取/更新需要绑定三方库，请选择任务目标库。');
+    const [r] = await withProgress(task.id, [
+        [25, async () => (task.type === 'pull_repo' ? pullRepo(lib) : updateRepo(lib))],
+    ]);
+    return r.summary;
 }
 function promptFor(role, fallback) {
     const db = getDb();
@@ -146,21 +158,21 @@ async function toScript(task, lib, llm) {
         [45, async () => extractJson(await llm({ system: sys, user }))],
     ]);
     const t = now();
+    const dir = path.join(workspaceDir(), 'scripts', lib.name.replace(/[^\w.-]/g, '_'));
+    fs.mkdirSync(dir, { recursive: true });
     let bound = 0;
+    const files = [];
     db.transaction(() => {
         for (const s of (Array.isArray(scripts) ? scripts : [])) {
-            const row = db.prepare('SELECT id FROM cases WHERE case_no = ? AND library_id = ?').get(s.caseNo, lib.id);
+            const row = db.prepare('SELECT id, name FROM cases WHERE case_no = ? AND library_id = ?').get(s.caseNo, lib.id);
             if (!row)
                 continue;
             db.prepare(`UPDATE cases SET script_status = '已绑定', updated_at = ? WHERE id = ?`).run(t, row.id);
+            const file = path.join(dir, `${s.caseNo}.ts`);
+            fs.writeFileSync(file, `// ${s.caseNo} — ${row.name}（${lib.name}）自动化脚本\n// 生成时间：${t} · AI 生成\n\n${s.script}\n`);
+            files.push(file);
             bound++;
         }
     })();
-    return `AI 已生成 ${bound} 个自动化脚本并绑定用例（脚本内容见任务详情，下一迭代落盘）。`;
-}
-async function simulateRepo(task, lib) {
-    await new Promise((r) => setTimeout(r, 1200));
-    const verb = task.type === 'pull_repo' ? '拉取' : '更新';
-    return `【模拟】已${verb} ${lib?.name ?? ''} 仓库代码（v1.13.0），解析出 12 个变更点。
-说明：真实 git 拉取/更新集成将在下一迭代实现（当前为演示占位）。`;
+    return `AI 已生成 ${bound} 个自动化脚本并落盘到：${dir}\n文件：${files.map((f) => path.basename(f)).join(', ') || '—'}`;
 }

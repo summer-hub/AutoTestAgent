@@ -14,6 +14,7 @@ import {
 } from '../services/analyzer.js';
 import { getAllSettings, setSetting, type SettingValue } from '../services/settings.js';
 import { cacheDel, cacheGet, cacheSet } from '../services/cache.js';
+import { deviceInfo, hdcAvailable, listTargets } from '../services/hdc.js';
 
 // ---------- mini router ----------
 type Handler = (args: { params: Record<string, string>; query: URLSearchParams; body: any }) => Promise<unknown>;
@@ -588,6 +589,36 @@ function defineRoutes(llm: LlmCall): void {
     const db = getDb();
     void cacheDel('devices');
     const t = now();
+    const count = (): number => (db.prepare('SELECT COUNT(*) AS n FROM devices').get() as { n: number }).n;
+
+    // 真实识别：hdc list targets + param get
+    const hdcOk = await hdcAvailable();
+    if (hdcOk) {
+      const targets = await listTargets();
+      if (targets.length > 0) {
+        const info = await deviceInfo(targets[0]);
+        for (const s of targets) {
+          const d = s === targets[0] ? info : await deviceInfo(s);
+          db.prepare(`INSERT INTO devices (serial, model, os_version, status, last_seen_at, created_at)
+            VALUES (?, ?, ?, 'online', ?, ?)
+            ON CONFLICT(serial) DO UPDATE SET model=excluded.model, os_version=excluded.os_version, status='online', last_seen_at=excluded.last_seen_at`)
+            .run(s, d.model, d.osVersion, t, t);
+        }
+        const marks = targets.map(() => '?').join(',');
+        db.prepare(`UPDATE devices SET status='offline' WHERE status='online' AND serial NOT IN (${marks})`).run(...targets);
+        const row = db.prepare('SELECT * FROM devices WHERE serial = ?').get(targets[0]);
+        return {
+          discovered: true,
+          device: mapDevice(row as Record<string, unknown>),
+          total: count(),
+          source: 'hdc',
+          note: `hdc 识别到 ${targets.length} 台设备（已保存/更新在线状态）`,
+        };
+      }
+    }
+
+    // 回退：hdc 不可用/无设备时生成模拟设备（演示模式）
+    const note = hdcOk ? 'hdc 可用但未发现已连接设备' : '未检测到 hdc 命令，已生成模拟设备用于演示';
     const serial = `HDC-${Math.floor(1000 + Math.random() * 9000).toString(16).toUpperCase()}`;
     const models = ['Mate X5', 'Pura 70', 'nova 13', 'MatePad Pro', 'Pocket 2'];
     const oss = ['HarmonyOS 5.0.1', 'HarmonyOS 4.2', 'OpenHarmony 5.0.2'];
@@ -596,7 +627,7 @@ function defineRoutes(llm: LlmCall): void {
     const res = db.prepare(`INSERT OR IGNORE INTO devices (serial, model, os_version, status, battery, memory_usage, last_seen_at, created_at)
       VALUES (?, ?, ?, 'online', ?, ?, ?, ?)`).run(serial, model, os, 60 + Math.floor(Math.random() * 40), 40 + Math.floor(Math.random() * 40), t, t);
     const row = db.prepare('SELECT * FROM devices WHERE serial = ?').get(serial);
-    return { discovered: res.changes > 0, device: mapDevice(row as Record<string, unknown>), total: (db.prepare('SELECT COUNT(*) AS n FROM devices').get() as { n: number }).n };
+    return { discovered: res.changes > 0, device: mapDevice(row as Record<string, unknown>), total: count(), source: 'simulate', note };
   });
 
   route('PUT', '/devices/:id', async ({ params, body }) => {

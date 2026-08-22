@@ -49,6 +49,12 @@ export function now(): string {
 export function ensureSchemaAndSeed(): void {
   const db = getDb();
   db.exec(SCHEMA);
+  // 轻量迁移：旧库补充 last_commit 列（已存在时忽略）
+  try {
+    db.exec(`ALTER TABLE libraries ADD COLUMN last_commit TEXT NOT NULL DEFAULT ''`);
+  } catch {
+    /* 列已存在 */
+  }
   const n = (db.prepare('SELECT COUNT(*) AS n FROM libraries').get() as { n: number }).n;
   if (n === 0) {
     seed(db);

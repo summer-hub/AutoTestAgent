@@ -1,7 +1,9 @@
 // 执行引擎：将执行计划解析为用例集 → 生成 executions（含逐步轨迹 + AI 思考）→ 更新计划状态
-// 当前执行器为「模拟执行」：轨迹按用例步骤模板生成，思考过程按归因模板生成；
-// 真实设备执行链路（hdc / UI 自动化）在 M5 之后的设备执行引擎迭代接入。
+// 执行模式由配置 device.execEngine 决定：
+//  - hdc（默认）：连接真实设备（hdc/uiautomator）执行；无 hdc 或设备未连接时自动回退模拟
+//  - simulate：始终模拟（演示/无设备环境）
 import { getDb, now } from '../db/connection.js';
+import { executeCaseSteps, hdcAvailable, listTargets, type CaseRun } from './hdc.js';
 import { getSetting } from './settings.js';
 
 interface PlanRow {
@@ -61,6 +63,19 @@ ${libHint}。
 建议：上报问题单跟踪；更新脚本适配参数；相关用例升级版本。`;
 }
 
+function realThinking(caseRow: CaseRow, run: CaseRun): string {
+  const fails = run.steps.filter((s) => s.status === 'failed');
+  if (fails.length === 0) {
+    return `任务：在真实设备上执行用例 ${caseRow.case_no}（${caseRow.name}）。
+全部 ${run.steps.length} 步执行通过（hdc/uiautomator 实测，逐步轨迹见左侧）。
+结论：用例执行成功，界面状态与预期一致。`;
+  }
+  return `任务：在真实设备上执行用例 ${caseRow.case_no}（${caseRow.name}）。
+检测到 ${fails.length} 个失败步骤：
+${fails.map((f) => `- 步骤 ${f.seq}「${f.desc}」：${f.log}`).join('\n')}
+根因：基于真实执行日志定位（控件未找到 / 断言失败 / 命令异常），建议进入归因分析进一步排查。`;
+}
+
 export async function executePlan(planId: number): Promise<void> {
   const db = getDb();
   const plan = db.prepare('SELECT * FROM plans WHERE id = ?').get(planId) as PlanRow | undefined;
@@ -86,28 +101,42 @@ export async function executePlan(planId: number): Promise<void> {
     ? cases.filter((_, i) => i % 750 === 0).slice(0, fullSample)
     : cases.slice(0, plan.type === 'batch' ? batchSample : singleSample);
 
+  const engine = String(getSetting('device.execEngine', 'hdc'));
+  const hdcReady = engine !== 'simulate' && !device.serial.startsWith('SIM-') && (await hdcAvailable());
+  const connected = hdcReady ? (await listTargets()).includes(device.serial) : false;
+  const useReal = hdcReady && connected;
+  if (hdcReady && !connected) {
+    console.warn(`[plan #${planId}] hdc 可用但设备 ${device.serial} 未连接，本次回退模拟执行`);
+  }
+
   let passed = 0;
   let failed = 0;
-  db.transaction(() => {
-    const insExec = db.prepare(`INSERT INTO executions (plan_id, case_id, library_id, device_id, status, steps, thinking, logs, started_at, finished_at)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`);
-    for (const c of sample) {
-      const caseRow = db.prepare('SELECT * FROM cases WHERE id = ?').get(c.id) as CaseRow;
+  const insExec = db.prepare(`INSERT INTO executions (plan_id, case_id, library_id, device_id, status, steps, thinking, logs, started_at, finished_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`);
+  for (const c of sample) {
+    const caseRow = db.prepare('SELECT * FROM cases WHERE id = ?').get(c.id) as CaseRow;
+    let status: 'passed' | 'failed';
+    let stepsJson: string;
+    let thinking: string;
+    let logs: string;
+    if (useReal) {
+      const stepsArr = JSON.parse(caseRow.steps || '[]') as string[];
+      const run = await executeCaseSteps(stepsArr, device.serial);
+      status = run.passed ? 'passed' : 'failed';
+      stepsJson = JSON.stringify(run.steps.map((s) => ({ seq: s.seq, desc: s.desc, status: s.status, durationMs: s.durationMs })));
+      thinking = realThinking(caseRow, run);
+      logs = run.logs.join('\n');
+    } else {
       const isFail = caseRow.status === '失败' || (caseRow.id % 17 === 0); // 失败率 ~6%
-      const status = isFail ? 'failed' : 'passed';
-      if (isFail) failed++; else passed++;
-      const started = t;
-      const finished = t2;
-      insExec.run(
-        planId, c.id, c.library_id, device.id, status,
-        JSON.stringify(buildSteps(caseRow, isFail)),
-        buildThinking(caseRow, isFail),
-        `[${started}] 设备 ${device.serial} · 用例 ${caseRow.case_no} ${status === 'passed' ? '通过' : '失败'}`,
-        started, finished,
-      );
+      status = isFail ? 'failed' : 'passed';
+      stepsJson = JSON.stringify(buildSteps(caseRow, isFail));
+      thinking = buildThinking(caseRow, isFail);
+      logs = `[${t}] 设备 ${device.serial} · 用例 ${caseRow.case_no} ${status === 'passed' ? '通过' : '失败'}`;
     }
-  })();
+    if (status === 'failed') failed++; else passed++;
+    insExec.run(planId, c.id, c.library_id, device.id, status, stepsJson, thinking, logs, t, now());
+  }
 
   db.prepare(`UPDATE plans SET status='done', last_run_at=?, updated_at=? WHERE id=?`).run(t2, t2, planId);
-  console.log(`[plan #${planId}] ${plan.name} 执行完成：${sample.length} 用例，通过 ${passed} / 失败 ${failed}`);
+  console.log(`[plan #${planId}] ${plan.name} 执行完成：${sample.length} 用例，通过 ${passed} / 失败 ${failed}（${useReal ? 'hdc 真机' : '模拟'}）`);
 }

@@ -15,7 +15,8 @@ export const SETTING_DEFAULTS = {
     'data.redisUrl': '',
     'data.cacheTtlSeconds': 30,
     'data.shardCount': 16,
-    'device.execEngine': 'reserved',
+    'device.execEngine': 'hdc',
+    'device.appAbilities': '{}',
 };
 /** 读取配置（未设置/解析失败回默认值）。 */
 export function getSetting(key, fallback) {

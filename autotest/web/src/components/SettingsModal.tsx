@@ -208,7 +208,8 @@ export default function SettingsModal({ open, onClose }: { open: boolean; onClos
                     ['用例表分表策略', '按库 ID 哈希分 16 表（MySQL 部署）', '已启用'],
                     ['执行结果归档', '历史执行结果归档至冷存储', '90 天'],
                   ] : [
-                    ['设备执行引擎', '真实设备执行链路（hdc / UI 自动化，二期）', '预留'],
+                    ['设备执行引擎', 'hdc 真机执行（uiautomator/input），无设备自动回退模拟', 'hdc / 模拟'],
+                    ['应用启动映射', '打开应用步骤的 app→ability 映射（JSON，设置页可配）', 'device.appAbilities'],
                     ['默认执行超时', '单用例默认超时时间', '120s'],
                     ['失败自动重试', '环境类失败自动重试次数', '2'],
                     ['执行轨迹记录', '调试会话所需的逐步执行轨迹与 AI 思考', '已启用'],

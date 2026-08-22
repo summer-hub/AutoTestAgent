@@ -57,7 +57,7 @@ export default function PlansPage() {
   return (
     <>
       <div className="page-title">执行计划</div>
-      <div className="page-desc">用例库绑定自动化脚本后执行测试 · 立即 / 定时 / 单独 / 批量 / 全量（当前执行器为模拟执行，真实设备链路二期接入）</div>
+      <div className="page-desc">用例库绑定自动化脚本后执行测试 · 立即 / 定时 / 单独 / 批量 / 全量（默认 hdc 真机执行，无设备自动回退模拟）</div>
 
       {error && <div className="error">⚠️ {error}</div>}
 

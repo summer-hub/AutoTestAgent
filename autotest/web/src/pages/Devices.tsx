@@ -20,7 +20,9 @@ export default function DevicesPage() {
     setTimeout(async () => {
       try {
         const r = await api.scanDevices();
-        setMsg(r.discovered ? `识别完成：新增 ${r.device.serial}（${r.device.model}），已保存至设备列表（共 ${r.total} 台）` : '未发现新设备');
+        setMsg(r.discovered
+          ? `识别完成：${r.device.serial}（${r.device.model}）· ${r.note ?? ''}（共 ${r.total} 台）`
+          : (r.note ?? '未发现新设备'));
         load();
       } catch (e) { setError((e as Error).message); }
       setScanning(false);

@@ -105,7 +105,7 @@ export const api = {
 
   // 设备
   devices: () => req<Device[]>(`${API_BASE}/devices`),
-  scanDevices: () => req<{ discovered: boolean; device: Device; total: number }>(`${API_BASE}/devices/scan`, { method: 'POST' }),
+  scanDevices: () => req<{ discovered: boolean; device: Device; total: number; source?: 'hdc' | 'simulate'; note?: string }>(`${API_BASE}/devices/scan`, { method: 'POST' }),
   updateDevice: (id: number, b: Partial<Device>) => req<Device>(`${API_BASE}/devices/${id}`, { method: 'PUT', body: JSON.stringify(b) }),
   connectDevice: (id: number) => req<Device>(`${API_BASE}/devices/${id}/connect`, { method: 'POST' }),
   deleteDevice: (id: number) => req<{ ok: boolean }>(`${API_BASE}/devices/${id}`, { method: 'DELETE' }),

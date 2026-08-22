@@ -139,7 +139,7 @@ export function seed(db: Database.Database): void {
    ('app.workspace', '"D:\\autotest\\workspace"', @t),
    ('agent.defaultModel', '"deepseek-chat"', @t),
    ('data.redisCache', 'false', @t),
-   ('device.execEngine', '"reserved"', @t)`).run({ t: t1 });
+   ('device.execEngine', '"hdc"', @t)`).run({ t: t1 });
 
   console.log(`✅ dsh-autotest 种子完成：${totalLibs} 库 / ${totalCases} 用例 / ${totalVersions} 版本记录，耗时 ${Date.now() - t0}ms`);
 }
