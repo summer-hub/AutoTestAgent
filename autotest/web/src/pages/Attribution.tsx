@@ -12,7 +12,7 @@ export default function AttributionPage() {
   const [granularity, setGranularity] = useState<'single' | 'lib' | 'multi'>('single');
   const [libs, setLibs] = useState<Library[]>([]);
   const [curLib, setCurLib] = useState<number | null>(null);
-  const [failed, setFailed] = useState<Array<Execution & { caseNo: string; libraryName: string }>>([]);
+  const [failed, setFailed] = useState<Array<Execution & { caseNo: string; caseName: string; libraryName: string; deviceSerial: string | null }>>([]);
   const [curExec, setCurExec] = useState<number | null>(null);
   const [rows, setRows] = useState<Analysis[]>([]);
   const [busy, setBusy] = useState(false);

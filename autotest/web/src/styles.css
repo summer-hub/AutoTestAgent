@@ -1,28 +1,31 @@
-/* AutoTest 平台 — 对齐 DSH Web UI（dsh-web-frontend 暗色主题令牌）
-   令牌来源：@deepseek-ai/dsh-web-frontend 的 body[data-ds-dark-theme]
-   （neutral-bluish / deepseek 色板）。iframe 内无法继承宿主 CSS，故自包含实现。 */
+/* AutoTest 平台 — 颜色随 DSH 系统主题（皮肤中心 / 系统设置）
+   令牌优先：var(--dsw-alias-*, 回退值)。
+   嵌入 DSH（client 插件化）后由 dsh-client-ui-theme 的令牌驱动，换肤自动跟随；
+   独立运行（Vite）时 DSW 令牌不存在，落到本地回退色，视觉不变。 */
 :root {
-  --bg: #151517;            /* neutral-bluish-950  = alias-bg-base */
-  --bg2: #232324;           /* neutral-bluish-875  = bg-layer-1 */
-  --panel: #2c2c2e;         /* neutral-bluish-850  = bg-layer-2 */
-  --panel2: #353536;        /* neutral-bluish-800  = bg-layer-3 / hover */
-  --panel3: #43454a;        /* neutral-bluish-750  = button elevated fill */
-  --border: rgba(255, 255, 255, .12);   /* alias-border-l2 */
-  --border2: rgba(255, 255, 255, .16);  /* alias-border-l3 */
-  --text: #f9fafb;          /* neutral-bluish-50  = label-primary */
-  --text2: #adb2b8;         /* neutral-bluish-400 = label-caption */
-  --text3: #81858c;         /* neutral-bluish-600 = label-dimmed */
-  --accent: #5686fe;        /* deepseek-450 品牌主色（dark） */
-  --accent2: #679efe;       /* deepseek-400 hover */
-  --accent-dim: rgba(86, 134, 254, .14);
-  --green: #22c55e;         /* green-500 */
-  --green-dim: rgba(34, 197, 94, .13);
-  --red: #f25a5a;           /* red-400（暗色下更柔和） */
-  --red-dim: rgba(242, 90, 90, .12);
-  --amber: #f59e0b;         /* amber-500 */
-  --amber-dim: rgba(245, 158, 11, .13);
+  /* 背景层级 */
+  --bg: var(--dsw-alias-bg-base, #151517);
+  --bg2: var(--dsw-alias-bg-layer-1, #232324);
+  --panel: var(--dsw-alias-bg-layer-2, #2c2c2e);
+  --panel2: var(--dsw-alias-bg-layer-3, #353536);
+  --panel3: var(--dsw-alias-interactive-bg-hover, #43454a);
+  /* 边框 */
+  --border: var(--dsw-alias-border-l2, rgba(255, 255, 255, .12));
+  --border2: var(--dsw-alias-border-l3, rgba(255, 255, 255, .16));
+  /* 文字 */
+  --text: var(--dsw-alias-label-primary, #f9fafb);
+  --text2: var(--dsw-alias-label-caption, #adb2b8);
+  --text3: var(--dsw-alias-label-dimmed, #81858c);
+  /* 主色 */
+  --accent: var(--dsw-alias-button-primary-fill, #5686fe);
+  --accent2: var(--dsw-alias-button-primary-hover, #679efe);
+  --accent-dim: var(--dsw-alias-interactive-bg-hover-accent, rgba(86, 134, 254, .14));
+  /* 状态色（DSH 无多彩标签令牌时保留本地，保证辨识度） */
+  --green: #22c55e;  --green-dim: rgba(34, 197, 94, .13);
+  --red: #f25a5a;    --red-dim: rgba(242, 90, 90, .12);
+  --amber: #f59e0b;  --amber-dim: rgba(245, 158, 11, .13);
   --purple: #a78bfa; --purple-dim: rgba(167, 139, 250, .13);
-  --cyan: #38bdf8; --cyan-dim: rgba(56, 189, 248, .12);
+  --cyan: #38bdf8;   --cyan-dim: rgba(56, 189, 248, .12);
   --radius: 10px;
   --mono: 'SF Mono', 'JetBrains Mono', 'Fira Code', Consolas, 'Liberation Mono', Menlo, Courier, 'PingFang SC', 'Microsoft YaHei';
   --sans: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC', 'Hiragino Sans GB', 'Microsoft YaHei', 'Helvetica Neue', Helvetica, Arial, sans-serif;
