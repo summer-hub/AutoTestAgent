@@ -21,6 +21,7 @@ export default function CasesPage() {
   const [drawer, setDrawer] = useState<{ case: TestCase; versions: CaseVersion[] } | null>(null);
   const [drawerLoading, setDrawerLoading] = useState(false);
   const [compare, setCompare] = useState<{ from: number; to: number } | null>(null);
+  const [detail, setDetail] = useState<TestCase | null>(null);
   const [caseForm, setCaseForm] = useState<null | { mode: 'create' } | { mode: 'edit'; case: TestCase }>(null);
   const [savingCase, setSavingCase] = useState(false);
 
@@ -234,7 +235,7 @@ export default function CasesPage() {
                   <tr key={c.id}>
                     <td className="mono">{c.caseNo}</td>
                     <td>
-                      <span className="link" onClick={() => openDrawer(c)}>{c.name}</span>
+                      <span className="link" onClick={() => setDetail(c)}>{c.name}</span>
                     </td>
                     <td><span className={`tag ${SOURCE_COLORS[c.source] ?? 'gray'}`}>{c.source}</span></td>
                     <td><span className="tag plain">V{c.currentVersion}</span></td>
@@ -287,6 +288,59 @@ export default function CasesPage() {
           )}
         </div>
       </div>
+
+      {/* 用例详情抽屉 */}
+      {detail && (
+        <div className="drawer-mask show" onClick={(e) => { if (e.target === e.currentTarget) setDetail(null); }}>
+          <div className="drawer">
+            <div className="drawer-h">
+              <span style={{ fontWeight: 600, fontSize: 14.5 }}>{detail.caseNo} · 用例详情</span>
+              <span className="x" onClick={() => setDetail(null)}>✕</span>
+            </div>
+            <div className="drawer-b">
+              <div className="card" style={{ marginBottom: 14 }}>
+                <div className="card-h">
+                  <span className="t">{detail.name}</span>
+                  <span className={`tag ${SOURCE_COLORS[detail.source] ?? 'gray'}`}>{detail.source}</span>
+                  <span className={`tag ${STATUS_COLORS[detail.status] ?? 'gray'}`}>{detail.status}</span>
+                  <span className="tag plain">V{detail.currentVersion}</span>
+                </div>
+                <div style={{ fontSize: 12, color: 'var(--text3)', lineHeight: 1.8 }}>
+                  脚本：{detail.scriptStatus}
+                  {detail.dtsUrl && <> · <a className="link" href={detail.dtsUrl} target="_blank" rel="noreferrer" title={detail.dtsUrl}>DTS 单 ↗</a></>}
+                </div>
+              </div>
+              <div className="card" style={{ marginBottom: 14 }}>
+                <div className="card-h"><span className="t">预置条件</span></div>
+                <div style={{ fontSize: 12.8, color: 'var(--text2)', lineHeight: 1.7, whiteSpace: 'pre-wrap' }}>{detail.precondition || '（无）'}</div>
+              </div>
+              <div className="card" style={{ marginBottom: 14 }}>
+                <div className="card-h"><span className="t">操作步骤</span></div>
+                {detail.steps.length === 0 ? (
+                  <div className="muted" style={{ fontSize: 12.5 }}>（无步骤）</div>
+                ) : (
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: 9 }}>
+                    {detail.steps.map((s, i) => (
+                      <div key={i} style={{ display: 'flex', gap: 10, fontSize: 12.8, color: 'var(--text2)', lineHeight: 1.6 }}>
+                        <span className="mono" style={{ color: 'var(--text3)', fontSize: 11.5, width: 26, textAlign: 'right', flexShrink: 0 }}>{String(i + 1).padStart(2, '0')}</span>
+                        <span>{s}</span>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+              <div className="card" style={{ marginBottom: 14 }}>
+                <div className="card-h"><span className="t">预期结果</span></div>
+                <div style={{ fontSize: 12.8, color: 'var(--text2)', lineHeight: 1.7, whiteSpace: 'pre-wrap' }}>{detail.expected || '（无）'}</div>
+              </div>
+              <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end' }}>
+                <button className="btn sm" onClick={() => { const c = detail; setDetail(null); openDrawer(c); }}>版本历史</button>
+                <button className="btn sm primary" onClick={() => { const c = detail; setDetail(null); setCaseForm({ mode: 'edit', case: c }); }}>编辑</button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* 版本历史抽屉 */}
       <div className={`drawer-mask ${drawer ? 'show' : ''}`} onClick={(e) => { if (e.target === e.currentTarget) setDrawer(null); }}>
