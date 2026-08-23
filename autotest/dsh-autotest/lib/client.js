@@ -83,12 +83,31 @@ window.__ModuleLoader__.load({
 	  } else {
 	    document.documentElement.removeAttribute(ACTIVE_ATTR);
 	  }
+	  if (state.open) startHeal();
+	  else stopHeal();
 	  const entry = document.querySelector(ENTRY_SELECTOR);
 	  if (entry !== null) {
 	    if (state.open) entry.dataset.active = "true";
 	    else delete entry.dataset.active;
 	  }
 	  for (const listener of state.listeners) listener();
+	}
+	var healObserver;
+	function startHeal() {
+	  if (healObserver !== void 0) return;
+	  healObserver = new MutationObserver(() => {
+	    if (!state.open) return;
+	    const root = document.documentElement;
+	    if (root.getAttribute(ACTIVE_ATTR) === null || OTHER_ACTIVE_ATTRS.some((a) => root.getAttribute(a) !== null)) {
+	      for (const attr of OTHER_ACTIVE_ATTRS) root.removeAttribute(attr);
+	      root.setAttribute(ACTIVE_ATTR, "");
+	    }
+	  });
+	  healObserver.observe(document.documentElement, { attributes: true, attributeFilter: [ACTIVE_ATTR, ...OTHER_ACTIVE_ATTRS] });
+	}
+	function stopHeal() {
+	  healObserver?.disconnect();
+	  healObserver = void 0;
 	}
 	function subscribe(listener) {
 	  state.listeners.add(listener);
@@ -125,7 +144,11 @@ window.__ModuleLoader__.load({
 	  entry.setAttribute("aria-label", "AutoTest \u5E73\u53F0");
 	  entry.setAttribute("title", "AutoTest \u5E73\u53F0 \u2014 \u9E3F\u8499\u4E09\u65B9\u5E93\u81EA\u52A8\u5316\u6D4B\u8BD5");
 	  entry.innerHTML = `<span class="dsh-autotest-entry-icon">${ICON}</span><span class="dsh-autotest-entry-label">AutoTest \u5E73\u53F0</span>`;
-	  entry.addEventListener("click", () => setOpen(!state.open));
+	  entry.addEventListener("click", (event) => {
+	    event.preventDefault();
+	    event.stopPropagation();
+	    setOpen(!state.open);
+	  });
 	  return entry;
 	}
 	function mountSidebarEntry() {

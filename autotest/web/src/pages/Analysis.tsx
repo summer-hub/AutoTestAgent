@@ -16,6 +16,7 @@ export default function AnalysisPage() {
   const [prModal, setPrModal] = useState<null | 'pr' | 'case'>(null);
   const [prList, setPrList] = useState<Array<{ number: number; title: string; state: string; createdAt: string }>>([]);
   const [prInput, setPrInput] = useState('');
+  const [prSel, setPrSel] = useState<number[]>([]);
   const [prLoading, setPrLoading] = useState(false);
 
   const [running, setRunning] = useState(false);
@@ -46,6 +47,7 @@ export default function AnalysisPage() {
     if (curLib === null) return;
     setPrModal(kind);
     setPrInput('');
+    setPrSel([]);
     setError('');
     setPrLoading(true);
     setPrList([]);
@@ -62,18 +64,17 @@ export default function AnalysisPage() {
 
   const startAnalysis = async (kind: 'pr' | 'case') => {
     if (curLib === null) return;
-    let prNumber: number | undefined;
-    const raw = prInput.trim().replace(/^#/, '');
-    if (raw) {
-      prNumber = Number(raw);
-      if (!Number.isInteger(prNumber) || prNumber <= 0) { setError('请输入有效的 PR 编号（如 #123）'); return; }
-    }
+    const parsed = prInput
+      .split(/[,#\s，]+/)
+      .map((s) => Number(s.trim().replace(/^#/, '')))
+      .filter((n) => Number.isInteger(n) && n > 0);
+    const prNumbers = Array.from(new Set([...prSel, ...parsed]));
     setPrModal(null);
     setMsg(''); setError('');
     setRunning(true);
     setStage('准备分析…');
     try {
-      const r = kind === 'pr' ? await api.runPrAnalysis(curLib, prNumber) : await api.runCaseUpdateAnalysis(curLib, prNumber);
+      const r = kind === 'pr' ? await api.runPrAnalysis(curLib, prNumbers) : await api.runCaseUpdateAnalysis(curLib, prNumbers);
       const runId = r.runId;
       if (pollRef.current) clearInterval(pollRef.current);
       pollRef.current = setInterval(async () => {
@@ -104,6 +105,16 @@ export default function AnalysisPage() {
     return String(c.impact ?? a.title);
   };
   const caseSummary = (a: Analysis): string => String((a.content ?? {}).reason ?? a.title);
+
+  const removeAnalysis = async (a: Analysis) => {
+    if (!window.confirm(`确认删除分析结果「${a.title}」？`)) return;
+    try {
+      await api.deleteAnalysis(a.id);
+      if (curLib !== null) loadRows(curLib);
+    } catch (e) {
+      setError(String((e as Error).message));
+    }
+  };
 
   // 详情内容：按类型渲染成可读视图，而不是裸 JSON
   const renderDetail = (a: Analysis) => {
@@ -179,6 +190,7 @@ export default function AnalysisPage() {
               <div key={a.id} className="card" style={{ cursor: 'pointer', padding: 12 }} onClick={() => setDetail(a)}>
                 <div className="card-h" style={{ marginBottom: 6 }}>
                   <span className="t" style={{ fontSize: 13, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>PR #{c.prNumber} · {c.title ?? a.title}</span>
+                  <span className="link" style={{ fontSize: 11.5, color: 'var(--red)', flexShrink: 0 }} onClick={(e) => { e.stopPropagation(); void removeAnalysis(a); }}>删除</span>
                 </div>
                 <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', marginBottom: 6 }}>
                   <span className={`tag ${STATE_TAG[c.state ?? ''] ?? 'gray'}`}>{c.state ?? ''}</span>
@@ -206,6 +218,7 @@ export default function AnalysisPage() {
                 <div className="card-h" style={{ marginBottom: 6 }}>
                   <span className="t" style={{ fontSize: 13 }}>{c.caseNo ? `用例 ${c.caseNo}` : '新增用例'}</span>
                   <span className="tag plain">{a.createdAt?.slice(0, 16)}</span>
+                  <span className="link" style={{ fontSize: 11.5, color: 'var(--red)', marginLeft: 'auto' }} onClick={(e) => { e.stopPropagation(); void removeAnalysis(a); }}>删除</span>
                 </div>
                 <div className="muted" style={{ fontSize: 11.5, lineHeight: 1.5, maxHeight: 34, overflow: 'hidden' }}>{caseSummary(a)}</div>
               </div>
@@ -226,16 +239,18 @@ export default function AnalysisPage() {
             </div>
             <div style={{ padding: '16px 18px', display: 'flex', flexDirection: 'column', gap: 12, overflowY: 'auto' }}>
               <div style={{ display: 'flex', gap: 8 }}>
-                <input className="input mono" style={{ flex: 1 }} placeholder="#123（留空 = 分析全部最近 PR）" value={prInput} onChange={(e) => setPrInput(e.target.value)} />
+                <input className="input mono" style={{ flex: 1 }} placeholder="#123,#456（留空 = 分析全部；也可点选下方多选）" value={prInput} onChange={(e) => setPrInput(e.target.value)} />
                 <button className="btn primary" onClick={() => void startAnalysis(prModal)}>开始分析</button>
               </div>
+              <div className="muted" style={{ fontSize: 11.5 }}>已选 {prSel.length} 个 PR：{prSel.length > 0 ? prSel.map((n) => `#${n}`).join('、') : '（全部最近 PR）'}</div>
               {prLoading && <div className="loading">拉取 PR 列表…</div>}
               {!prLoading && prList.length === 0 && <div className="muted" style={{ fontSize: 12.5, padding: 8 }}>仓库暂无 PR，或拉取失败</div>}
               <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
                 {prList.map((p) => (
                   <div key={p.number}
-                    onClick={() => { setPrInput(String(p.number)); }}
-                    style={{ display: 'flex', gap: 8, alignItems: 'center', padding: '8px 10px', borderRadius: 8, border: '1px solid var(--border)', cursor: 'pointer', background: prInput === String(p.number) ? 'var(--accent-dim)' : 'transparent' }}>
+                    onClick={() => setPrSel((prev) => (prev.includes(p.number) ? prev.filter((n) => n !== p.number) : [...prev, p.number]))}
+                    style={{ display: 'flex', gap: 8, alignItems: 'center', padding: '8px 10px', borderRadius: 8, border: '1px solid var(--border)', cursor: 'pointer', background: prSel.includes(p.number) ? 'var(--accent-dim)' : 'transparent' }}>
+                    <span style={{ width: 16, textAlign: 'center', fontSize: 12, color: prSel.includes(p.number) ? 'var(--accent2)' : 'var(--text3)' }}>{prSel.includes(p.number) ? '✓' : ''}</span>
                     <span className="mono" style={{ color: 'var(--accent2)', fontSize: 12 }}>#{p.number}</span>
                     <span style={{ flex: 1, fontSize: 12.5, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{p.title}</span>
                     <span className={`tag ${STATE_TAG[p.state] ?? 'gray'}`}>{p.state}</span>
@@ -268,6 +283,7 @@ export default function AnalysisPage() {
               <span style={{ fontSize: 15, fontWeight: 600 }}>{detail.title}</span>
               <span className="tag plain">{detail.createdAt}</span>
               <div style={{ flex: 1 }} />
+              <button className="btn sm" style={{ color: 'var(--red)' }} onClick={() => { void removeAnalysis(detail); setDetail(null); }}>删除</button>
               <button className="s-header x" onClick={() => setDetail(null)} style={{ width: 28, height: 28, borderRadius: 28, border: 'none', background: 'none', color: 'var(--text2)', cursor: 'pointer', fontSize: 14 }}>✕</button>
             </div>
             <div style={{ padding: '16px 18px', overflowY: 'auto' }}>

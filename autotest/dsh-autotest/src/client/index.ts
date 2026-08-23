@@ -78,12 +78,35 @@ function setOpen(next: boolean): void {
   } else {
     document.documentElement.removeAttribute(ACTIVE_ATTR)
   }
+  if (state.open) startHeal()
+  else stopHeal()
   const entry = document.querySelector<HTMLElement>(ENTRY_SELECTOR)
   if (entry !== null) {
     if (state.open) entry.dataset.active = 'true'
     else delete entry.dataset.active
   }
   for (const listener of state.listeners) listener()
+}
+
+// 自愈：我们的面板打开期间，若其他面板（taskboard/ssh）的属性被其自身 React
+// 重渲染重新写回 <html>，或我们的属性被外部移除，立即恢复我们的激活状态，
+// 避免"打开 AutoTest 却跳到任务看板"的互相抢占。
+let healObserver: MutationObserver | undefined
+function startHeal(): void {
+  if (healObserver !== undefined) return
+  healObserver = new MutationObserver(() => {
+    if (!state.open) return
+    const root = document.documentElement
+    if (root.getAttribute(ACTIVE_ATTR) === null || OTHER_ACTIVE_ATTRS.some((a) => root.getAttribute(a) !== null)) {
+      for (const attr of OTHER_ACTIVE_ATTRS) root.removeAttribute(attr)
+      root.setAttribute(ACTIVE_ATTR, '')
+    }
+  })
+  healObserver.observe(document.documentElement, { attributes: true, attributeFilter: [ACTIVE_ATTR, ...OTHER_ACTIVE_ATTRS] })
+}
+function stopHeal(): void {
+  healObserver?.disconnect()
+  healObserver = undefined
 }
 
 function subscribe(listener: () => void): () => void {
@@ -125,7 +148,12 @@ function createEntry(): HTMLButtonElement {
   entry.setAttribute('aria-label', 'AutoTest 平台')
   entry.setAttribute('title', 'AutoTest 平台 — 鸿蒙三方库自动化测试')
   entry.innerHTML = `<span class="dsh-autotest-entry-icon">${ICON}</span><span class="dsh-autotest-entry-label">AutoTest 平台</span>`
-  entry.addEventListener('click', () => setOpen(!state.open))
+  entry.addEventListener('click', (event) => {
+    // 阻止事件冒泡到 DSH shell（避免被当成侧边栏导航项处理，触发意外跳转）
+    event.preventDefault()
+    event.stopPropagation()
+    setOpen(!state.open)
+  })
   return entry
 }
 

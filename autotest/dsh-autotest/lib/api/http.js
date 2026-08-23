@@ -844,12 +844,19 @@ ${(row.logs ?? '').slice(0, 4000) || '（无）'}
         const repoPath = parseRepoPath(lib.repo_url);
         if (!repoPath)
             throw Object.assign(new Error(`库「${lib.name}」未配置 GitCode 仓库地址（repo_url），无法拉取 PR`), { statusCode: 400 });
-        const prNumber = Number(body?.prNumber) || null;
+        const b = body;
+        const prNumber = Number(b.prNumber) || null;
+        const prNumbers = Array.isArray(b.prNumbers)
+            ? b.prNumbers.filter((n) => Number.isInteger(n) && n > 0)
+            : [];
         const runId = `pr-${Date.now()}-${Math.floor(Math.random() * 10000)}`;
-        setProgress(runId, { stage: prNumber ? `拉取 PR #${prNumber}…` : '拉取 PR 列表…' });
+        const target = prNumbers.length > 0 ? prNumbers : prNumber ? [prNumber] : [];
+        setProgress(runId, { stage: target.length > 0 ? `拉取 ${target.length} 条 PR…` : '拉取 PR 列表…' });
         setImmediate(async () => {
             try {
-                const prs = prNumber ? [await fetchPr(repoPath, prNumber)] : await fetchPrs(repoPath);
+                const prs = target.length > 0
+                    ? await Promise.all(target.map((n) => fetchPr(repoPath, n)))
+                    : await fetchPrs(repoPath);
                 setProgress(runId, { stage: `已获取 ${prs.length} 条 PR` });
                 const r = await analyzePrChanges(llm, lib, prs, (s) => setProgress(runId, { stage: s }));
                 setProgress(runId, { stage: r.message, done: true });
@@ -869,12 +876,19 @@ ${(row.logs ?? '').slice(0, 4000) || '（无）'}
         const repoPath = parseRepoPath(lib.repo_url);
         if (!repoPath)
             throw Object.assign(new Error(`库「${lib.name}」未配置 GitCode 仓库地址（repo_url），无法拉取 PR`), { statusCode: 400 });
-        const prNumber = Number(body?.prNumber) || null;
+        const b = body;
+        const prNumber = Number(b.prNumber) || null;
+        const prNumbers = Array.isArray(b.prNumbers)
+            ? b.prNumbers.filter((n) => Number.isInteger(n) && n > 0)
+            : [];
         const runId = `case-${Date.now()}-${Math.floor(Math.random() * 10000)}`;
-        setProgress(runId, { stage: prNumber ? `拉取 PR #${prNumber}…` : '拉取 PR 列表…' });
+        const target = prNumbers.length > 0 ? prNumbers : prNumber ? [prNumber] : [];
+        setProgress(runId, { stage: target.length > 0 ? `拉取 ${target.length} 条 PR…` : '拉取 PR 列表…' });
         setImmediate(async () => {
             try {
-                const prs = prNumber ? [await fetchPr(repoPath, prNumber)] : await fetchPrs(repoPath, 6);
+                const prs = target.length > 0
+                    ? await Promise.all(target.map((n) => fetchPr(repoPath, n)))
+                    : await fetchPrs(repoPath, 6);
                 setProgress(runId, { stage: `已获取 ${prs.length} 条 PR` });
                 const r = await analyzeCaseUpdates(llm, lib, prs, (s) => setProgress(runId, { stage: s }));
                 setProgress(runId, { stage: r.message, done: true });
@@ -890,6 +904,16 @@ ${(row.logs ?? '').slice(0, 4000) || '（无）'}
         if (!p)
             throw Object.assign(new Error('进度不存在或已过期'), { statusCode: 404 });
         return p;
+    });
+    route('DELETE', '/analyses/:id', async ({ params }) => {
+        const id = Number(params.id);
+        const db = getDb();
+        const row = db.prepare('SELECT * FROM analyses WHERE id = ?').get(id);
+        if (!row)
+            throw Object.assign(new Error('分析结果不存在'), { statusCode: 404 });
+        void cacheDel('analyses');
+        db.prepare('DELETE FROM analyses WHERE id = ?').run(id);
+        return { ok: true, deletedKind: row.kind };
     });
     route('POST', '/analyses/attribution', async ({ body }) => {
         void cacheDel('analyses');

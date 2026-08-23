@@ -136,12 +136,13 @@ export const api = {
     req<{ items: Array<{ number: number; title: string; state: string; createdAt: string }>; error?: string }>(
       `${API_BASE}/libraries/${libraryId}/prs`,
     ),
-  runPrAnalysis: (libraryId: number, prNumber?: number) =>
-    req<{ runId: string }>(`${API_BASE}/analyses/pr/${libraryId}`, { method: 'POST', body: JSON.stringify({ prNumber }) }),
-  runCaseUpdateAnalysis: (libraryId: number, prNumber?: number) =>
-    req<{ runId: string }>(`${API_BASE}/analyses/case-updates/${libraryId}`, { method: 'POST', body: JSON.stringify({ prNumber }) }),
+  runPrAnalysis: (libraryId: number, prNumbers?: number[]) =>
+    req<{ runId: string }>(`${API_BASE}/analyses/pr/${libraryId}`, { method: 'POST', body: JSON.stringify({ prNumbers }) }),
+  runCaseUpdateAnalysis: (libraryId: number, prNumbers?: number[]) =>
+    req<{ runId: string }>(`${API_BASE}/analyses/case-updates/${libraryId}`, { method: 'POST', body: JSON.stringify({ prNumbers }) }),
   analysisProgress: (runId: string) =>
     req<{ stage: string; done: boolean; error?: string }>(`${API_BASE}/analyses/progress/${runId}`),
+  deleteAnalysis: (id: number) => req<{ ok: boolean }>(`${API_BASE}/analyses/${id}`, { method: 'DELETE' }),
   runAttribution: (b: { granularity: string; libraryId?: number; caseId?: number }) =>
     req<{ analyzed: number; prs: number; source: 'llm' | 'fallback'; message: string }>(
       `${API_BASE}/analyses/attribution`, { method: 'POST', body: JSON.stringify(b) },
