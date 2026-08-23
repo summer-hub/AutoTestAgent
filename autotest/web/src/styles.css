@@ -15,7 +15,9 @@
   /* 文字 */
   --text: var(--dsw-alias-label-primary, #f9fafb);
   --text2: var(--dsw-alias-label-caption, #adb2b8);
-  --text3: var(--dsw-alias-label-dimmed, #81858c);
+  /* 弱化文字固定用可读灰：部分浅色皮肤的 label-dimmed 接近白色（如 #e1e5ee），
+     在浅背景下看不清，故不跟随皮肤，深浅皮肤下都保持可读 */
+  --text3: #6b7689;
   /* 主色 */
   --accent: var(--dsw-alias-button-primary-fill, #5686fe);
   --accent2: var(--dsw-alias-button-primary-hover, #679efe);
