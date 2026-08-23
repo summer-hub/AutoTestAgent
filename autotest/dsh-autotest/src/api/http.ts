@@ -520,6 +520,15 @@ function defineRoutes(llm: LlmCall): void {
     return { ok: true };
   });
 
+  route('DELETE', '/tasks/:id', async ({ params }) => {
+    const id = Number(params.id);
+    const db = getDb();
+    const row = db.prepare('SELECT * FROM tasks WHERE id = ?').get(id) as { id: number; task_no: string } | undefined;
+    if (!row) throw Object.assign(new Error('任务不存在'), { statusCode: 404 });
+    db.prepare('DELETE FROM tasks WHERE id = ?').run(id);
+    return { ok: true, deletedTaskNo: row.task_no };
+  });
+
   // ---- 仓库本地目录（拉取仓库代码后查看）----
   route('GET', '/repos', async () => {
     const rows = getDb().prepare(

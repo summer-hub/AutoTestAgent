@@ -1,41 +1,22 @@
-// 种子数据（插件版）：仅注册 400 个真实三方库（repo_url 指向真实仓库）+ Prompt / 模型 / 配置。
+// 种子数据（插件版）：仅注册真实三方库（repo_url 指向真实仓库）+ Prompt / 模型 / 配置。
 // 用例、任务、设备一律由真实功能产生（AI 编写 / Excel 导入 / hdc 识别），不再灌虚假数据。
 import type Database from 'better-sqlite3';
 
 export function seed(db: Database.Database): void {
   const t0 = Date.now();
 
-  const LIB_NAMES = [
-    'axios-ohos', 'lottie-ohos', 'charts-ohos', 'mmkv-ohos', 'eventbus-ohos', 'glide-ohos',
-    'realm-ohos', 'zxing-ohos', 'ijkplayer-ohos', 'sqlite-ohos', 'okhttp-ohos', 'coil-ohos',
-    'clock-ohos', 'media-ohos', 'bluetooth-ohos', 'crypto-ohos', 'network-ohos', 'image-ohos',
-    'audio-ohos', 'video-ohos', 'gesture-ohos', 'animation-ohos', 'storage-ohos', 'database-ohos',
-    'permission-ohos', 'notification-ohos', 'camera-ohos', 'sensor-ohos', 'location-ohos', 'maps-ohos',
-    'lottie_turbo',
+  const LIBRARIES: Array<[string, string, string]> = [
+    ['lottie_turbo', 'https://gitcode.com/CPF-ApplicationTPC/lottie_turbo', 'OpenHarmony Lottie 动画引擎（CPF-ApplicationTPC/lottie_turbo）：解析 AE 导出的 JSON 动画，声明式创建、并行化渲染、播放控制与事件监听'],
   ];
-  const LIB_CATS = ['网络', '动画', '图表', '存储', '事件', '图片', '数据库', '扫码', '播放器', 'SQLite', 'HTTP', '图片加载', '时钟', '多媒体', '蓝牙', '加密', '网络层', '图片处理', '音频', '视频', '手势', '动画引擎', '存储层', '数据库', '权限', '通知', '相机', '传感器', '定位', '地图', '动画引擎'];
   const now = (): string => new Date().toISOString().replace('T', ' ').slice(0, 19);
 
   const insertLib = db.prepare(`INSERT INTO libraries (name, repo_url, description, current_version, status, last_synced_at, created_at, updated_at)
     VALUES (@name, @repoUrl, @description, @currentVersion, 'active', @syncedAt, @createdAt, @updatedAt)`);
 
-  const totalLibs = 400;
-
   db.transaction(() => {
-    for (let li = 0; li < totalLibs; li++) {
-      const base = LIB_NAMES[li % LIB_NAMES.length];
-      const cat = LIB_CATS[li % LIB_CATS.length];
-      const name = li < LIB_NAMES.length ? base : `${base}-${String(li).padStart(3, '0')}`;
-      const major = 1 + (li % 9);
-      const version = `v${major}.${li % 20}.${li % 5}`;
-      const repoUrl = name === 'lottie_turbo'
-        ? 'https://gitcode.com/CPF-ApplicationTPC/lottie_turbo'
-        : `https://gitee.com/openharmony-tpc/${name}`;
-      const description = name === 'lottie_turbo'
-        ? 'OpenHarmony Lottie 动画引擎（CPF-ApplicationTPC/lottie_turbo）：解析 AE 导出的 JSON 动画，声明式创建、并行化渲染、播放控制与事件监听'
-        : `${cat}类鸿蒙三方库（OpenHarmony 兼容移植），提供${cat}相关能力封装`;
+    for (const [name, repoUrl, description] of LIBRARIES) {
       const t = now();
-      const libRes = insertLib.run({ name, repoUrl, description, currentVersion: version, syncedAt: t, createdAt: t, updatedAt: t });
+      insertLib.run({ name, repoUrl, description, currentVersion: 'v1.0.0', syncedAt: t, createdAt: t, updatedAt: t });
     }
   })();
 
@@ -64,5 +45,5 @@ export function seed(db: Database.Database): void {
    ('device.execEngine', '"hdc"', @t),
    ('exec.scriptMode', '"script"', @t)`).run({ t: t1 });
 
-  console.log(`✅ dsh-autotest 种子完成：${totalLibs} 个三方库注册（不含虚假用例/任务/设备），耗时 ${Date.now() - t0}ms`);
+  console.log(`✅ dsh-autotest 种子完成：${LIBRARIES.length} 个三方库注册（不含虚假用例/任务/设备），耗时 ${Date.now() - t0}ms`);
 }

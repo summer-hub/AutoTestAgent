@@ -500,6 +500,15 @@ function defineRoutes(llm) {
         setImmediate(() => { runTask(id, llm).catch(() => { }); });
         return { ok: true };
     });
+    route('DELETE', '/tasks/:id', async ({ params }) => {
+        const id = Number(params.id);
+        const db = getDb();
+        const row = db.prepare('SELECT * FROM tasks WHERE id = ?').get(id);
+        if (!row)
+            throw Object.assign(new Error('任务不存在'), { statusCode: 404 });
+        db.prepare('DELETE FROM tasks WHERE id = ?').run(id);
+        return { ok: true, deletedTaskNo: row.task_no };
+    });
     // ---- 仓库本地目录（拉取仓库代码后查看）----
     route('GET', '/repos', async () => {
         const rows = getDb().prepare(`SELECT id, name, repo_url, current_version, last_commit, last_synced_at FROM libraries WHERE repo_url != '' ORDER BY name`).all();
