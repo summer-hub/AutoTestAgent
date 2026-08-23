@@ -2,6 +2,7 @@
 import type { Context } from '@deepseek-ai/cordis';
 import { createUserMessage } from '@deepseek-ai/dsh-llm';
 import { writeFileSync } from 'node:fs';
+import { getSetting } from './settings.js';
 
 export interface LlmTextInput {
   system?: string;
@@ -13,7 +14,7 @@ export interface LlmTextInput {
 
 export type LlmCall = (input: LlmTextInput) => Promise<string>;
 
-/** 从 ctx.llm 构造一个非流式文本调用（优先默认 provider，取该 provider 首个模型） */
+/** 从 ctx.llm 构造一个非流式文本调用（优先默认 provider；若配置了 agent.defaultModel 且存在于模型列表，则优先使用该模型） */
 export function makeLlm(ctx: Context): LlmCall {
   return async (input: LlmTextInput): Promise<string> => {
     const providers = ctx.llm.listProviders();
@@ -31,8 +32,13 @@ export function makeLlm(ctx: Context): LlmCall {
     if (models.length === 0) {
       throw new Error('未配置可用模型：请在 DSH 设置（设置 → 模型）中配置模型后重试');
     }
+    // 系统配置「默认模型」优先：命中则排到最前，未命中保持原顺序回退
+    const defaultModel = String(getSetting('agent.defaultModel', '') || '').trim();
+    const ordered = defaultModel && models.includes(defaultModel)
+      ? [defaultModel, ...models.filter((m) => m !== defaultModel)]
+      : models;
     let lastErr: unknown = new Error('LLM 返回为空');
-    for (const model of models) {
+    for (const model of ordered) {
       for (let attempt = 0; attempt < 2; attempt++) {
         try {
           console.log(`[dsh-autotest] llm call: provider=${provider} model=${model} attempt=${attempt + 1}`);

@@ -8,7 +8,6 @@ const SECTIONS: Array<{ title: string; desc: string; fields: Array<{ key: string
   {
     title: '通用', desc: '基础工作区与默认规模', fields: [
       { key: 'app.workspace', label: '工作区路径', type: 'text' },
-      { key: 'app.defaultCasesPerLib', label: '默认每库用例数', type: 'number' },
     ],
   },
   {

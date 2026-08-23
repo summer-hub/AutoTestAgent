@@ -15,8 +15,10 @@ let redisResolved = false;
 async function redis(): Promise<typeof redisClient> {
   if (redisResolved) return redisClient;
   redisResolved = true;
+  // 开关 data.redisCache 生效：关闭时即使配了 URL 也走内存 LRU
+  const enabled = getSetting('data.redisCache', false) as boolean;
   const url = getSetting('data.redisUrl', '') as string;
-  if (!url) return null;
+  if (!enabled || !url) return null;
   try {
     const { default: Redis } = await import('ioredis');
     const RedisCtor = Redis as unknown as new (u: string, o: Record<string, unknown>) => { connect(): Promise<void> };

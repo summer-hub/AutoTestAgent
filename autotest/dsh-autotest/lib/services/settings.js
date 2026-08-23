@@ -3,7 +3,6 @@
 import { getDb, now } from '../db/connection.js';
 export const SETTING_DEFAULTS = {
     'app.workspace': 'D:\\autotest\\workspace',
-    'app.defaultCasesPerLib': 100,
     'agent.defaultModel': 'deepseek-chat',
     'agent.maxCasesPerTask': 20,
     'exec.llmTemperature': 0.4,

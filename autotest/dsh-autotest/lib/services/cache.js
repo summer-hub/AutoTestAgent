@@ -11,8 +11,10 @@ async function redis() {
     if (redisResolved)
         return redisClient;
     redisResolved = true;
+    // 开关 data.redisCache 生效：关闭时即使配了 URL 也走内存 LRU
+    const enabled = getSetting('data.redisCache', false);
     const url = getSetting('data.redisUrl', '');
-    if (!url)
+    if (!enabled || !url)
         return null;
     try {
         const { default: Redis } = await import('ioredis');
