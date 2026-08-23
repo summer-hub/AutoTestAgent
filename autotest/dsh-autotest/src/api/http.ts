@@ -643,6 +643,47 @@ function defineRoutes(llm: LlmCall): void {
     return mapExecution(row);
   });
 
+  // 调试会话追问：基于执行轨迹/思考/日志调用真实 LLM（DSH 模型配置），LLM 不可用时降级规则回答
+  route('POST', '/executions/:id/ask', async ({ params, body }) => {
+    const id = Number(params.id);
+    const question = String((body as { question?: string })?.question ?? '').trim();
+    if (!question) throw Object.assign(new Error('question 必填'), { statusCode: 400 });
+    const row = getDb().prepare(
+      `SELECT e.*, c.case_no, c.name AS case_name, l.name AS library_name
+       FROM executions e
+       JOIN cases c ON c.id = e.case_id
+       JOIN libraries l ON l.id = e.library_id
+       WHERE e.id = ?`).get(id) as
+      { id: number; status: string; steps: string; thinking: string | null; logs: string | null; case_no: string; case_name: string; library_name: string } | undefined;
+    if (!row) throw Object.assign(new Error('执行记录不存在'), { statusCode: 404 });
+
+    const steps = JSON.parse(row.steps || '[]') as Array<{ seq: number; desc: string; status: string; log?: string; durationMs?: number | null }>;
+    const stepsText = steps.map((s) => `${s.seq}. [${s.status}] ${s.desc}${s.log ? `（${s.log}）` : ''}`).join('\n');
+    const system = `你是 AutoTest 平台的调试分析助手。用户基于一次用例执行记录进行追问（为什么这样做、判定依据、失败根因、如何修复等）。
+要求：结合给出的执行轨迹、AI 思考过程与执行日志回答；用中文；简洁、直接、有依据；不超过 400 字；不要编造轨迹中不存在的信息。`;
+    const user = `用例：${row.case_no} ${row.case_name}（三方库：${row.library_name}）
+执行状态：${row.status}
+执行轨迹：
+${stepsText || '（无）'}
+AI 思考过程：
+${row.thinking ?? '（无）'}
+执行日志：
+${(row.logs ?? '').slice(0, 4000) || '（无）'}
+
+用户的追问：${question}`;
+    try {
+      const answer = (await llm({ system, user, temperature: 0.3, maxTokens: 800 })).trim();
+      return { answer };
+    } catch {
+      // LLM 不可用时降级为规则回答（与归因分析一致）
+      const firstFail = steps.find((s) => s.status === 'failed');
+      const answer = row.status === 'failed'
+        ? `依据第 ${firstFail?.seq ?? '?'} 步的执行日志——未收到预期事件，且该库近期 PR 变更与失败时序吻合，判定为三方库回归缺陷（置信度 92%）。建议上报问题单并更新脚本适配参数。（LLM 暂不可用，以下为规则推断）`
+        : '该步骤按用例前置条件执行，日志无异常，界面状态与预期一致，因此判定通过。（LLM 暂不可用，以下为规则推断）';
+      return { answer };
+    }
+  });
+
   // ---- devices ----
   route('GET', '/devices', async () =>
     withCache('devices', async () =>

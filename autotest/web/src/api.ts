@@ -109,6 +109,8 @@ export const api = {
     return req<Array<Execution & { caseNo: string; caseName: string; libraryName: string; deviceSerial: string | null }>>(`${API_BASE}/executions?${qs}`);
   },
   execution: (id: number) => req<Execution & { caseNo: string; caseName: string; libraryName: string; deviceSerial: string | null }>(`${API_BASE}/executions/${id}`),
+  askExecution: (id: number, question: string) =>
+    req<{ answer: string }>(`${API_BASE}/executions/${id}/ask`, { method: 'POST', body: JSON.stringify({ question }) }),
 
   // 设备
   devices: () => req<Device[]>(`${API_BASE}/devices`),

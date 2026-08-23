@@ -10,6 +10,7 @@ export default function DebugPage() {
   const [activeStep, setActiveStep] = useState(0);
   const [ask, setAsk] = useState('');
   const [answers, setAnswers] = useState<Array<{ q: string; a: string }>>([]);
+  const [asking, setAsking] = useState(false);
   const [error, setError] = useState('');
 
   const load = useCallback(() => {
@@ -35,12 +36,13 @@ export default function DebugPage() {
   };
 
   const askAi = () => {
-    if (!ask.trim()) return;
-    const a = selected?.status === 'failed'
-      ? `依据第 ${activeStep + 1} 步的执行日志——未收到预期事件，且该库近期 PR 变更（手势事件/数据加载）与失败时序吻合，判定为三方库回归缺陷（置信度 92%）。建议上报问题单并更新脚本适配参数。`
-      : '该步骤按用例前置条件执行，日志无异常，界面状态与预期一致，因此判定通过。';
-    setAnswers((prev) => [...prev, { q: ask, a }]);
-    setAsk('');
+    const q = ask.trim();
+    if (!q || !selected || asking) return;
+    setAsking(true);
+    api.askExecution(selected.id, q)
+      .then((r) => setAnswers((prev) => [...prev, { q, a: r.answer }]))
+      .catch((e) => setAnswers((prev) => [...prev, { q, a: `追问失败：${(e as Error).message}` }]))
+      .finally(() => { setAsking(false); setAsk(''); });
   };
 
   return (
@@ -116,9 +118,9 @@ export default function DebugPage() {
                 <input
                   className="input" style={{ flex: 1 }} placeholder="询问 AI：为什么这样做？判定的依据是什么？…"
                   value={ask} onChange={(e) => setAsk(e.target.value)}
-                  onKeyDown={(e) => { if (e.key === 'Enter') askAi(); }}
+                  onKeyDown={(e) => { if (e.key === 'Enter') void askAi(); }}
                 />
-                <button className="btn primary" onClick={askAi}>发送</button>
+                <button className="btn primary" disabled={asking} onClick={() => void askAi()}>{asking ? '思考中…' : '发送'}</button>
               </div>
               {answers.map((a, i) => (
                 <div key={i} style={{ padding: '10px 14px', borderTop: '1px solid var(--border)' }}>
