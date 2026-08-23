@@ -179,12 +179,13 @@ tr:hover td { background: var(--panel2); }
 
 /* ---- 嵌入 DSH GUI 模式（VITE_EMBED=1）---- */
 .app.embed { height: 100%; flex-direction: column; }
-.embed-top { flex: none; display: flex; align-items: center; gap: 14px; height: 48px; min-height: 48px; padding: 0 14px; background: var(--bg2); border-bottom: 1px solid var(--border); }
+.embed-top { flex: none; display: flex; align-items: center; gap: 10px; min-height: 48px; padding: 8px 14px; background: var(--bg2); border-bottom: 1px solid var(--border); flex-wrap: wrap; }
+.app.embed .tb-spacer { flex: 0; }
 .embed-brand { display: flex; align-items: center; gap: 8px; font-size: 13.5px; font-weight: 600; white-space: nowrap; }
 .embed-logo { width: 24px; height: 24px; border-radius: 6px; background: linear-gradient(135deg, #4176e6, #5686fe); display: inline-flex; align-items: center; justify-content: center; font-size: 12px; font-weight: 700; color: #fff; }
 .embed-brand-sub { font-size: 11px; color: var(--text3); font-weight: 400; }
-.embed-nav { display: flex; align-items: center; gap: 4px; flex: 1; min-width: 0; overflow-x: auto; }
-.embed-nav-item { display: inline-flex; align-items: center; gap: 6px; padding: 6px 11px; border: none; border-radius: 8px; background: transparent; color: var(--text2); font-size: 12.5px; cursor: pointer; white-space: nowrap; font-family: inherit; }
+.embed-nav { display: flex; align-items: center; gap: 4px; flex: 1; min-width: 0; flex-wrap: wrap; max-height: 108px; overflow-y: auto; }
+.embed-nav-item { display: inline-flex; align-items: center; gap: 5px; padding: 5px 9px; border: none; border-radius: 8px; background: transparent; color: var(--text2); font-size: 12.5px; cursor: pointer; white-space: nowrap; font-family: inherit; }
 .embed-nav-item:hover { background: var(--panel); }
 .embed-nav-item.active { background: var(--accent-dim); color: var(--accent2); font-weight: 600; }
 .embed-nav-item .ico { width: auto; font-size: 13px; }
