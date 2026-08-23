@@ -105,6 +105,45 @@ export default function AnalysisPage() {
   };
   const caseSummary = (a: Analysis): string => String((a.content ?? {}).reason ?? a.title);
 
+  // 详情内容：按类型渲染成可读视图，而不是裸 JSON
+  const renderDetail = (a: Analysis) => {
+    const c = a.content ?? {};
+    if (a.kind === 'pr_analysis') {
+      return (
+        <>
+          <div className="card" style={{ marginBottom: 12 }}>
+            <div className="card-h">
+              <span className="t" style={{ fontSize: 15 }}>PR #{c.prNumber} · {String(c.title ?? '')}</span>
+              <span className={`tag ${STATE_TAG[String(c.state ?? '')] ?? 'gray'}`}>{String(c.state ?? '')}</span>
+              <span className={`tag ${RISK_TAG[String(c.risk ?? '')] ?? 'gray'}`}>风险 {String(c.risk ?? '—')}</span>
+            </div>
+            {c.webUrl && <a className="link" style={{ fontSize: 12.5 }} href={String(c.webUrl)} target="_blank" rel="noreferrer">查看 PR ↗</a>}
+          </div>
+          <Block title="📌 更新点" list={c.updatePoints} />
+          <Block title="🌊 影响范围" text={c.impact} />
+          <Block title="🧩 受影响功能" tags={c.affectedFeatures} />
+          <Block title="💡 建议用例更新" list={c.suggestedCaseUpdates} />
+        </>
+      );
+    }
+    if (a.kind === 'case_update_analysis') {
+      return (
+        <>
+          <div className="card" style={{ marginBottom: 12 }}>
+            <div className="card-h">
+              <span className="t" style={{ fontSize: 15 }}>{c.caseNo ? `用例 ${c.caseNo}` : '新增用例'}</span>
+              <span className="tag plain">{a.createdAt?.slice(0, 16)}</span>
+            </div>
+          </div>
+          <Block title="📋 更新原因" text={c.reason} />
+          <Block title="⚙️ 建议动作" text={c.suggestedAction} />
+          <Block title="🎯 更新后预期" text={c.newExpected} />
+        </>
+      );
+    }
+    return <FieldRows data={c} />;
+  };
+
   return (
     <>
       <div className="page-title">数据分析</div>
@@ -232,14 +271,60 @@ export default function AnalysisPage() {
               <button className="s-header x" onClick={() => setDetail(null)} style={{ width: 28, height: 28, borderRadius: 28, border: 'none', background: 'none', color: 'var(--text2)', cursor: 'pointer', fontSize: 14 }}>✕</button>
             </div>
             <div style={{ padding: '16px 18px', overflowY: 'auto' }}>
-              <pre className="mono" style={{ fontSize: 12, lineHeight: 1.6, whiteSpace: 'pre-wrap', wordBreak: 'break-word' }}>{JSON.stringify(detail.content ?? {}, null, 2)}</pre>
-              {(detail.content as { webUrl?: string })?.webUrl && (
-                <a className="link" style={{ fontSize: 12.5 }} href={(detail.content as { webUrl: string }).webUrl} target="_blank" rel="noreferrer">查看 PR ↗</a>
-              )}
+              {renderDetail(detail)}
             </div>
           </div>
         </div>
       )}
     </>
+  );
+}
+
+function Block({ title, text, list, tags }: { title: string; text?: unknown; list?: unknown; tags?: unknown }) {
+  return (
+    <div className="card" style={{ marginBottom: 12 }}>
+      <div className="card-h"><span className="t">{title}</span></div>
+      {Array.isArray(list) && list.length > 0 ? (
+        <ul style={{ margin: 0, paddingLeft: 18, fontSize: 13, lineHeight: 1.8, color: 'var(--text2)' }}>
+          {list.map((x, i) => <li key={i}>{String(x)}</li>)}
+        </ul>
+      ) : Array.isArray(tags) && tags.length > 0 ? (
+        <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+          {tags.map((x, i) => <span key={i} className="tag blue">{String(x)}</span>)}
+        </div>
+      ) : text ? (
+        <div style={{ fontSize: 13, color: 'var(--text2)', lineHeight: 1.7, whiteSpace: 'pre-wrap' }}>{String(text)}</div>
+      ) : (
+        <div className="muted" style={{ fontSize: 12.5 }}>—</div>
+      )}
+    </div>
+  );
+}
+
+function FieldRows({ data }: { data: Record<string, unknown> }) {
+  const labels: Record<string, string> = {
+    prNumber: 'PR 编号', title: '标题', state: '状态', risk: '风险等级',
+    updatePoints: '更新点', impact: '影响范围', affectedFeatures: '受影响功能',
+    suggestedCaseUpdates: '建议用例更新', webUrl: 'PR 链接', caseNo: '用例编号',
+    reason: '更新原因', suggestedAction: '建议动作', newExpected: '更新后预期',
+  };
+  const entries = Object.entries(data).filter(([, v]) => v !== undefined && v !== null && v !== '');
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+      {entries.map(([k, v]) => (
+        <div key={k}>
+          <div className="muted" style={{ fontSize: 12, marginBottom: 4 }}>{labels[k] ?? k}</div>
+          {Array.isArray(v) && v.length > 0 ? (
+            <ul style={{ margin: 0, paddingLeft: 18, fontSize: 13, lineHeight: 1.8, color: 'var(--text2)' }}>
+              {v.map((x, i) => <li key={i}>{typeof x === 'object' ? JSON.stringify(x) : String(x)}</li>)}
+            </ul>
+          ) : typeof v === 'object' && v !== null ? (
+            <FieldRows data={v as Record<string, unknown>} />
+          ) : (
+            <div style={{ fontSize: 13, color: 'var(--text2)', lineHeight: 1.7, whiteSpace: 'pre-wrap' }}>{String(v)}</div>
+          )}
+        </div>
+      ))}
+    </div>
   );
 }
