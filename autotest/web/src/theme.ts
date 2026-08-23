@@ -54,7 +54,9 @@ export function applyHostTheme(): void {
   } catch {
     return
   }
-  const hostRoot = parentDoc.documentElement
+  // DSH 的 --dsw-* 变量定义在 body 上（皮肤中心切换 class/style 也在 body）；
+  // html 作为祖先读不到 body 的变量，必须优先从 body 读取。
+  const hostRoot = parentDoc.body ?? parentDoc.documentElement
   const myRoot = document.documentElement
   const vars = collectThemeVars(parentDoc)
 
@@ -71,9 +73,12 @@ export function applyHostTheme(): void {
   }
 
   sync()
-  // 监听宿主主题切换：class / style / data-dsh-skin 属性变化 + head 样式表增删
+  // 监听宿主主题切换：body/html 的 class / style / data-dsh-skin 属性变化 + head 样式表增删
   const mo = new MutationObserver(sync)
-  mo.observe(hostRoot, { attributes: true, attributeFilter: ['class', 'style', 'data-dsh-skin'], subtree: true })
+  mo.observe(parentDoc.body ?? parentDoc.documentElement, { attributes: true, attributeFilter: ['class', 'style', 'data-dsh-skin'], subtree: true })
+  if (parentDoc.documentElement !== hostRoot) {
+    mo.observe(parentDoc.documentElement, { attributes: true, attributeFilter: ['class', 'style', 'data-dsh-skin'] })
+  }
   const headMo = new MutationObserver(sync)
   headMo.observe(parentDoc.head, { childList: true, subtree: true })
 }

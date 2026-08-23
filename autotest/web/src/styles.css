@@ -33,6 +33,8 @@
 * { margin: 0; padding: 0; box-sizing: border-box; }
 html, body, #root { height: 100%; }
 body { background: var(--bg); color: var(--text); font-family: var(--sans); font-size: 14px; }
+/* 嵌入 DSH：背景透明，跟随宿主皮肤（面板/卡片仍用同步的 --dsw-* 变量） */
+body.dsh-embed-host { background: transparent !important; }
 ::-webkit-scrollbar { width: 9px; height: 9px; }
 ::-webkit-scrollbar-thumb { background: var(--panel3); border-radius: 5px; }
 .mono { font-family: var(--mono); }

@@ -6,20 +6,29 @@ export default function HomePage() {
   const [libs, setLibs] = useState<Page<Library> | null>(null);
   const [overview, setOverview] = useState<{ total: number; byStatus: Array<{ status: string; n: number }>; versioned: number } | null>(null);
   const [sources, setSources] = useState<Array<{ source: string; n: number }>>([]);
+  const [plans, setPlans] = useState<Array<{ status: string }>>([]);
   const [error, setError] = useState('');
 
   useEffect(() => {
-    api.libraries({ page: 1, pageSize: 5 })
+    api.libraries({ page: 1, pageSize: 200 })
       .then(setLibs).catch((e) => setError(String(e.message)));
     api.caseOverview()
       .then(setOverview).catch((e) => setError(String(e.message)));
     api.sourceStats()
       .then((r) => setSources(r.items)).catch(() => {});
+    api.plans()
+      .then(setPlans).catch(() => {});
   }, []);
 
   const passRate = overview && overview.total > 0
     ? ((overview.byStatus.find((s) => s.status === '通过')?.n ?? 0) / overview.total * 100).toFixed(1)
     : '—';
+
+  const totalLibs = libs?.total ?? 0;
+  const withCases = (libs?.items ?? []).filter((l) => (l.caseCount ?? 0) > 0).length;
+  const coverage = totalLibs > 0 ? (withCases / totalLibs * 100).toFixed(1) : '—';
+  const avgPerLib = overview && totalLibs > 0 ? (overview.total / totalLibs).toFixed(0) : '—';
+  const runningPlans = plans.filter((p) => p.status === 'running').length;
 
   const sourceColors: Record<string, string> = {
     老库存量: 'gray', 新需求引入: 'blue', 问题单跟踪: 'amber', 'AI 生成': 'purple',
@@ -35,9 +44,9 @@ export default function HomePage() {
       <div className="grid grid-4" style={{ marginBottom: 14 }}>
         <div className="card kpi">
           <div className="ic ic-blue">📦</div>
-          <div className="v">{overview ? '—' : '…'}{libs?.total ?? '—'}</div>
+          <div className="v">{libs?.total ?? '…'}</div>
           <div className="l">三方库接入</div>
-          <div className="d" style={{ color: 'var(--green)' }}>▲ 用例库覆盖率 96.2%</div>
+          <div className="d" style={{ color: 'var(--green)' }}>▲ 用例库覆盖率 {coverage}%</div>
         </div>
         <div className="card kpi">
           <div className="ic ic-green">🧪</div>
@@ -47,9 +56,9 @@ export default function HomePage() {
         </div>
         <div className="card kpi">
           <div className="ic ic-amber">⚡</div>
-          <div className="v">{overview ? (overview.total / 400).toFixed(0) : '…'}</div>
-          <div className="l">平均每库用例数（≥100 基线）</div>
-          <div className="d" style={{ color: 'var(--amber)' }}>◐ 执行中 3 个计划</div>
+          <div className="v">{avgPerLib}</div>
+          <div className="l">平均每库用例数（按 {totalLibs} 个库）</div>
+          <div className="d" style={{ color: 'var(--amber)' }}>◐ 执行中 {runningPlans} 个计划</div>
         </div>
         <div className="card kpi">
           <div className="ic ic-red">✅</div>
