@@ -1,12 +1,15 @@
 // 真实设备执行引擎（hdc / UI 自动化）：
 //  - 设备识别：hdc list targets + shell param get（型号 / 系统版本）
-//  - 用例步骤执行：uiautomator dump 定位控件 → input tap / swipe / text + aa start + keyevent
+//  - 用例步骤执行：UI 层级定位（HarmonyOS uitest dumpLayout JSON / Android·OpenHarmony uiautomator XML）
+//    → 触摸输入（HarmonyOS uinput / Android input）+ aa start + keyevent
 //  - 环境无 hdc 或未连接设备时由调用方回退模拟执行
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { getSetting } from './settings.js';
 const execFileAsync = promisify(execFile);
 const HDC = process.env.AUTOTEST_HDC || 'hdc';
+const DUMP_PATH = '/data/local/tmp/autotest_ui.xml';
+let dumpMode = null;
 async function runHdc(args, timeoutMs = 15000) {
     try {
         const { stdout, stderr } = await execFileAsync(HDC, args, {
@@ -66,16 +69,67 @@ function appAbility(keyword) {
         return '';
     }
 }
+async function detectDumpMode(serial) {
+    if (dumpMode)
+        return dumpMode;
+    try {
+        await runHdc(['-t', serial, 'shell', 'uitest', 'dumpLayout', '-p', DUMP_PATH], 20000);
+        dumpMode = 'harmony';
+    }
+    catch {
+        dumpMode = 'android';
+    }
+    return dumpMode;
+}
 async function uiDump(serial) {
-    await runHdc(['-t', serial, 'shell', 'uiautomator', 'dump', '/data/local/tmp/autotest_ui.xml'], 20000);
-    const { stdout } = await runHdc(['-t', serial, 'shell', 'cat', '/data/local/tmp/autotest_ui.xml'], 20000);
+    const mode = await detectDumpMode(serial);
+    if (mode === 'harmony') {
+        await runHdc(['-t', serial, 'shell', 'uitest', 'dumpLayout', '-p', DUMP_PATH], 20000);
+    }
+    else {
+        await runHdc(['-t', serial, 'shell', 'uiautomator', 'dump', DUMP_PATH], 20000);
+    }
+    const { stdout } = await runHdc(['-t', serial, 'shell', 'cat', DUMP_PATH], 20000);
     return stdout;
 }
-function parseNodes(xml) {
+function parseNodes(dump) {
     const nodes = [];
+    const text = dump.trim();
+    // HarmonyOS：uitest dumpLayout 输出 JSON 树
+    if (text.startsWith('{')) {
+        const walk = (node) => {
+            if (!node || typeof node !== 'object')
+                return;
+            const n = node;
+            const a = n.attributes ?? {};
+            const label = String(a.text ?? '');
+            const desc = String(a.description ?? '');
+            if (label || desc) {
+                const m = /\[(\d+),(\d+)\]\[(\d+),(\d+)\]/.exec(String(a.bounds ?? ''));
+                if (m) {
+                    nodes.push({
+                        text: label,
+                        desc,
+                        x: Math.round((Number(m[1]) + Number(m[3])) / 2),
+                        y: Math.round((Number(m[2]) + Number(m[4])) / 2),
+                    });
+                }
+            }
+            for (const child of n.children ?? [])
+                walk(child);
+        };
+        try {
+            walk(JSON.parse(text));
+            return nodes;
+        }
+        catch {
+            return [];
+        }
+    }
+    // Android / OpenHarmony：uiautomator XML
     const re = /<node[^>]*?text="([^"]*)"[^>]*?content-desc="([^"]*)"[^>]*?bounds="\[(\d+),(\d+)\]\[(\d+),(\d+)\]"/g;
     let m;
-    while ((m = re.exec(xml))) {
+    while ((m = re.exec(text))) {
         const [, text, desc, x1, y1, x2, y2] = m;
         if (!text && !desc)
             continue;
@@ -93,12 +147,47 @@ function findKeyword(nodes, keyword) {
     return nodes.find((n) => n.text.toLowerCase().includes(k) || n.desc.toLowerCase().includes(k));
 }
 function screenSize(xml) {
-    const m = xml.match(/bounds="\[(\d+),(\d+)\]\[(\d+),(\d+)\]"/);
+    const m = xml.match(/bounds["=:]*\s*\[(\d+),(\d+)\]\[(\d+),(\d+)\]/);
     if (!m)
         return { w: 720, h: 1280 };
     const w = Number(m[3]);
     const h = Number(m[4]);
     return w > 0 && h > 0 ? { w, h } : { w: 720, h: 1280 };
+}
+async function tap(serial, x, y) {
+    const mode = await detectDumpMode(serial);
+    return mode === 'harmony'
+        ? execShell(serial, ['uinput', '-T', '-c', String(x), String(y)])
+        : execShell(serial, ['input', 'tap', String(x), String(y)]);
+}
+async function swipe(serial, x1, y1, x2, y2, ms) {
+    const mode = await detectDumpMode(serial);
+    return mode === 'harmony'
+        ? execShell(serial, ['uinput', '-T', '-m', String(x1), String(y1), String(x2), String(y2), String(ms)])
+        : execShell(serial, ['input', 'swipe', String(x1), String(y1), String(x2), String(y2), String(ms)]);
+}
+async function inputText(serial, text) {
+    const mode = await detectDumpMode(serial);
+    return mode === 'harmony'
+        ? execShell(serial, ['uinput', '-K', '-t', text])
+        : execShell(serial, ['input', 'text', text.replace(/\s+/g, '%s')]);
+}
+async function longPress(serial, x, y) {
+    const mode = await detectDumpMode(serial);
+    if (mode === 'harmony') {
+        await execShell(serial, ['uinput', '-T', '-d', String(x), String(y)]);
+        await sleep(900);
+        return execShell(serial, ['uinput', '-T', '-u', String(x), String(y)]);
+    }
+    return execShell(serial, ['input', 'swipe', String(x), String(y), String(x), String(y), '900']);
+}
+async function keyBack(serial) {
+    const mode = await detectDumpMode(serial);
+    if (mode === 'harmony') {
+        await execShell(serial, ['uinput', '-K', '-d', '4']);
+        return execShell(serial, ['uinput', '-K', '-u', '4']);
+    }
+    return execShell(serial, ['input', 'keyevent', '4']);
 }
 function pickKeyword(desc) {
     return desc
@@ -135,14 +224,14 @@ async function runStep(serial, desc) {
             return pass('等待 3s（通用等待）');
         }
         if (/^(返回|退出|回退)/.test(d)) {
-            const out = await execShell(serial, ['input', 'keyevent', '4']);
+            const out = await keyBack(serial);
             return pass(`keyevent BACK：${out}`);
         }
         if (/^(输入|键入|填写)/.test(d)) {
             const text = d.replace(/^(输入|键入|填写)[:：\s]*/, '').replace(/[「」“”"'，,。.]/g, ' ').trim();
             if (!text)
                 return fail(`无法解析输入内容：${d}`);
-            const out = await execShell(serial, ['input', 'text', text.replace(/\s+/g, '%s')]);
+            const out = await inputText(serial, text);
             return pass(`input text「${text}」：${out}`);
         }
         if (/滑/.test(d)) {
@@ -152,18 +241,19 @@ async function runStep(serial, desc) {
             const cy = Math.round(h / 2);
             const dy = Math.round(h * 0.6);
             const dx = Math.round(w * 0.5);
-            let args = null;
+            let tx = cx;
+            let ty = cy;
             if (/向上|上滑|上拉/.test(d))
-                args = ['input', 'swipe', String(cx), String(cy), String(cx), String(cy - dy), '400'];
-            if (/向下|下滑|下拉/.test(d))
-                args = ['input', 'swipe', String(cx), String(cy), String(cx), String(cy + dy), '400'];
-            if (/向左|左滑/.test(d))
-                args = ['input', 'swipe', String(cx), String(cy), String(cx - dx), String(cy), '400'];
-            if (/向右|右滑/.test(d))
-                args = ['input', 'swipe', String(cx), String(cy), String(cx + dx), String(cy), '400'];
-            if (!args)
+                ty = Math.max(0, cy - dy);
+            else if (/向下|下滑|下拉/.test(d))
+                ty = Math.min(h, cy + dy);
+            else if (/向左|左滑/.test(d))
+                tx = Math.max(0, cx - dx);
+            else if (/向右|右滑/.test(d))
+                tx = Math.min(w, cx + dx);
+            else
                 return fail(`无法解析滑动方向：${d}`);
-            const out = await execShell(serial, args);
+            const out = await swipe(serial, cx, cy, tx, ty, 400);
             return pass(`swipe（${w}x${h} 屏幕）：${out}`);
         }
         if (/长按/.test(d)) {
@@ -172,7 +262,7 @@ async function runStep(serial, desc) {
             const node = findKeyword(parseNodes(xml), kw);
             if (!node)
                 return fail(`界面未找到「${kw}」`);
-            await execShell(serial, ['input', 'swipe', String(node.x), String(node.y), String(node.x), String(node.y), '900']);
+            await longPress(serial, node.x, node.y);
             return pass(`长按「${kw}」@(${node.x},${node.y})`);
         }
         if (/^(验证|检查|断言|校验)/.test(d)) {
@@ -186,7 +276,7 @@ async function runStep(serial, desc) {
             const xml = await uiDump(serial);
             const node = findKeyword(parseNodes(xml), kw);
             if (node) {
-                await execShell(serial, ['input', 'tap', String(node.x), String(node.y)]);
+                await tap(serial, node.x, node.y);
                 return pass(`已点击「${kw}」@(${node.x},${node.y})`);
             }
             if (/^(打开|启动)/.test(d)) {
@@ -210,7 +300,7 @@ async function runStep(serial, desc) {
         const node = findKeyword(parseNodes(xml), kw);
         if (!node)
             return fail(`无法识别的步骤，且界面未找到「${kw}」：${d}`);
-        await execShell(serial, ['input', 'tap', String(node.x), String(node.y)]);
+        await tap(serial, node.x, node.y);
         return pass(`已执行「${kw}」@(${node.x},${node.y})`);
     }
     catch (e) {

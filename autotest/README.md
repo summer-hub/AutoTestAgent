@@ -75,7 +75,7 @@ curl -X POST http://localhost:3080/api/autotest/devices/scan   # 2. 设备页「
 3. 设备页确认设备显示「在线」（型号/系统版本来自 `hdc shell param get`）
 4. 系统配置 → 设备与执行：`device.appAbilities` 配置「打开应用」的 app→ability 映射，如 `{"时钟":"com.huawei.hmos.smartclock/.MainAbility"}`
 5. 执行计划选该设备创建「立即执行」，观察 executions 轨迹：
-   - 点击/输入/滑动/等待/验证类步骤应真实执行（uiautomator dump 定位控件 + input 命令）
+   - 点击/输入/滑动/等待/验证类步骤应真实执行（HarmonyOS：`uitest dumpLayout` 定位 + `uinput` 输入；Android/OpenHarmony：`uiautomator` + `input`，自动探测）
    - 打开应用类步骤走 `aa start -a <ability>`
 6. 失败步骤应如实标记 failed 并在日志中给出原因（控件未找到 / 断言失败 / 命令异常）
 
@@ -84,20 +84,20 @@ curl -X POST http://localhost:3080/api/autotest/devices/scan   # 2. 设备页「
 ### 方式二：GitHub Release 单文件安装（适合"只装不开发"的环境）
 
 ```bash
-cd autotest/dsh-autotest && npm pack      # 产出 dsh-autotest-0.1.9.tgz
+cd autotest/dsh-autotest && npm pack      # 产出 dsh-autotest-0.1.10.tgz
 ```
 
 把 tarball 传到 GitHub Release，profile 直接写 URL（和你现在 `dsh-at-file` 的装法一样）：
 
 ```jsonc
 // ~/.dsh/profiles/<name>/package.json
-"dsh-autotest": "https://github.com/summer-hub/AutoTestAgent/releases/download/v0.1.9/dsh-autotest-0.1.9.tgz"
+"dsh-autotest": "https://github.com/summer-hub/AutoTestAgent/releases/download/v0.1.10/dsh-autotest-0.1.10.tgz"
 ```
 
 仓库已配好 GitHub Actions（打 `v*` tag 自动构建并发布 Release + tarball）：
 
 ```bash
-git tag v0.1.9 && git push origin v0.1.9
+git tag v0.1.10 && git push origin v0.1.10
 ```
 
 ## 目录结构
