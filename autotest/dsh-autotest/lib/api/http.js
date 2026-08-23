@@ -615,6 +615,25 @@ function defineRoutes(llm) {
         const content = buf.subarray(0, 256 * 1024).toString('utf8');
         return { name: rel, content, truncated, binary: buf.includes(0) };
     });
+    // 删除脚本文件（仅允许 scripts 目录下的 .ts，带路径穿越防护）
+    route('DELETE', '/repos/:libraryId/file', async ({ params, query }) => {
+        const db = getDb();
+        const lib = db.prepare('SELECT id, name FROM libraries WHERE id = ?').get(Number(params.libraryId));
+        if (!lib)
+            throw Object.assign(new Error('三方库不存在'), { statusCode: 404 });
+        const kind = query.get('root') === 'scripts' ? 'scripts' : 'repos';
+        const root = kind === 'scripts' ? scriptsDirFor(lib.name) : repoDirFor(lib.name);
+        const rel = (query.get('path') ?? '').replace(/^\/+/, '');
+        if (!rel || !rel.endsWith('.ts'))
+            throw Object.assign(new Error('仅支持删除 .ts 脚本文件'), { statusCode: 400 });
+        const file = path.resolve(root, rel);
+        if (file !== root && !file.startsWith(root + path.sep))
+            throw Object.assign(new Error('非法路径'), { statusCode: 400 });
+        if (!fs.existsSync(file) || !fs.statSync(file).isFile())
+            throw Object.assign(new Error('文件不存在'), { statusCode: 404 });
+        fs.unlinkSync(file);
+        return { ok: true, deleted: rel };
+    });
     // ---- plans ----
     route('GET', '/plans', async () => {
         const db = getDb();

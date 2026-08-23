@@ -92,6 +92,8 @@ export const api = {
     req<{ path: string; entries: RepoFileEntry[] }>(`${API_BASE}/repos/${id}/files?path=${encodeURIComponent(rel)}&root=${root}`),
   repoFile: (id: number, rel: string, root: 'repos' | 'scripts' = 'repos') =>
     req<RepoFile>(`${API_BASE}/repos/${id}/file?path=${encodeURIComponent(rel)}&root=${root}`),
+  deleteScriptFile: (id: number, name: string) =>
+    req<{ ok: boolean }>(`${API_BASE}/repos/${id}/file?path=${encodeURIComponent(name)}&root=scripts`, { method: 'DELETE' }),
 
   // Prompt 模板
   prompts: () => req<Prompt[]>(`${API_BASE}/prompts`),

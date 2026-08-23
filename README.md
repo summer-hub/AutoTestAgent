@@ -56,7 +56,7 @@ dsh plugin --profile web install
 
 ```powershell
 # 1. 声明依赖：编辑 ~/.dsh/profiles/web/package.json 的 dependencies 加：
-#    "dsh-autotest": "https://github.com/summer-hub/AutoTestAgent/releases/download/v0.1.18/dsh-autotest-0.1.18.tgz"
+#    "dsh-autotest": "https://github.com/summer-hub/AutoTestAgent/releases/download/v0.1.19/dsh-autotest-0.1.19.tgz"
 #    然后必须执行安装（光写不装等于没写）：
 cd $env:USERPROFILE\.dsh\profiles\web
 pnpm install
@@ -81,7 +81,7 @@ Invoke-RestMethod http://localhost:3080/api/autotest/health
 - `health` 通了但侧边栏看不到 → GUI 缓存问题：强制刷新 / 清浏览器缓存，让 DSH Web 重新加载 client 插件。
 - 之前装过旧 tarball → pnpm 会缓存旧包，需 `pnpm update dsh-autotest` 或删掉 `node_modules/dsh-autotest` 重装（旧包缺 `cordis.patch.yml`，装了也起不来）。
 
-也可以把 tgz 下载到本地后用 `"dsh-autotest": "file:./dsh-autotest-0.1.18.tgz"` 或 `pnpm add ./dsh-autotest-0.1.18.tgz`，离线环境更稳；第 2~5 步不变。
+也可以把 tgz 下载到本地后用 `"dsh-autotest": "file:./dsh-autotest-0.1.19.tgz"` 或 `pnpm add ./dsh-autotest-0.1.19.tgz`，离线环境更稳；第 2~5 步不变。
 
 安装成功后：
 
@@ -123,5 +123,5 @@ git tag v0.2.0 && git push origin v0.2.0   # GitHub Actions 自动构建 Release
 
 ```jsonc
 // ~/.dsh/profiles/web/package.json
-"dsh-autotest": "https://github.com/summer-hub/AutoTestAgent/releases/download/v0.1.18/dsh-autotest-0.1.18.tgz"
+"dsh-autotest": "https://github.com/summer-hub/AutoTestAgent/releases/download/v0.1.19/dsh-autotest-0.1.19.tgz"
 ```

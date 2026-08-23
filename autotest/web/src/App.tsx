@@ -9,9 +9,10 @@ import DebugPage from './pages/Debug';
 import DevicesPage from './pages/Devices';
 import PromptsPage from './pages/Prompts';
 import SettingsPage from './pages/Settings';
+import ScriptsPage from './pages/Scripts';
 import SettingsModal from './components/SettingsModal';
 
-export type PageKey = 'home' | 'tasks' | 'cases' | 'plans' | 'analysis' | 'attribution' | 'debug' | 'devices' | 'prompts' | 'settings';
+export type PageKey = 'home' | 'tasks' | 'cases' | 'scripts' | 'plans' | 'analysis' | 'attribution' | 'debug' | 'devices' | 'prompts' | 'settings';
 
 const NAV: Array<{ group: string; items: Array<{ key: PageKey; icon: string; label: string; badge?: string }> }> = [
   {
@@ -23,7 +24,10 @@ const NAV: Array<{ group: string; items: Array<{ key: PageKey; icon: string; lab
   },
   {
     group: '测试资产',
-    items: [{ key: 'cases', icon: '🧪', label: '测试用例', badge: '400' }],
+    items: [
+      { key: 'cases', icon: '🧪', label: '测试用例' },
+      { key: 'scripts', icon: '🤖', label: '自动化脚本' },
+    ],
   },
   {
     group: '智能分析',
@@ -45,7 +49,7 @@ const NAV: Array<{ group: string; items: Array<{ key: PageKey; icon: string; lab
 ];
 
 const TITLES: Record<PageKey, string> = {
-  home: '首页', tasks: '任务管理', cases: '测试用例', plans: '执行计划', analysis: '数据分析',
+  home: '首页', tasks: '任务管理', cases: '测试用例', scripts: '自动化脚本', plans: '执行计划', analysis: '数据分析',
   attribution: '归因分析', debug: '调试会话', devices: '设备管理', prompts: 'Prompt 管理', settings: '系统配置',
 };
 
@@ -86,6 +90,7 @@ export default function App() {
       {page === 'home' && <HomePage />}
       {page === 'tasks' && <TasksPage />}
       {page === 'cases' && <CasesPage />}
+      {page === 'scripts' && <ScriptsPage />}
       {page === 'plans' && <PlansPage />}
       {page === 'analysis' && <AnalysisPage />}
       {page === 'attribution' && <AttributionPage />}
