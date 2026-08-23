@@ -19,6 +19,8 @@ export interface RepoLib {
 export declare function workspaceDir(): string;
 /** 仓库本地目录（工作区 repos/<name>）。 */
 export declare function repoDirFor(name: string): string;
+/** 自动化脚本落盘目录（工作区 scripts/<name>）。 */
+export declare function scriptsDirFor(name: string): string;
 /** 按仓库地址解析三方库：已存在（repo_url 匹配）则复用，否则自动创建。 */
 export declare function ensureLibraryByRepoUrl(url: string): RepoLib;
 /** 拉取仓库：目录不存在则 clone，否则 pull；返回提交、分支、变更文件与版本。 */

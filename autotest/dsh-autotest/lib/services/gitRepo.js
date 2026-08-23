@@ -32,6 +32,10 @@ function repoName(name) {
 export function repoDirFor(name) {
     return path.join(workspaceDir(), 'repos', repoName(name));
 }
+/** 自动化脚本落盘目录（工作区 scripts/<name>）。 */
+export function scriptsDirFor(name) {
+    return path.join(workspaceDir(), 'scripts', repoName(name));
+}
 function hashCode(s) {
     let h = 0;
     for (let i = 0; i < s.length; i++)

@@ -21,6 +21,7 @@ const SECTIONS: Array<{ title: string; desc: string; fields: Array<{ key: string
   },
   {
     title: '执行计划', desc: '各类计划的抽样规模（演示上限）', fields: [
+      { key: 'exec.scriptMode', label: '脚本执行模式', type: 'text', hint: 'script（绑定脚本优先）/ step（始终用例步骤）' },
       { key: 'exec.planSampleFull', label: '全量计划抽样', type: 'number' },
       { key: 'exec.planSampleBatch', label: '批量计划抽样', type: 'number' },
       { key: 'exec.planSampleSingle', label: '单独计划抽样', type: 'number' },

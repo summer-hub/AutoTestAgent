@@ -15,14 +15,17 @@ export default function CasesPage() {
   const [error, setError] = useState('');
   const [importMsg, setImportMsg] = useState('');
   const fileRef = useRef<HTMLInputElement>(null);
+  const [casePage, setCasePage] = useState(1);
 
   // 版本抽屉
   const [drawer, setDrawer] = useState<{ case: TestCase; versions: CaseVersion[] } | null>(null);
   const [drawerLoading, setDrawerLoading] = useState(false);
+  const [compare, setCompare] = useState<{ from: number; to: number } | null>(null);
 
-  const loadCases = useCallback((libraryId: number) => {
-    api.cases(libraryId, { pageSize: 50, source: source || undefined, q: caseQ || undefined })
-      .then(setCases).catch((e) => setError(String(e.message)));
+  const loadCases = useCallback((libraryId: number, page: number) => {
+    api.cases(libraryId, { page, pageSize: 50, source: source || undefined, q: caseQ || undefined })
+      .then((r) => { setCases(r); setCasePage(r.page); })
+      .catch((e) => setError(String(e.message)));
   }, [source, caseQ]);
 
   useEffect(() => {
@@ -31,19 +34,20 @@ export default function CasesPage() {
         setLibs(r);
         if (r.items.length > 0 && curLib === null) {
           setCurLib(r.items[0].id);
-          api.cases(r.items[0].id, { pageSize: 50 }).then(setCases).catch((e) => setError(String(e.message)));
+          api.cases(r.items[0].id, { page: 1, pageSize: 50 }).then(setCases).catch((e) => setError(String(e.message)));
         }
       })
       .catch((e) => setError(String(e.message)));
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
   useEffect(() => {
-    if (curLib !== null) loadCases(curLib);
-  }, [curLib, loadCases]);
+    if (curLib !== null) loadCases(curLib, casePage);
+  }, [curLib, casePage, loadCases]);
 
   const openDrawer = (c: TestCase) => {
     setDrawerLoading(true);
     setDrawer({ case: c, versions: [] });
+    setCompare(null);
     api.caseVersions(c.id)
       .then((vs) => setDrawer({ case: c, versions: vs }))
       .catch((e) => setError(String(e.message)))
@@ -139,7 +143,7 @@ export default function CasesPage() {
                 key={l.id}
                 className={`nav-item ${curLib === l.id ? 'active' : ''}`}
                 style={{ margin: 0, borderRadius: 7 }}
-                onClick={() => setCurLib(l.id)}
+                onClick={() => { setCasePage(1); setCurLib(l.id); }}
               >
                 <span className="ico">📦</span>
                 {l.name}
@@ -206,9 +210,28 @@ export default function CasesPage() {
             )}
           </div>
           {cases && (
-            <div style={{ padding: '10px 14px', fontSize: 11.5, color: 'var(--text3)' }}>
-              共 {cases.total} 条 · 第 {cases.page} 页 / 每页 {cases.pageSize} 条（分页组件下一迭代补齐）
-            </div>
+            (() => {
+              const totalPages = Math.max(1, Math.ceil(cases.total / cases.pageSize));
+              const win = 5;
+              let from = Math.max(1, (cases.page ?? 1) - Math.floor(win / 2));
+              let to = Math.min(totalPages, from + win - 1);
+              from = Math.max(1, to - win + 1);
+              const pages = Array.from({ length: to - from + 1 }, (_, i) => from + i);
+              const go = (p: number) => { if (curLib !== null && p >= 1 && p <= totalPages) loadCases(curLib, p); };
+              return (
+                <div style={{ padding: '10px 14px', display: 'flex', alignItems: 'center', gap: 6, fontSize: 11.5, color: 'var(--text3)', flexWrap: 'wrap' }}>
+                  <span>共 {cases.total} 条 · 第 {cases.page} / {totalPages} 页</span>
+                  <div style={{ flex: 1 }} />
+                  <button className="btn sm" disabled={cases.page <= 1} onClick={() => go(1)}>« 首页</button>
+                  <button className="btn sm" disabled={cases.page <= 1} onClick={() => go(cases.page - 1)}>‹ 上一页</button>
+                  {pages.map((p) => (
+                    <button key={p} className={`btn sm ${p === cases.page ? 'primary' : ''}`} onClick={() => go(p)}>{p}</button>
+                  ))}
+                  <button className="btn sm" disabled={cases.page >= totalPages} onClick={() => go(cases.page + 1)}>下一页 ›</button>
+                  <button className="btn sm" disabled={cases.page >= totalPages} onClick={() => go(totalPages)}>末页 »</button>
+                </div>
+              );
+            })()
           )}
         </div>
       </div>
@@ -237,25 +260,80 @@ export default function CasesPage() {
             )}
             {drawerLoading && <div className="loading">加载版本历史…</div>}
             {drawer && !drawerLoading && (
-              <div className="ver-timeline">
-                {drawer.versions.map((v) => (
-                  <div key={v.version} className="ver-item">
-                    <span className={`ver-dot ${v.version === drawer.case.currentVersion ? 'current' : ''}`} />
-                    <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-                      <span className="mono" style={{ fontWeight: 600, fontSize: 13 }}>V{v.version}</span>
-                      {v.version === drawer.case.currentVersion
-                        ? <span className="tag green">当前版本</span>
-                        : <span className="tag gray">历史版本</span>}
+              <>
+                {compare && drawer.versions.length > 0 && (() => {
+                  const a = drawer.versions.find((v) => v.version === compare.from);
+                  const b = drawer.versions.find((v) => v.version === compare.to);
+                  const rows: Array<{ field: string; old: string; neu: string }> = [];
+                  if (a && b) {
+                    const sa = a.snapshot;
+                    const sb = b.snapshot;
+                    const fields: Array<[keyof typeof sa, string]> = [
+                      ['name', '用例名称'], ['source', '来源'], ['precondition', '前置条件'],
+                      ['steps', '操作步骤'], ['expected', '预期结果'], ['status', '状态'], ['scriptStatus', '脚本状态'],
+                    ];
+                    for (const [k, label] of fields) {
+                      const va = sa[k]; const vb = sb[k];
+                      if (JSON.stringify(va) !== JSON.stringify(vb)) {
+                        rows.push({ field: label, old: Array.isArray(va) ? (va as string[]).join('\n') : String(va ?? '—'), neu: Array.isArray(vb) ? (vb as string[]).join('\n') : String(vb ?? '—') });
+                      }
+                  }
+                  return (
+                    <div className="card" style={{ marginBottom: 16 }}>
+                      <div className="card-h">
+                        <span className="t">版本对比</span>
+                        <span className="sub">V{compare.from} → V{compare.to} 变更字段</span>
+                        <div style={{ marginLeft: 'auto', display: 'flex', gap: 6, alignItems: 'center' }}>
+                          <select className="select" value={compare.from} onChange={(e) => setCompare({ ...compare, from: Number(e.target.value) })}>
+                            {drawer.versions.map((v) => <option key={v.version} value={v.version}>V{v.version}</option>)}
+                          </select>
+                          <span className="muted">→</span>
+                          <select className="select" value={compare.to} onChange={(e) => setCompare({ ...compare, to: Number(e.target.value) })}>
+                            {drawer.versions.map((v) => <option key={v.version} value={v.version}>V{v.version}</option>)}
+                          </select>
+                          <button className="btn sm" onClick={() => setCompare(null)}>返回时间线</button>
+                        </div>
+                      </div>
+                      {rows.length === 0 ? (
+                        <div className="muted" style={{ fontSize: 12.5, padding: '6px 2px' }}>两个版本内容一致，无差异字段。</div>
+                      ) : (
+                        <table>
+                          <thead><tr><th>字段</th><th style={{ width: '42%' }}>V{compare.from}</th><th style={{ width: '42%' }}>V{compare.to}</th></tr></thead>
+                          <tbody>
+                            {rows.map((r) => (
+                              <tr key={r.field}>
+                                <td className="muted" style={{ whiteSpace: 'nowrap' }}>{r.field}</td>
+                                <td style={{ whiteSpace: 'pre-wrap', lineHeight: 1.6 }}>{r.old}</td>
+                                <td style={{ whiteSpace: 'pre-wrap', lineHeight: 1.6, color: 'var(--accent2)' }}>{r.neu}</td>
+                              </tr>
+                            ))}
+                          </tbody>
+                        </table>
+                      )}
                     </div>
-                    <div className="vd">{v.createdAt} · {v.author} · {v.authorType === 'ai' ? 'AI' : '人工'}</div>
-                    <div className="vc">{v.changeNote || '（无更新说明）'}</div>
-                    <div className="va">
-                      <button className="btn sm" onClick={() => rollback(v.version)}>↩ 回滚到此版本</button>
-                      {v.version > 1 && <button className="btn sm" onClick={() => window.alert('版本对比：下一迭代实现')}>对比</button>}
+                  );
+                }
+                })()}
+                <div className="ver-timeline">
+                  {drawer.versions.map((v) => (
+                    <div key={v.version} className="ver-item">
+                      <span className={`ver-dot ${v.version === drawer.case.currentVersion ? 'current' : ''}`} />
+                      <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                        <span className="mono" style={{ fontWeight: 600, fontSize: 13 }}>V{v.version}</span>
+                        {v.version === drawer.case.currentVersion
+                          ? <span className="tag green">当前版本</span>
+                          : <span className="tag gray">历史版本</span>}
+                      </div>
+                      <div className="vd">{v.createdAt} · {v.author} · {v.authorType === 'ai' ? 'AI' : '人工'}</div>
+                      <div className="vc">{v.changeNote || '（无更新说明）'}</div>
+                      <div className="va">
+                        <button className="btn sm" onClick={() => rollback(v.version)}>↩ 回滚到此版本</button>
+                        <button className="btn sm" onClick={() => setCompare({ from: v.version, to: drawer.case.currentVersion })}>对比</button>
+                      </div>
                     </div>
-                  </div>
-                ))}
-              </div>
+                  ))}
+                </div>
+              </>
             )}
           </div>
         </div>

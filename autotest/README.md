@@ -68,20 +68,20 @@ dsh plugin --profile web install
 ### 方式二：GitHub Release 单文件安装（适合"只装不开发"的环境）
 
 ```bash
-cd autotest/dsh-autotest && npm pack      # 产出 dsh-autotest-0.1.7.tgz
+cd autotest/dsh-autotest && npm pack      # 产出 dsh-autotest-0.1.8.tgz
 ```
 
 把 tarball 传到 GitHub Release，profile 直接写 URL（和你现在 `dsh-at-file` 的装法一样）：
 
 ```jsonc
 // ~/.dsh/profiles/<name>/package.json
-"dsh-autotest": "https://github.com/summer-hub/AutoTestAgent/releases/download/v0.1.7/dsh-autotest-0.1.7.tgz"
+"dsh-autotest": "https://github.com/summer-hub/AutoTestAgent/releases/download/v0.1.8/dsh-autotest-0.1.8.tgz"
 ```
 
 仓库已配好 GitHub Actions（打 `v*` tag 自动构建并发布 Release + tarball）：
 
 ```bash
-git tag v0.1.7 && git push origin v0.1.7
+git tag v0.1.8 && git push origin v0.1.8
 ```
 
 ## 目录结构
@@ -137,7 +137,8 @@ Redis 缓存、连接池、分表为 M7 高并发里程碑（当前 SQLite 起�
 - ✅ **M6a** Excel 导入导出（插件 API：/cases/export 导出 xlsx / /cases/import 解析入库 + Cases 页按钮）
 - ✅ **M6b** 数据分析 + 归因分析（GitCode PR 拉取 + AI 分析，真实功能；示例库 lottie_turbo）
 - ✅ **M7** 缓存（LRU + Redis 可选）/ 读连接池 / 分表路由 / 压测脚本（冷 1754 QPS → 热 3077 QPS）
-- ✅ **M8** 真实执行链路：hdc 真机识别与 UI 自动化执行（uiautomator/input，无设备自动回退模拟）+ 真实 git 拉取/更新（clone/pull + 变更解析）+ to_script 脚本落盘
+- ✅ **M8** 真实执行链路：hdc 真机识别与 UI 自动化执行（uiautomator/input，无设备自动回退模拟）+ 真实 git 拉取/更新（clone/pull + 变更解析）+ to_script 脚本落盘与目录浏览
+- ✅ **M9** 脚本执行链路（绑定脚本解析动作步骤执行）+ 失败策略（continue / retry_twice / abort_library）+ 用例版本对比 / 分页组件
 
 ## 核心业务语义
 
@@ -145,7 +146,8 @@ Redis 缓存、连接池、分表为 M7 高并发里程碑（当前 SQLite 起�
 - **来源分类**：新需求引入 / 老库存量 / 问题单跟踪 / AI 生成（种子按 35/30/20/15 分布）。
 - **大模型可自定义**：设置 → 模型 支持添加任意 OpenAI 兼容端点（DeepSeek/OpenAI/Ollama/自定义），连通性测试真实调用；任务执行自动走默认模型（未配 Key 时失败并提示，配置后一键重试）。
 - **执行计划**：五种类型（立即/定时/单独/批量/全量），定时用 node-cron 注册；执行引擎生成 executions（逐步轨迹 + AI 思考），失败用例可进入调试会话查看与追问；执行模式 `device.execEngine`：`hdc`（默认，真机 uiautomator/input 实测，无设备自动回退模拟）或 `simulate`；全量执行按抽样限制规模。
-- **仓库同步**：`pull_repo` / `update_repo` 走真实 git CLI（工作区 `app.workspace/repos/<lib>`，记录 `last_commit` 做变更文件解析，版本取 `git describe --tags`）；`to_script` 生成的脚本落盘到 `app.workspace/scripts/<lib>/<caseNo>.ts`。
+- **仓库同步**：`pull_repo` / `update_repo` 走真实 git CLI（工作区 `app.workspace/repos/<lib>`，记录 `last_commit` 做变更文件解析，版本取 `git describe --tags`）；`to_script` 生成的脚本落盘到 `app.workspace/scripts/<lib>/<caseNo>.ts`，UI 可浏览/预览。
+- **脚本执行与失败策略**：`exec.scriptMode=script`（默认）时，绑定脚本的用例按脚本解析出的动作步骤执行；计划失败策略 `fail_policy`：`continue`（默认）/ `retry_twice`（失败自动重试 2 次）/ `abort_library`（整库失败中止，后续用例跳过）。
 - **Excel 导入导出**：Cases 页「⬇ 导出 Excel / ⬆ 导入 Excel」；导出生成 xlsx（用例编号/名称/来源/前置/步骤/预期/状态/版本），导入解析后批量入库并生成 V1 版本快照（支持中文表头与英文键、步骤换行/JSON/分号分隔）。
 - **数据分析**：Analysis 页「拉取并分析 PR / 用例更新分析」——从 GitCode API 拉取仓库真实 PR（含变更文件），AI 产出更新点/影响范围/建议用例更新/风险，写入 analyses 表；示例库 `lottie_turbo`（CPF-ApplicationTPC/lottie_turbo）已内置真实仓库地址，可直接体验。
 - **归因分析**：Attribution 页三粒度（单用例/单库/多库）——基于失败执行记录与 AI 思考过程，AI 产出结论/根因/证据/建议。

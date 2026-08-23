@@ -6,9 +6,12 @@ interface RepoBrowserProps {
   mode: 'input' | 'browse';
   taskType?: 'pull_repo' | 'update_repo';
   targetLibId?: number;
+  initialTab?: 'repos' | 'scripts';
   onClose: () => void;
   onCreated: (info: { type: 'pull_repo' | 'update_repo'; url: string; title: string }) => Promise<void>;
 }
+
+type RepoListItem = { id: number; name: string; dir: string; exists: boolean; fileCount?: number; repoUrl?: string };
 
 function fmtSize(n: number): string {
   if (n >= 1024 * 1024) return (n / 1024 / 1024).toFixed(1) + ' MB';
@@ -17,23 +20,24 @@ function fmtSize(n: number): string {
 }
 
 /** 拉取仓库 URL 输入弹窗 + 仓库本地目录浏览器（服务器工作区 repos/） */
-export default function RepoBrowser({ mode, taskType, targetLibId, onClose, onCreated }: RepoBrowserProps) {
+export default function RepoBrowser({ mode, taskType, targetLibId, initialTab, onClose, onCreated }: RepoBrowserProps) {
   const [url, setUrl] = useState('');
   const [creating, setCreating] = useState(false);
   const [err, setErr] = useState('');
 
-  const [repos, setRepos] = useState<RepoInfo[] | null>(null);
-  const [cur, setCur] = useState<RepoInfo | null>(null);
+  const [tab, setTab] = useState<'repos' | 'scripts'>(initialTab ?? 'repos');
+  const [repos, setRepos] = useState<RepoListItem[] | null>(null);
+  const [cur, setCur] = useState<RepoListItem | null>(null);
   const [relPath, setRelPath] = useState('');
   const [entries, setEntries] = useState<RepoFileEntry[] | null>(null);
   const [file, setFile] = useState<RepoFile | null>(null);
   const [busy, setBusy] = useState(false);
   const [copied, setCopied] = useState(false);
 
-  const loadFiles = useCallback(async (repo: RepoInfo, rel: string) => {
+  const loadFiles = useCallback(async (repo: RepoListItem, rel: string) => {
     setBusy(true); setErr(''); setFile(null);
     try {
-      const r = await api.repoFiles(repo.id, rel);
+      const r = await api.repoFiles(repo.id, rel, tab);
       setRelPath(r.path);
       setEntries(r.entries);
     } catch (e) {
@@ -41,20 +45,21 @@ export default function RepoBrowser({ mode, taskType, targetLibId, onClose, onCr
       setEntries(null);
     }
     setBusy(false);
-  }, []);
+  }, [tab]);
 
   useEffect(() => {
     if (mode !== 'browse') return;
-    api.repos()
+    const fetchList = tab === 'scripts' ? api.scripts() : api.repos();
+    fetchList
       .then((rs) => {
-        setRepos(rs);
+        setRepos(rs as RepoListItem[]);
         if (targetLibId) {
-          const hit = rs.find((r) => r.id === targetLibId);
+          const hit = (rs as RepoListItem[]).find((r) => r.id === targetLibId);
           if (hit) { setCur(hit); void loadFiles(hit, ''); }
         }
       })
       .catch((e) => setErr((e as Error).message));
-  }, [mode, targetLibId, loadFiles]);
+  }, [mode, targetLibId, tab, loadFiles]);
 
   const openEntry = (e: RepoFileEntry) => {
     if (!cur) return;
@@ -63,11 +68,16 @@ export default function RepoBrowser({ mode, taskType, targetLibId, onClose, onCr
       void loadFiles(cur, rel);
     } else {
       setBusy(true); setErr(''); setFile(null);
-      api.repoFile(cur.id, rel)
+      api.repoFile(cur.id, rel, tab)
         .then(setFile)
         .catch((x) => setErr((x as Error).message))
         .finally(() => setBusy(false));
     }
+  };
+
+  const switchTab = (t: 'repos' | 'scripts') => {
+    setTab(t);
+    setCur(null); setRelPath(''); setEntries(null); setFile(null); setErr(''); setRepos(null);
   };
 
   const copyDir = async () => {
@@ -112,8 +122,14 @@ export default function RepoBrowser({ mode, taskType, targetLibId, onClose, onCr
             {mode === 'input' ? (taskType === 'update_repo' ? '🔄 更新仓库代码' : '📦 拉取仓库代码') : '📁 仓库本地目录'}
           </span>
           <span className="muted" style={{ fontSize: 12 }}>
-            {mode === 'input' ? '输入仓库地址，系统将 clone/pull 到服务器工作区' : '服务器工作区 repos/ 下的三方库代码'}
+            {mode === 'input' ? '输入仓库地址，系统将 clone/pull 到服务器工作区' : tab === 'scripts' ? '用例转自动化脚本的落盘目录（workspace/scripts/）' : '服务器工作区 repos/ 下的三方库代码'}
           </span>
+          {mode === 'browse' && (
+            <div style={{ display: 'flex', gap: 4, marginLeft: 10 }}>
+              <button className={`btn sm ${tab === 'repos' ? 'primary' : ''}`} onClick={() => switchTab('repos')}>📦 仓库代码</button>
+              <button className={`btn sm ${tab === 'scripts' ? 'primary' : ''}`} onClick={() => switchTab('scripts')}>🤖 自动化脚本</button>
+            </div>
+          )}
           <div style={{ flex: 1 }} />
           <button className="s-header x" onClick={onClose} style={{ width: 28, height: 28, borderRadius: 28, border: 'none', background: 'none', color: 'var(--text2)', cursor: 'pointer', fontSize: 14 }}>✕</button>
         </div>
@@ -142,7 +158,9 @@ export default function RepoBrowser({ mode, taskType, targetLibId, onClose, onCr
         ) : (
           <div style={{ flex: 1, minHeight: 0, display: 'flex' }}>
             <div style={{ width: 280, flex: 'none', borderRight: '1px solid var(--border)', overflowY: 'auto', padding: 10 }}>
-              <div className="muted" style={{ fontSize: 11, padding: '6px 8px' }}>已配置仓库地址的三方库（{repos?.length ?? '…'}）</div>
+              <div className="muted" style={{ fontSize: 11, padding: '6px 8px' }}>
+                {tab === 'scripts' ? '已生成脚本的三方库' : '已配置仓库地址的三方库'}（{repos?.length ?? '…'}）
+              </div>
               {repos?.map((r) => (
                 <div
                   key={r.id}
@@ -155,11 +173,15 @@ export default function RepoBrowser({ mode, taskType, targetLibId, onClose, onCr
                 >
                   <span>📦</span>
                   <span style={{ flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{r.name}</span>
-                  <span className={`tag ${r.exists ? 'green' : 'gray'}`} style={{ fontSize: 10 }}>{r.exists ? '已拉取' : '未拉取'}</span>
+                  <span className={`tag ${r.exists ? 'green' : 'gray'}`} style={{ fontSize: 10 }}>
+                    {tab === 'scripts' ? (r.exists ? `${r.fileCount ?? 0} 个脚本` : '无脚本') : (r.exists ? '已拉取' : '未拉取')}
+                  </span>
                 </div>
               ))}
               {repos && repos.length === 0 && (
-                <div className="muted" style={{ fontSize: 12, padding: 10 }}>暂无仓库，先在任务页「拉取仓库代码」输入地址拉取。</div>
+                <div className="muted" style={{ fontSize: 12, padding: 10 }}>
+                  {tab === 'scripts' ? '暂无脚本，先在任务页「用例转自动化脚本」生成。' : '暂无仓库，先在任务页「拉取仓库代码」输入地址拉取。'}
+                </div>
               )}
             </div>
             <div style={{ flex: 1, minWidth: 0, display: 'flex', flexDirection: 'column' }}>

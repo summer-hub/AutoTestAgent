@@ -17,6 +17,7 @@ export const SETTING_DEFAULTS = {
     'data.shardCount': 16,
     'device.execEngine': 'hdc',
     'device.appAbilities': '{}',
+    'exec.scriptMode': 'script',
 };
 /** 读取配置（未设置/解析失败回默认值）。 */
 export function getSetting(key, fallback) {

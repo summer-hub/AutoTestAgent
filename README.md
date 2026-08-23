@@ -6,9 +6,9 @@
 
 - **用例库**：内置 400+ 三方库 / 4.5 万+ 用例（首次启动自动建表 + 种子），支持增删改查、版本历史与回滚、Excel 导入导出
 - **AI 任务**：复用 DSH 模型配置，对话式任务 + 预置卡片，LLM 输出 JSON 容错 + 多模型重试
-- **执行计划**：立即 / 定时（cron）/ 单独 / 批量 / 全量五种模式，默认 hdc 真机执行（uiautomator/input），无设备自动回退模拟，自动生成执行轨迹与 AI 思考
+- **执行计划**：立即 / 定时（cron）/ 单独 / 批量 / 全量五种模式，默认 hdc 真机执行（uiautomator/input），无设备自动回退模拟；支持脚本动作执行与失败策略（重试 / 整库中止）
 - **设备管理**：hdc 真机识别（型号/系统版本）、历史设备维护；「打开应用」支持 `device.appAbilities` 映射
-- **仓库同步**：`pull_repo` / `update_repo` 真实 git 拉取更新 + 变更文件解析，支持弹窗输入仓库地址直接拉取，内置「仓库目录」浏览服务器本地代码；`to_script` 脚本落盘
+- **仓库同步**：`pull_repo` / `update_repo` 真实 git 拉取更新 + 变更文件解析，支持弹窗输入仓库地址直接拉取，内置「仓库目录 / 脚本目录」浏览服务器本地代码；`to_script` 脚本落盘
 - **数据分析 / 归因**：从 GitCode 拉取真实 PR，AI 分析用例更新点、影响范围与风险；失败用例三粒度归因（单用例 / 单库 / 多库）
 - **前端插件化**：DSH client 插件侧边栏入口 + 主区 iframe 嵌入，复用 DSH 深色风格
 - **高并发（M7）**：LRU/Redis 缓存、读连接池、分表路由（library_id % 16），压测热路径 3077 QPS
@@ -55,7 +55,7 @@ dsh plugin --profile web install
 
 ```powershell
 # 1. 声明依赖：编辑 ~/.dsh/profiles/web/package.json 的 dependencies 加：
-#    "dsh-autotest": "https://github.com/summer-hub/AutoTestAgent/releases/download/v0.1.7/dsh-autotest-0.1.7.tgz"
+#    "dsh-autotest": "https://github.com/summer-hub/AutoTestAgent/releases/download/v0.1.8/dsh-autotest-0.1.8.tgz"
 #    然后必须执行安装（光写不装等于没写）：
 cd $env:USERPROFILE\.dsh\profiles\web
 pnpm install
@@ -80,7 +80,7 @@ Invoke-RestMethod http://localhost:3080/api/autotest/health
 - `health` 通了但侧边栏看不到 → GUI 缓存问题：强制刷新 / 清浏览器缓存，让 DSH Web 重新加载 client 插件。
 - 之前装过旧 tarball → pnpm 会缓存旧包，需 `pnpm update dsh-autotest` 或删掉 `node_modules/dsh-autotest` 重装（旧包缺 `cordis.patch.yml`，装了也起不来）。
 
-也可以把 tgz 下载到本地后用 `"dsh-autotest": "file:./dsh-autotest-0.1.7.tgz"` 或 `pnpm add ./dsh-autotest-0.1.7.tgz`，离线环境更稳；第 2~5 步不变。
+也可以把 tgz 下载到本地后用 `"dsh-autotest": "file:./dsh-autotest-0.1.8.tgz"` 或 `pnpm add ./dsh-autotest-0.1.8.tgz`，离线环境更稳；第 2~5 步不变。
 
 安装成功后：
 
@@ -122,5 +122,5 @@ git tag v0.2.0 && git push origin v0.2.0   # GitHub Actions 自动构建 Release
 
 ```jsonc
 // ~/.dsh/profiles/web/package.json
-"dsh-autotest": "https://github.com/summer-hub/AutoTestAgent/releases/download/v0.1.7/dsh-autotest-0.1.7.tgz"
+"dsh-autotest": "https://github.com/summer-hub/AutoTestAgent/releases/download/v0.1.8/dsh-autotest-0.1.8.tgz"
 ```

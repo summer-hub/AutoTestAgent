@@ -10,7 +10,7 @@ import { analyzeAttribution, analyzeCaseUpdates, analyzePrChanges, fetchPrs, par
 import { getAllSettings, setSetting } from '../services/settings.js';
 import { cacheDel, cacheGet, cacheSet } from '../services/cache.js';
 import { deviceInfo, hdcAvailable, listTargets } from '../services/hdc.js';
-import { repoDirFor } from '../services/gitRepo.js';
+import { repoDirFor, scriptsDirFor } from '../services/gitRepo.js';
 const routes = [];
 function compile(pattern) {
     const keys = [];
@@ -498,14 +498,31 @@ function defineRoutes(llm) {
             };
         }).sort((a, b) => Number(b.exists) - Number(a.exists) || a.name.localeCompare(b.name));
     });
+    // 自动化脚本目录（to_script 落盘到 workspace/scripts/<lib>）
+    route('GET', '/scripts', async () => {
+        const rows = getDb().prepare('SELECT id, name FROM libraries ORDER BY name').all();
+        return rows.map((r) => {
+            const dir = scriptsDirFor(r.name);
+            let fileCount = 0;
+            if (fs.existsSync(dir)) {
+                try {
+                    fileCount = fs.readdirSync(dir).filter((f) => f.endsWith('.ts')).length;
+                }
+                catch { /* 忽略 */ }
+            }
+            return { id: r.id, name: r.name, dir, exists: fileCount > 0, fileCount };
+        }).sort((a, b) => Number(b.exists) - Number(a.exists) || a.name.localeCompare(b.name));
+    });
     route('GET', '/repos/:id/files', async ({ params, query }) => {
         const db = getDb();
         const lib = db.prepare('SELECT id, name FROM libraries WHERE id = ?').get(Number(params.id));
         if (!lib)
             throw Object.assign(new Error('三方库不存在'), { statusCode: 404 });
-        const root = repoDirFor(lib.name);
-        if (!fs.existsSync(root))
-            throw Object.assign(new Error('仓库尚未拉取到本地，请先执行「拉取仓库代码」'), { statusCode: 404 });
+        const kind = query.get('root') === 'scripts' ? 'scripts' : 'repos';
+        const root = kind === 'scripts' ? scriptsDirFor(lib.name) : repoDirFor(lib.name);
+        if (!fs.existsSync(root)) {
+            throw Object.assign(new Error(kind === 'scripts' ? '该库还没有生成脚本，请先执行「用例转自动化脚本」' : '仓库尚未拉取到本地，请先执行「拉取仓库代码」'), { statusCode: 404 });
+        }
         const rel = (query.get('path') ?? '').replace(/^\/+/, '');
         const dir = path.resolve(root, rel);
         if (dir !== root && !dir.startsWith(root + path.sep))
@@ -531,7 +548,8 @@ function defineRoutes(llm) {
         const lib = db.prepare('SELECT id, name FROM libraries WHERE id = ?').get(Number(params.id));
         if (!lib)
             throw Object.assign(new Error('三方库不存在'), { statusCode: 404 });
-        const root = repoDirFor(lib.name);
+        const kind = query.get('root') === 'scripts' ? 'scripts' : 'repos';
+        const root = kind === 'scripts' ? scriptsDirFor(lib.name) : repoDirFor(lib.name);
         const rel = (query.get('path') ?? '').replace(/^\/+/, '');
         if (!rel)
             throw Object.assign(new Error('缺少文件路径'), { statusCode: 400 });

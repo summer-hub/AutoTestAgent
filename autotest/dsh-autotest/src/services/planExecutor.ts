@@ -2,9 +2,12 @@
 // 执行模式由配置 device.execEngine 决定：
 //  - hdc（默认）：连接真实设备（hdc/uiautomator）执行；无 hdc 或设备未连接时自动回退模拟
 //  - simulate：始终模拟（演示/无设备环境）
+// 脚本模式 exec.scriptMode：script（默认，用例绑定脚本时解析脚本动作步骤执行）/ step（始终走用例步骤）
+// 失败策略 fail_policy：continue / abort_library / retry_twice
 import { getDb, now } from '../db/connection.js';
 import { executeCaseSteps, hdcAvailable, listTargets, type CaseRun } from './hdc.js';
 import { getSetting } from './settings.js';
+import { parseScriptSteps, readBoundScript } from './scriptRunner.js';
 
 interface PlanRow {
   id: number; plan_no: string; name: string; type: string; cron: string | null;
@@ -12,7 +15,7 @@ interface PlanRow {
   last_run_at: string | null; created_at: string; updated_at: string;
 }
 interface CaseRow {
-  id: number; library_id: number; case_no: string; name: string; steps: string; status: string;
+  id: number; library_id: number; case_no: string; name: string; steps: string; status: string; library_name: string;
 }
 interface DeviceRow { id: number; serial: string; model: string; }
 
@@ -34,10 +37,10 @@ const UI_TARGETS = ['主界面', '设置项', '列表项', '弹窗', '输入框'
 const UI_STATES = ['界面响应', '数据刷新', '状态保持', '渲染完成', '焦点位置', '动画结束', '文案显示', '样式一致'];
 
 /** 为单个用例构造执行轨迹（模拟） */
-function buildSteps(caseRow: CaseRow, failed: boolean): Array<{ seq: number; desc: string; status: 'passed' | 'failed' | 'skipped'; durationMs: number }> {
-  const raw = JSON.parse(caseRow.steps || '[]') as string[];
+function buildSteps(caseRow: CaseRow, failed: boolean, stepsOverride?: string[]): Array<{ seq: number; desc: string; status: 'passed' | 'failed' | 'skipped'; durationMs: number }> {
+  const raw = stepsOverride ?? (JSON.parse(caseRow.steps || '[]') as string[]);
   const steps = raw.length >= 3
-    ? raw.slice(0, 6)
+    ? raw.slice(0, stepsOverride ? 8 : 6)
     : Array.from({ length: 4 + (caseRow.id % 3) }, (_, i) => `${UI_VERBS[i % UI_VERBS.length]}${UI_TARGETS[(caseRow.id + i) % UI_TARGETS.length]}，验证${UI_STATES[(caseRow.id + i) % UI_STATES.length]}`);
   const failAt = 1 + (caseRow.id % 2); // 失败步骤位置（1-2 步）
   return steps.map((desc, i) => {
@@ -102,6 +105,7 @@ export async function executePlan(planId: number): Promise<void> {
     : cases.slice(0, plan.type === 'batch' ? batchSample : singleSample);
 
   const engine = String(getSetting('device.execEngine', 'hdc'));
+  const scriptMode = String(getSetting('exec.scriptMode', 'script'));
   const hdcReady = engine !== 'simulate' && !device.serial.startsWith('SIM-') && (await hdcAvailable());
   const connected = hdcReady ? (await listTargets()).includes(device.serial) : false;
   const useReal = hdcReady && connected;
@@ -109,34 +113,80 @@ export async function executePlan(planId: number): Promise<void> {
     console.warn(`[plan #${planId}] hdc 可用但设备 ${device.serial} 未连接，本次回退模拟执行`);
   }
 
+  const failPolicy = plan.fail_policy || 'continue';
+  const retryTimes = failPolicy === 'retry_twice' ? 2 : 0;
+  const abortedLibs = new Set<number>();
+
   let passed = 0;
   let failed = 0;
+  let skipped = 0;
   const insExec = db.prepare(`INSERT INTO executions (plan_id, case_id, library_id, device_id, status, steps, thinking, logs, started_at, finished_at)
     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`);
-  for (const c of sample) {
-    const caseRow = db.prepare('SELECT * FROM cases WHERE id = ?').get(c.id) as CaseRow;
-    let status: 'passed' | 'failed';
-    let stepsJson: string;
-    let thinking: string;
-    let logs: string;
+
+  const runOnce = async (caseRow: CaseRow, stepsArr: string[], extraLogs: string[]): Promise<{ status: 'passed' | 'failed'; stepsJson: string; thinking: string; logs: string }> => {
     if (useReal) {
-      const stepsArr = JSON.parse(caseRow.steps || '[]') as string[];
       const run = await executeCaseSteps(stepsArr, device.serial);
-      status = run.passed ? 'passed' : 'failed';
-      stepsJson = JSON.stringify(run.steps.map((s) => ({ seq: s.seq, desc: s.desc, status: s.status, durationMs: s.durationMs })));
-      thinking = realThinking(caseRow, run);
-      logs = run.logs.join('\n');
-    } else {
-      const isFail = caseRow.status === '失败' || (caseRow.id % 17 === 0); // 失败率 ~6%
-      status = isFail ? 'failed' : 'passed';
-      stepsJson = JSON.stringify(buildSteps(caseRow, isFail));
-      thinking = buildThinking(caseRow, isFail);
-      logs = `[${t}] 设备 ${device.serial} · 用例 ${caseRow.case_no} ${status === 'passed' ? '通过' : '失败'}`;
+      const status = run.passed ? 'passed' : 'failed';
+      return {
+        status,
+        stepsJson: JSON.stringify(run.steps.map((s) => ({ seq: s.seq, desc: s.desc, status: s.status, durationMs: s.durationMs }))),
+        thinking: realThinking(caseRow, run),
+        logs: [...extraLogs, ...run.logs].join('\n'),
+      };
     }
-    if (status === 'failed') failed++; else passed++;
-    insExec.run(planId, c.id, c.library_id, device.id, status, stepsJson, thinking, logs, t, now());
+    const isFail = caseRow.status === '失败' || (caseRow.id % 17 === 0); // 失败率 ~6%
+    const status = isFail ? 'failed' : 'passed';
+    return {
+      status,
+      stepsJson: JSON.stringify(buildSteps(caseRow, isFail, stepsArr)),
+      thinking: buildThinking(caseRow, isFail),
+      logs: [...extraLogs, `[${t}] 设备 ${device.serial} · 用例 ${caseRow.case_no} ${status === 'passed' ? '通过' : '失败'}`].join('\n'),
+    };
+  };
+
+  for (const c of sample) {
+    const caseRow = db.prepare(
+      `SELECT c.*, l.name AS library_name FROM cases c JOIN libraries l ON l.id = c.library_id WHERE c.id = ?`,
+    ).get(c.id) as CaseRow | undefined;
+    if (!caseRow) continue;
+
+    // failPolicy: abort_library — 该库已有失败用例时跳过后续用例
+    if (abortedLibs.has(c.library_id)) {
+      insExec.run(
+        planId, c.id, c.library_id, device.id, 'skipped',
+        JSON.stringify([{ seq: 1, desc: '整库失败中止，本用例跳过', status: 'skipped', durationMs: 0 }]),
+        '按失败策略 abort_library：该库已有失败用例，后续用例跳过。',
+        `[${t}] 设备 ${device.serial} · 用例 ${caseRow.case_no} 跳过（整库中止）`, t, now(),
+      );
+      skipped++;
+      continue;
+    }
+
+    // script 模式：用例绑定脚本时解析脚本动作步骤执行
+    let stepsArr = JSON.parse(caseRow.steps || '[]') as string[];
+    const extraLogs: string[] = [];
+    if (scriptMode === 'script') {
+      const script = readBoundScript(caseRow.library_name, caseRow.case_no);
+      if (script) {
+        const parsed = parseScriptSteps(script);
+        if (parsed.length > 0) {
+          stepsArr = parsed;
+          extraLogs.push(`[script] 用例已绑定脚本，解析出 ${parsed.length} 个动作步骤执行`);
+        }
+      }
+    }
+
+    let result = await runOnce(caseRow, stepsArr, extraLogs);
+    for (let attempt = 1; attempt <= retryTimes && result.status === 'failed'; attempt++) {
+      extraLogs.push(`[retry] 第 ${attempt}/${retryTimes} 次重试…`);
+      result = await runOnce(caseRow, stepsArr, extraLogs);
+    }
+
+    if (result.status === 'failed' && failPolicy === 'abort_library') abortedLibs.add(c.library_id);
+    if (result.status === 'failed') failed++; else passed++;
+    insExec.run(planId, c.id, c.library_id, device.id, result.status, result.stepsJson, result.thinking, result.logs, t, now());
   }
 
   db.prepare(`UPDATE plans SET status='done', last_run_at=?, updated_at=? WHERE id=?`).run(t2, t2, planId);
-  console.log(`[plan #${planId}] ${plan.name} 执行完成：${sample.length} 用例，通过 ${passed} / 失败 ${failed}（${useReal ? 'hdc 真机' : '模拟'}）`);
+  console.log(`[plan #${planId}] ${plan.name} 执行完成：${sample.length} 用例，通过 ${passed} / 失败 ${failed} / 跳过 ${skipped}（${useReal ? 'hdc 真机' : '模拟'}）`);
 }

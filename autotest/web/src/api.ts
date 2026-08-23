@@ -83,10 +83,11 @@ export const api = {
 
   // 仓库本地目录
   repos: () => req<RepoInfo[]>(`${API_BASE}/repos`),
-  repoFiles: (id: number, rel = '') =>
-    req<{ path: string; entries: RepoFileEntry[] }>(`${API_BASE}/repos/${id}/files?path=${encodeURIComponent(rel)}`),
-  repoFile: (id: number, rel: string) =>
-    req<RepoFile>(`${API_BASE}/repos/${id}/file?path=${encodeURIComponent(rel)}`),
+  scripts: () => req<Array<{ id: number; name: string; dir: string; exists: boolean; fileCount: number }>>(`${API_BASE}/scripts`),
+  repoFiles: (id: number, rel = '', root: 'repos' | 'scripts' = 'repos') =>
+    req<{ path: string; entries: RepoFileEntry[] }>(`${API_BASE}/repos/${id}/files?path=${encodeURIComponent(rel)}&root=${root}`),
+  repoFile: (id: number, rel: string, root: 'repos' | 'scripts' = 'repos') =>
+    req<RepoFile>(`${API_BASE}/repos/${id}/file?path=${encodeURIComponent(rel)}&root=${root}`),
 
   // Prompt 模板
   prompts: () => req<Prompt[]>(`${API_BASE}/prompts`),

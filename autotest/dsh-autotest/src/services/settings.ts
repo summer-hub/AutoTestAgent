@@ -18,6 +18,7 @@ export const SETTING_DEFAULTS: Record<string, unknown> = {
   'data.shardCount': 16,
   'device.execEngine': 'hdc',
   'device.appAbilities': '{}',
+  'exec.scriptMode': 'script',
 };
 
 export type SettingValue = string | number | boolean | null;

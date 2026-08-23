@@ -17,7 +17,7 @@ export default function TasksPage() {
   const [tasks, setTasks] = useState<Task[]>([]);
   const [input, setInput] = useState('');
   const [error, setError] = useState('');
-  const [repoDialog, setRepoDialog] = useState<null | { mode: 'input'; type: 'pull_repo' | 'update_repo' } | { mode: 'browse'; libId?: number }>(null);
+  const [repoDialog, setRepoDialog] = useState<null | { mode: 'input'; type: 'pull_repo' | 'update_repo' } | { mode: 'browse'; libId?: number; tab?: 'repos' | 'scripts' }>(null);
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
   const load = useCallback(() => {
@@ -81,6 +81,9 @@ export default function TasksPage() {
           <button className="btn sm" title="查看服务器工作区已拉取的仓库本地目录" onClick={() => setRepoDialog({ mode: 'browse' })}>
             📁 仓库目录
           </button>
+          <button className="btn sm" title="查看用例转自动化脚本的落盘目录" onClick={() => setRepoDialog({ mode: 'browse', tab: 'scripts' })}>
+            🤖 脚本目录
+          </button>
           <div style={{ flex: 1 }} />
           <button className="btn primary" onClick={() => submit('write_cases', '编写测试用例', input)}>发送 ▶</button>
         </div>
@@ -121,6 +124,9 @@ export default function TasksPage() {
                 {(t.type === 'pull_repo' || t.type === 'update_repo') && t.status === 'done' && t.libraryId && (
                   <span className="link" style={{ fontSize: 12 }} onClick={() => setRepoDialog({ mode: 'browse', libId: t.libraryId ?? undefined })}>查看目录</span>
                 )}
+                {t.type === 'to_script' && t.status === 'done' && t.libraryId && (
+                  <span className="link" style={{ fontSize: 12 }} onClick={() => setRepoDialog({ mode: 'browse', libId: t.libraryId ?? undefined, tab: 'scripts' })}>查看脚本</span>
+                )}
                 {t.status === 'failed' && <button className="btn sm" onClick={() => retry(t.id)}>重试</button>}
               </div>
             </div>
@@ -133,6 +139,7 @@ export default function TasksPage() {
           mode={repoDialog.mode}
           taskType={repoDialog.mode === 'input' ? repoDialog.type : undefined}
           targetLibId={repoDialog.mode === 'browse' ? repoDialog.libId : undefined}
+          initialTab={repoDialog.mode === 'browse' ? repoDialog.tab : undefined}
           onClose={() => setRepoDialog(null)}
           onCreated={submitRepoUrl}
         />
