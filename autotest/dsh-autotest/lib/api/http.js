@@ -440,7 +440,7 @@ function defineRoutes(llm) {
         const db = getDb();
         void cacheDel('prompts');
         const t = now();
-        const res = db.prepare(`INSERT INTO prompts (name, role, content, variables, builtin, version, updated_at) VALUES (?, ?, ?, ?, 0, 1, ?)`).run(b.name, b.role ?? '', b.content, JSON.stringify(b.variables ?? []), t);
+        const res = db.prepare(`INSERT INTO prompts (name, role, content, skill, variables, builtin, version, updated_at) VALUES (?, ?, ?, ?, ?, 0, 1, ?)`).run(b.name, b.role ?? '', b.content, b.skill ?? '', JSON.stringify(b.variables ?? []), t);
         return mapPrompt(db.prepare('SELECT * FROM prompts WHERE id = ?').get(Number(res.lastInsertRowid)));
     });
     route('PUT', '/prompts/:id', async ({ params, body }) => {
@@ -450,7 +450,7 @@ function defineRoutes(llm) {
         void cacheDel('prompts');
         const row = getPromptOr404(db, id);
         const t = now();
-        db.prepare(`UPDATE prompts SET name=?, role=?, content=?, variables=?, version=version+1, updated_at=? WHERE id=?`).run(b.name ?? row.name, b.role ?? row.role, b.content ?? row.content, JSON.stringify(b.variables ?? JSON.parse(row.variables || '[]')), t, id);
+        db.prepare(`UPDATE prompts SET name=?, role=?, content=?, skill=?, variables=?, version=version+1, updated_at=? WHERE id=?`).run(b.name ?? row.name, b.role ?? row.role, b.content ?? row.content, b.skill ?? row.skill, JSON.stringify(b.variables ?? JSON.parse(row.variables || '[]')), t, id);
         return mapPrompt(db.prepare('SELECT * FROM prompts WHERE id = ?').get(id));
     });
     route('DELETE', '/prompts/:id', async ({ params }) => {
@@ -859,9 +859,11 @@ function mapLibrary(row) {
     };
 }
 function mapCase(row, libraryName) {
+    const rawSteps = JSON.parse(row.steps || '[]');
+    const steps = rawSteps.map((s) => (typeof s === 'string' ? s : String(s?.step ?? s?.text ?? s?.expected ?? ''))).filter(Boolean);
     return {
         id: row.id, libraryId: row.library_id, libraryName, caseNo: row.case_no, name: row.name,
-        source: row.source, precondition: row.precondition, steps: JSON.parse(row.steps || '[]'),
+        source: row.source, precondition: row.precondition, steps,
         expected: row.expected, status: row.status, scriptStatus: row.script_status,
         dtsUrl: row.dts_url ?? '',
         currentVersion: row.current_version, createdAt: row.created_at, updatedAt: row.updated_at,
@@ -882,6 +884,7 @@ function mapModel(row) {
 function mapPrompt(row) {
     return {
         id: row.id, name: row.name, role: row.role ?? '', content: row.content ?? '',
+        skill: row.skill ?? '',
         variables: safeJsonArray(row.variables), builtin: row.builtin === 1, version: row.version, updatedAt: row.updated_at,
     };
 }

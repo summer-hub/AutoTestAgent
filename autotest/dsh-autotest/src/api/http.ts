@@ -448,13 +448,13 @@ function defineRoutes(llm: LlmCall): void {
     ),
   );
   route('POST', '/prompts', async ({ body }) => {
-    const b = body as { name?: string; role?: string; content?: string; variables?: string[] };
+    const b = body as { name?: string; role?: string; content?: string; skill?: string; variables?: string[] };
     if (!b.name || !b.content) throw Object.assign(new Error('name / content 必填'), { statusCode: 400 });
     const db = getDb();
     void cacheDel('prompts');
     const t = now();
-    const res = db.prepare(`INSERT INTO prompts (name, role, content, variables, builtin, version, updated_at) VALUES (?, ?, ?, ?, 0, 1, ?)`).run(
-      b.name, b.role ?? '', b.content, JSON.stringify(b.variables ?? []), t,
+    const res = db.prepare(`INSERT INTO prompts (name, role, content, skill, variables, builtin, version, updated_at) VALUES (?, ?, ?, ?, ?, 0, 1, ?)`).run(
+      b.name, b.role ?? '', b.content, b.skill ?? '', JSON.stringify(b.variables ?? []), t,
     );
     return mapPrompt(db.prepare('SELECT * FROM prompts WHERE id = ?').get(Number(res.lastInsertRowid)) as Record<string, unknown>);
   });
@@ -465,8 +465,8 @@ function defineRoutes(llm: LlmCall): void {
     void cacheDel('prompts');
     const row = getPromptOr404(db, id);
     const t = now();
-    db.prepare(`UPDATE prompts SET name=?, role=?, content=?, variables=?, version=version+1, updated_at=? WHERE id=?`).run(
-      (b.name as string) ?? row.name, (b.role as string) ?? row.role, (b.content as string) ?? row.content,
+    db.prepare(`UPDATE prompts SET name=?, role=?, content=?, skill=?, variables=?, version=version+1, updated_at=? WHERE id=?`).run(
+      (b.name as string) ?? row.name, (b.role as string) ?? row.role, (b.content as string) ?? row.content, (b.skill as string) ?? row.skill,
       JSON.stringify((b.variables as string[]) ?? JSON.parse(row.variables || '[]')), t, id,
     );
     return mapPrompt(db.prepare('SELECT * FROM prompts WHERE id = ?').get(id) as Record<string, unknown>);
@@ -877,9 +877,11 @@ function mapLibrary(row: Record<string, unknown>) {
   };
 }
 function mapCase(row: Record<string, unknown>, libraryName?: string) {
+  const rawSteps = JSON.parse((row.steps as string) || '[]') as unknown[];
+  const steps = rawSteps.map((s) => (typeof s === 'string' ? s : String((s as { step?: unknown })?.step ?? (s as { text?: unknown })?.text ?? (s as { expected?: unknown })?.expected ?? ''))).filter(Boolean);
   return {
     id: row.id, libraryId: row.library_id, libraryName, caseNo: row.case_no, name: row.name,
-    source: row.source, precondition: row.precondition, steps: JSON.parse((row.steps as string) || '[]'),
+    source: row.source, precondition: row.precondition, steps,
     expected: row.expected, status: row.status, scriptStatus: row.script_status,
     dtsUrl: (row.dts_url as string | undefined) ?? '',
     currentVersion: row.current_version, createdAt: row.created_at, updatedAt: row.updated_at,
@@ -900,6 +902,7 @@ function mapModel(row: Record<string, unknown>) {
 function mapPrompt(row: Record<string, unknown>) {
   return {
     id: row.id, name: row.name, role: row.role ?? '', content: row.content ?? '',
+    skill: (row.skill as string | undefined) ?? '',
     variables: safeJsonArray(row.variables), builtin: row.builtin === 1, version: row.version, updatedAt: row.updated_at,
   };
 }

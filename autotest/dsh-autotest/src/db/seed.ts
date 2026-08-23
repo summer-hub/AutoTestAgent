@@ -22,15 +22,17 @@ export function seed(db: Database.Database): void {
 
   const t1 = now();
 
-  const promptRows: Array<[string, string, string, number]> = [
-    ['用例生成 Agent', '用例生成', '你是鸿蒙三方库测试用例生成 Agent。基于三方库 {library} 代码（版本 {version}）与仓库规则，生成结构化测试用例：1. 覆盖正向/边界/异常；2. 含前置条件/步骤/预期；3. 关注 ArkTS 约束与 API Level 兼容；4. 输出可导入用例库的结构。', 1],
-    ['归因分析 Agent', '归因分析', '按粒度（单用例/单库/多库）分析执行失败根因：结合执行轨迹 {trace}、日志 {log}、设备 {device} 与 PR 变更 {prs}，输出根因与置信度。', 1],
-    ['任务编排 Agent', '任务编排', '理解用户意图 {intent}，拆解为可执行子任务（拉取代码→编写用例→转脚本→执行→分析），维护任务状态机。', 1],
+  const promptRows: Array<[string, string, string, string, number]> = [
+    ['用例生成 Agent', '用例生成',
+      '你是鸿蒙三方库 UI 测试用例设计 Agent。基于已下载仓库的真实工程代码设计用例：\n1. 解析 bundleName / mainAbility 与 entry/src/main/ets/pages 真实页面与控件；\n2. 操作步骤必须是真实界面可触发的动作（打开应用 / 点击 / 输入 / 滑动 / 等待 / 验证文本或动画），严禁臆造；\n3. 预期结果写明具体动画（Lottie json 名）、UI 表现与 hilog 日志；\n4. 来源固定为 AI 生成；\n5. 输出 JSON 数组：{ name, precondition, steps[], expected }，覆盖正向/边界/异常。只输出 JSON。',
+      'autotest-case-author：真实工程驱动 —— 解析 bundleName/mainAbility 与 pages，步骤可触发，预期落具体动画与日志。', 1],
+    ['归因分析 Agent', '归因分析', '按粒度（单用例/单库/多库）分析执行失败根因：结合执行轨迹 {trace}、日志 {log}、设备 {device} 与 PR 变更 {prs}，输出根因与置信度。', '', 1],
+    ['任务编排 Agent', '任务编排', '理解用户意图 {intent}，拆解为可执行子任务（拉取代码→编写用例→转脚本→执行→分析），维护任务状态机。', '', 1],
   ];
-  const insPrompt = db.prepare(`INSERT OR IGNORE INTO prompts (name, role, content, variables, builtin, version, updated_at) VALUES (?, ?, ?, ?, ?, 1, ?)`);
-  for (const [name, role, content, builtin] of promptRows) {
+  const insPrompt = db.prepare(`INSERT OR IGNORE INTO prompts (name, role, content, skill, variables, builtin, version, updated_at) VALUES (?, ?, ?, ?, ?, ?, 1, ?)`);
+  for (const [name, role, content, skill, builtin] of promptRows) {
     const vars = (content.match(/\{(\w+)\}/g) || []).map((v) => v.slice(1, -1));
-    insPrompt.run(name, role, content, JSON.stringify(vars), builtin, t1);
+    insPrompt.run(name, role, content, skill, JSON.stringify(vars), builtin, t1);
   }
 
   db.prepare(`INSERT OR IGNORE INTO models (name, provider, base_url, model_id, api_key, is_default, created_at, updated_at) VALUES

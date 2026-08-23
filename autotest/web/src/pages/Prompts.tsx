@@ -6,7 +6,7 @@ export default function PromptsPage() {
   const [prompts, setPrompts] = useState<Prompt[]>([]);
   const [error, setError] = useState('');
   const [editing, setEditing] = useState<Prompt | null>(null);
-  const [form, setForm] = useState({ name: '', role: '', content: '' });
+  const [form, setForm] = useState({ name: '', role: '', content: '', skill: '' });
 
   const load = useCallback(() => {
     api.prompts().then(setPrompts).catch((e) => setError(String((e as Error).message)));
@@ -16,7 +16,7 @@ export default function PromptsPage() {
 
   const openEdit = (p: Prompt) => {
     setEditing(p);
-    setForm({ name: p.name, role: p.role, content: p.content });
+    setForm({ name: p.name, role: p.role, content: p.content, skill: p.skill ?? '' });
   };
 
   const save = async () => {
@@ -40,11 +40,12 @@ export default function PromptsPage() {
     <>
       <div className="page-title">Prompt 管理</div>
       <div className="page-desc">预设 Agent 的提示词模板 · 支持变量注入（{"{library}"} {"{version}"} 等）· 任务执行时按角色自动选用</div>
+      <div className="muted" style={{ fontSize: 11.5, marginBottom: 10 }}>💡 每个模板可绑定一个「技能」：执行对应 Agent 任务时，技能说明会注入提示词。你可以自定义技能内容。</div>
 
       {error && <div className="error">⚠️ {error}</div>}
 
       <div style={{ display: 'flex', gap: 10, marginBottom: 14 }}>
-        <button className="btn primary" onClick={() => { setEditing(null); setForm({ name: '', role: '', content: '' }); setEditing({ id: 0, name: '', role: '', content: '', variables: [], builtin: false, version: 0, updatedAt: '' }); }}>
+        <button className="btn primary" onClick={() => { setEditing(null); setForm({ name: '', role: '', content: '', skill: '' }); setEditing({ id: 0, name: '', role: '', content: '', skill: '', variables: [], builtin: false, version: 0, updatedAt: '' }); }}>
           ＋ 新建模板
         </button>
         <div style={{ flex: 1 }} />
@@ -62,6 +63,7 @@ export default function PromptsPage() {
             <div className="muted" style={{ fontSize: 12, lineHeight: 1.7, maxHeight: 96, overflow: 'hidden' }}>{p.content ?? ''}</div>
             <div style={{ marginTop: 10, fontSize: 11.5, display: 'flex', alignItems: 'center', gap: 8 }}>
               <span className="muted">角色：{p.role || '—'}</span>
+              {p.skill && <span className="tag cyan" title={p.skill}>⚡ 技能</span>}
               {(p.variables ?? []).map((v) => <span key={v} className="tag blue">{"{"}{v}{"}"}</span>)}
               <span style={{ flex: 1 }} />
               {!p.builtin && (
@@ -95,6 +97,19 @@ export default function PromptsPage() {
                   style={{ flex: 1, minHeight: 260, fontSize: 12, lineHeight: 1.7, resize: 'vertical' }}
                   value={form.content}
                   onChange={(e) => setForm({ ...form, content: e.target.value })}
+                />
+              </div>
+              <div className="s-field" style={{ marginBottom: 12, alignItems: 'flex-start' }}>
+                <div className="fl">
+                  <div className="ft">绑定技能（可自定义）</div>
+                  <div className="fd">执行该 Agent 任务时注入提示词，如：真实工程驱动（解析 bundleName/pages、步骤可触发、预期落具体动画与日志）</div>
+                </div>
+                <textarea
+                  className="input mono"
+                  style={{ flex: 1, minHeight: 120, fontSize: 12, lineHeight: 1.6, resize: 'vertical' }}
+                  placeholder="技能说明（留空则不注入）"
+                  value={form.skill}
+                  onChange={(e) => setForm({ ...form, skill: e.target.value })}
                 />
               </div>
               <div style={{ display: 'flex', gap: 10, justifyContent: 'flex-end' }}>

@@ -323,7 +323,7 @@ export default function CasesPage() {
                     {detail.steps.map((s, i) => (
                       <div key={i} style={{ display: 'flex', gap: 10, fontSize: 12.8, color: 'var(--text2)', lineHeight: 1.6 }}>
                         <span className="mono" style={{ color: 'var(--text3)', fontSize: 11.5, width: 26, textAlign: 'right', flexShrink: 0 }}>{String(i + 1).padStart(2, '0')}</span>
-                        <span>{s}</span>
+                        <span>{String(s)}</span>
                       </div>
                     ))}
                   </div>

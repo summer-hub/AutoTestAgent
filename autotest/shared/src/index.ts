@@ -146,6 +146,7 @@ export interface Prompt {
   name: string;
   role: string;              // 用例生成 Agent / 归因分析 Agent …
   content: string;           // 模板内容，支持 {var} 注入
+  skill: string;             // 绑定的技能说明（用户可自定义，任务执行时注入 Agent）
   variables: string[];
   builtin: boolean;
   version: number;

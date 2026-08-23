@@ -86,6 +86,14 @@ function promptFor(role: string, fallback: string): string {
   return row?.content ?? fallback;
 }
 
+/** 读取 Prompt 模板内容 + 绑定技能（用户可在 Prompt 管理中自定义技能说明）。 */
+function promptBundle(role: string, fallback: string): { content: string; skill: string } {
+  const db = getDb();
+  const row = db.prepare(`SELECT content, skill FROM prompts WHERE role = ? ORDER BY id LIMIT 1`).get(role) as
+    { content: string; skill: string } | undefined;
+  return { content: row?.content ?? fallback, skill: row?.skill ?? '' };
+}
+
 async function withProgress<T>(taskId: number, steps: Array<[number, () => Promise<T>]>): Promise<T[]> {
   const db = getDb();
   const out: T[] = [];
@@ -112,7 +120,7 @@ mainAbility：${insp.abilityName || '（未解析到，默认 EntryAbility）'}
 ${insp.entryDemo || '（无）'}`
     : '仓库未下载或未解析到工程结构，请基于库简介合理设计通用用例。';
 
-  const sys = promptFor('用例生成', `你是鸿蒙三方库 UI 测试用例设计 Agent。基于已下载到本地工作区仓库的【真实代码】设计用例。
+  const tpl = promptBundle('用例生成', `你是鸿蒙三方库 UI 测试用例设计 Agent。基于已下载到本地工作区仓库的【真实代码】设计用例。
 必须遵循：
 1. 结合仓库工程解析出的 bundleName / mainAbility 与 entry/src/main/ets/pages 真实页面、控件、动画与日志设计用例；
 2. 操作步骤必须是真实界面上可触发的动作（打开应用、点击、输入、滑动、等待、验证文本/控件/动画），严禁臆造不存在的控件或步骤；
@@ -120,6 +128,7 @@ ${insp.entryDemo || '（无）'}`
 4. 来源固定为 'AI 生成'；
 5. 输出 JSON 数组，每项：{ name, precondition, steps(字符串数组), expected, status(默认 '待确认'), scriptStatus(默认 '未绑定') }，覆盖正向/边界/异常场景。
 只输出 JSON，不要任何解释。`);
+  const sys = tpl.skill ? `${tpl.content}\n\n【绑定技能】\n${tpl.skill}` : tpl.content;
   const user = `三方库：${lib.name}
 库版本：${lib.current_version}
 库简介：${lib.description}
@@ -152,11 +161,15 @@ ${repoContext}
   const rows = rawList.map((r) => {
     const pre = r.preconditions ?? r.precondition ?? '';
     const exp = r.expected ?? '';
+    const rawSteps = Array.isArray(r.steps) ? (r.steps as unknown[]) : [];
+    const steps = rawSteps
+      .map((s) => (typeof s === 'string' ? s : String((s as { step?: unknown })?.step ?? (s as { text?: unknown })?.text ?? (s as { expected?: unknown })?.expected ?? '')))
+      .filter(Boolean);
     return {
       name: String(r.name ?? r.title ?? r.id ?? '未命名用例'),
       source: String(r.source ?? 'AI 生成'),
       precondition: Array.isArray(pre) ? (pre as string[]).join('；') : String(pre ?? ''),
-      steps: Array.isArray(r.steps) && (r.steps as unknown[]).length > 0 ? r.steps as string[] : ['步骤待细化'],
+      steps: steps.length > 0 ? steps : ['步骤待细化'],
       expected: typeof exp === 'string' ? exp : exp ? JSON.stringify(exp) : '',
     };
   });
@@ -196,10 +209,11 @@ async function updateCases(task: TaskRow, lib: RepoLib & { current_version: stri
   const changeCtx = changes.length > 0
     ? `自上次同步以来的仓库变更文件（前 20）：\n${changes.slice(0, 20).join('\n')}`
     : '（未检测到仓库变更，按版本号变更更新）';
-  const sys = promptFor('用例更新', `你是鸿蒙三方库测试用例更新 Agent。
+  const tplUpd = promptBundle('用例更新', `你是鸿蒙三方库测试用例更新 Agent。
 根据三方库版本变更，迭代更新给定用例，输出 JSON 数组，每项包含：
 caseNo(原用例编号), name(新名称), expected(更新后的预期), changeNote(更新点说明)。
 只输出 JSON。`);
+  const sys = tplUpd.skill ? `${tplUpd.content}\n\n【绑定技能】\n${tplUpd.skill}` : tplUpd.content;
   const user = `三方库：${lib.name}（${lib.current_version}）
 ${changeCtx}
 现有用例：${JSON.stringify(samples)}
