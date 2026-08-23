@@ -9,6 +9,29 @@ const PROVIDERS = [
   { v: 'custom', l: '自定义 OpenAI 兼容端点' },
 ];
 
+const CFG_SECTIONS: Record<string, Array<{ key: string; label: string; type: 'text' | 'number' | 'bool' | 'json'; hint?: string }>> = {
+  general: [
+    { key: 'app.workspace', label: '工作区路径', type: 'text', hint: '三方库代码、仓库与脚本的存放目录' },
+  ],
+  agent: [
+    { key: 'agent.defaultModel', label: '默认模型', type: 'text' },
+    { key: 'agent.maxCasesPerTask', label: '单任务用例上限', type: 'number' },
+    { key: 'exec.llmTemperature', label: 'LLM 温度（0-1）', type: 'number' },
+    { key: 'exec.llmTimeoutMs', label: 'LLM 超时（毫秒）', type: 'number' },
+  ],
+  data: [
+    { key: 'data.redisCache', label: '启用 Redis 缓存', type: 'bool' },
+    { key: 'data.redisUrl', label: 'Redis URL', type: 'text', hint: '留空走内存 LRU' },
+    { key: 'data.cacheTtlSeconds', label: '缓存 TTL（秒）', type: 'number' },
+    { key: 'data.shardCount', label: '用例分表数', type: 'number' },
+  ],
+  device: [
+    { key: 'device.execEngine', label: '执行引擎', type: 'text', hint: 'hdc / simulate' },
+    { key: 'exec.scriptMode', label: '脚本执行模式', type: 'text', hint: 'script / step' },
+    { key: 'device.appAbilities', label: '应用启动映射（JSON）', type: 'json', hint: '{"时钟":"com.xx/.MainAbility"}' },
+  ],
+};
+
 interface FormState { name: string; provider: string; baseUrl: string; modelId: string; apiKey: string; }
 const EMPTY: FormState = { name: '', provider: 'custom', baseUrl: '', modelId: '', apiKey: '' };
 
@@ -19,9 +42,17 @@ export default function SettingsModal({ open, onClose }: { open: boolean; onClos
   const [testing, setTesting] = useState<number | null>(null);
   const [testResults, setTestResults] = useState<Record<number, ModelTestResult>>({});
   const [msg, setMsg] = useState('');
+  const [cfg, setCfg] = useState<Record<string, string | number | boolean>>({});
 
   const load = useCallback(() => {
     api.models().then(setModels).catch((e) => setMsg(String((e as Error).message)));
+    api.settings()
+      .then((rows) => {
+        const m: Record<string, string | number | boolean> = {};
+        for (const r of rows) if (r.value !== null) m[r.key] = r.value as string | number | boolean;
+        setCfg(m);
+      })
+      .catch((e) => setMsg(String((e as Error).message)));
   }, []);
 
   useEffect(() => {
@@ -67,6 +98,22 @@ export default function SettingsModal({ open, onClose }: { open: boolean; onClos
 
   const remove = async (m: ModelConfig) => {
     try { await api.deleteModel(m.id); load(); } catch (e) { setMsg((e as Error).message); }
+  };
+
+  const saveSection = async (fields: Array<{ key: string; label: string; type: 'text' | 'number' | 'bool' | 'json'; hint?: string }>) => {
+    try {
+      for (const f of fields) {
+        let value = cfg[f.key];
+        if (f.type === 'json' && typeof value === 'string' && value.trim()) {
+          JSON.parse(value); // 校验 JSON，非法则抛错
+        }
+        await api.updateSetting(f.key, (value ?? '') as string | number | boolean);
+      }
+      setMsg('配置已保存，立即生效');
+      load();
+    } catch (e) {
+      setMsg(`保存失败：${(e as Error).message}`);
+    }
   };
 
   return (
@@ -164,63 +211,38 @@ export default function SettingsModal({ open, onClose }: { open: boolean; onClos
               </div>
             )}
 
-            {sec === 'general' && (
+            {(sec === 'general' || sec === 'agent' || sec === 'data' || sec === 'device') && (
               <div className="s-section">
-                <div className="s-title">通用</div>
-                <p className="s-intro">语言、工作区与行为偏好（配置存 settings 表，下一迭代接通）。</p>
+                <div className="s-title">{titles[sec]}</div>
+                <p className="s-intro">配置实时读写 settings 表，保存后立即生效。</p>
                 <div className="s-rows">
-                  {[
-                    ['界面语言', '平台界面与 AI 回复的语言', '简体中文'],
-                    ['工作区路径', '三方库代码、用例与脚本的存放目录', 'D:\\autotest\\workspace'],
-                  ].map(([t, d, v]) => (
-                    <div key={t} className="s-rowCard">
+                  {(CFG_SECTIONS[sec] ?? []).map((f) => (
+                    <div key={f.key} className="s-rowCard">
                       <div className="s-field">
-                        <div className="fl"><div className="ft">{t}</div><div className="fd">{d}</div></div>
-                        <input className="input" style={{ width: 230 }} defaultValue={v} />
-                      </div>
-                    </div>
-                  ))}
-                  {[['通知', '执行完成 / 任务失败推送'], ['Excel 导入校验', '导入时校验列结构与用例 ID 唯一性'], ['审计日志', '记录用例变更、回滚、导入导出']].map(([t, d]) => (
-                    <div key={t} className="s-rowCard">
-                      <div className="s-field">
-                        <div className="fl"><div className="ft">{t}</div><div className="fd">{d}</div></div>
-                        <div className="switch on" />
+                        <div className="fl">
+                          <div className="ft">{f.label}</div>
+                          <div className="fd">{f.hint ?? f.key}</div>
+                        </div>
+                        {f.type === 'bool' ? (
+                          <select className="select" style={{ width: 120 }} value={cfg[f.key] === true ? 'true' : 'false'}
+                            onChange={(e) => setCfg((v) => ({ ...v, [f.key]: e.target.value === 'true' }))}>
+                            <option value="true">开启</option>
+                            <option value="false">关闭</option>
+                          </select>
+                        ) : f.type === 'json' ? (
+                          <input className="input mono" style={{ width: 300 }} placeholder={f.hint} value={String(cfg[f.key] ?? '')}
+                            onChange={(e) => setCfg((v) => ({ ...v, [f.key]: e.target.value }))} />
+                        ) : (
+                          <input className="input" style={{ width: f.type === 'number' ? 140 : 260 }} type={f.type === 'number' ? 'number' : 'text'}
+                            value={String(cfg[f.key] ?? '')}
+                            onChange={(e) => setCfg((v) => ({ ...v, [f.key]: f.type === 'number' ? Number(e.target.value) : e.target.value }))} />
+                        )}
                       </div>
                     </div>
                   ))}
                 </div>
-              </div>
-            )}
-
-            {(sec === 'agent' || sec === 'data' || sec === 'device') && (
-              <div className="s-section">
-                <div className="s-title">{titles[sec]}</div>
-                <p className="s-intro">该分区配置项将在下一迭代接入 settings 表持久化。</p>
-                <div className="s-rows">
-                  {(sec === 'agent' ? [
-                    ['默认模型', '任务管理、用例生成等 Agent 的默认模型', 'deepseek-chat'],
-                    ['推理温度', '用例生成等创意任务的默认温度', '0.3'],
-                    ['最大并发任务', '同时执行的 AI 任务数', '8'],
-                    ['上下文窗口上限', '单任务注入用例/代码的 token 上限', '64K'],
-                  ] : sec === 'data' ? [
-                    ['Redis 缓存', '用例库查询、任务状态、设备列表缓存（高并发）', '已启用'],
-                    ['数据库连接池大小', '按 4 万+ 用例与并发执行设计', '50'],
-                    ['用例表分表策略', '按库 ID 哈希分 16 表（MySQL 部署）', '已启用'],
-                    ['执行结果归档', '历史执行结果归档至冷存储', '90 天'],
-                  ] : [
-                    ['设备执行引擎', 'hdc 真机执行（uiautomator/input），无设备自动回退模拟', 'hdc / 模拟'],
-                    ['应用启动映射', '打开应用步骤的 app→ability 映射（JSON，设置页可配）', 'device.appAbilities'],
-                    ['默认执行超时', '单用例默认超时时间', '120s'],
-                    ['失败自动重试', '环境类失败自动重试次数', '2'],
-                    ['执行轨迹记录', '调试会话所需的逐步执行轨迹与 AI 思考', '已启用'],
-                  ]).map(([t, d, v]) => (
-                    <div key={t} className="s-rowCard">
-                      <div className="s-field">
-                        <div className="fl"><div className="ft">{t}</div><div className="fd">{d}</div></div>
-                        <span className="s-rowTag">{v}</span>
-                      </div>
-                    </div>
-                  ))}
+                <div style={{ display: 'flex', justifyContent: 'flex-end', marginTop: 12 }}>
+                  <button className="s-btn primary" onClick={() => void saveSection(CFG_SECTIONS[sec] ?? [])}>保存 {titles[sec]}配置</button>
                 </div>
               </div>
             )}

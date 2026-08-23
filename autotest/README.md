@@ -65,23 +65,39 @@ dsh plugin --profile web install
 >
 > 国内网络访问 GitHub 需要代理时：`git config --global http.proxy http://127.0.0.1:7890`。
 
+### hdc 真机实测清单（连接鸿蒙设备后验证）
+
+```bash
+hdc list targets                    # 1. 确认设备被识别（输出 serial，而非 [Empty]）
+curl -X POST http://localhost:3080/api/autotest/devices/scan   # 2. 设备页「识别设备」，应新增真机 serial（来源 hdc）
+```
+
+3. 设备页确认设备显示「在线」（型号/系统版本来自 `hdc shell param get`）
+4. 系统配置 → 设备与执行：`device.appAbilities` 配置「打开应用」的 app→ability 映射，如 `{"时钟":"com.huawei.hmos.smartclock/.MainAbility"}`
+5. 执行计划选该设备创建「立即执行」，观察 executions 轨迹：
+   - 点击/输入/滑动/等待/验证类步骤应真实执行（uiautomator dump 定位控件 + input 命令）
+   - 打开应用类步骤走 `aa start -a <ability>`
+6. 失败步骤应如实标记 failed 并在日志中给出原因（控件未找到 / 断言失败 / 命令异常）
+
+> 无设备时执行计划自动回退模拟（日志标注），不影响演示；`AUTOTEST_HDC` 环境变量可指定 hdc 路径。
+
 ### 方式二：GitHub Release 单文件安装（适合"只装不开发"的环境）
 
 ```bash
-cd autotest/dsh-autotest && npm pack      # 产出 dsh-autotest-0.1.8.tgz
+cd autotest/dsh-autotest && npm pack      # 产出 dsh-autotest-0.1.9.tgz
 ```
 
 把 tarball 传到 GitHub Release，profile 直接写 URL（和你现在 `dsh-at-file` 的装法一样）：
 
 ```jsonc
 // ~/.dsh/profiles/<name>/package.json
-"dsh-autotest": "https://github.com/summer-hub/AutoTestAgent/releases/download/v0.1.8/dsh-autotest-0.1.8.tgz"
+"dsh-autotest": "https://github.com/summer-hub/AutoTestAgent/releases/download/v0.1.9/dsh-autotest-0.1.9.tgz"
 ```
 
 仓库已配好 GitHub Actions（打 `v*` tag 自动构建并发布 Release + tarball）：
 
 ```bash
-git tag v0.1.8 && git push origin v0.1.8
+git tag v0.1.9 && git push origin v0.1.9
 ```
 
 ## 目录结构

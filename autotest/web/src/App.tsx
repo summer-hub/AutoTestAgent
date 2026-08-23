@@ -9,7 +9,6 @@ import DebugPage from './pages/Debug';
 import DevicesPage from './pages/Devices';
 import PromptsPage from './pages/Prompts';
 import SettingsPage from './pages/Settings';
-import PlaceholderPage from './pages/Placeholder';
 import SettingsModal from './components/SettingsModal';
 
 export type PageKey = 'home' | 'tasks' | 'cases' | 'plans' | 'analysis' | 'attribution' | 'debug' | 'devices' | 'prompts' | 'settings';
@@ -94,7 +93,6 @@ export default function App() {
       {page === 'devices' && <DevicesPage />}
       {page === 'prompts' && <PromptsPage />}
       {page === 'settings' && <SettingsPage />}
-      {page !== 'home' && page !== 'tasks' && page !== 'cases' && page !== 'plans' && page !== 'debug' && page !== 'devices' && page !== 'prompts' && page !== 'settings' && <PlaceholderPage page={page} title={TITLES[page]} />}
     </>
   );
 

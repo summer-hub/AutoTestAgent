@@ -38,6 +38,8 @@ const SECTIONS: Array<{ title: string; desc: string; fields: Array<{ key: string
   {
     title: '设备与执行', desc: '设备执行引擎', fields: [
       { key: 'device.execEngine', label: '执行引擎', type: 'text' },
+      { key: 'device.appAbilities', label: '应用启动映射（JSON）', type: 'text', hint: '{"时钟":"com.xx/.MainAbility"}' },
+      { key: 'exec.scriptMode', label: '脚本执行模式', type: 'text', hint: 'script / step' },
     ],
   },
 ];
