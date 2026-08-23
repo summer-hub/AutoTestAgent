@@ -132,14 +132,16 @@ export const api = {
     if (params.granularity) qs.set('granularity', params.granularity);
     return req<Analysis[]>(`${API_BASE}/analyses?${qs}`);
   },
-  runPrAnalysis: (libraryId: number) =>
-    req<{ analyzed: number; prs: number; source: 'llm' | 'fallback'; message: string }>(
-      `${API_BASE}/analyses/pr/${libraryId}`, { method: 'POST' },
+  libraryPrs: (libraryId: number) =>
+    req<{ items: Array<{ number: number; title: string; state: string; createdAt: string }>; error?: string }>(
+      `${API_BASE}/libraries/${libraryId}/prs`,
     ),
-  runCaseUpdateAnalysis: (libraryId: number) =>
-    req<{ analyzed: number; prs: number; source: 'llm' | 'fallback'; message: string }>(
-      `${API_BASE}/analyses/case-updates/${libraryId}`, { method: 'POST' },
-    ),
+  runPrAnalysis: (libraryId: number, prNumber?: number) =>
+    req<{ runId: string }>(`${API_BASE}/analyses/pr/${libraryId}`, { method: 'POST', body: JSON.stringify({ prNumber }) }),
+  runCaseUpdateAnalysis: (libraryId: number, prNumber?: number) =>
+    req<{ runId: string }>(`${API_BASE}/analyses/case-updates/${libraryId}`, { method: 'POST', body: JSON.stringify({ prNumber }) }),
+  analysisProgress: (runId: string) =>
+    req<{ stage: string; done: boolean; error?: string }>(`${API_BASE}/analyses/progress/${runId}`),
   runAttribution: (b: { granularity: string; libraryId?: number; caseId?: number }) =>
     req<{ analyzed: number; prs: number; source: 'llm' | 'fallback'; message: string }>(
       `${API_BASE}/analyses/attribution`, { method: 'POST', body: JSON.stringify(b) },

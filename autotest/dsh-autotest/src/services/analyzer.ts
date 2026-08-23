@@ -45,18 +45,7 @@ export async function fetchPrs(repoPath: string, limit = 8, timeoutMs = 25000): 
     throw new Error(`拉取 PR 列表失败：GitCode HTTP ${listRes.status}（repo: ${repoPath}）`);
   }
   const list = (await listRes.json()) as Array<Record<string, any>>;
-  const prs = list.slice(0, limit).map((pr) => ({
-    number: Number(pr.number ?? pr.iid),
-    title: String(pr.title ?? ''),
-    state: String(pr.state ?? ''),
-    body: String(pr.body ?? '').slice(0, 2000),
-    created_at: String(pr.created_at ?? ''),
-    merged_at: pr.merged_at ? String(pr.merged_at) : null,
-    added_lines: Number(pr.added_lines) || 0,
-    removed_lines: Number(pr.removed_lines) || 0,
-    web_url: String(pr.html_url ?? pr.web_url ?? ''),
-    files: [] as PrFile[],
-  }));
+  const prs = list.slice(0, limit).map(mapPr);
   await Promise.all(prs.map(async (pr) => {
     try {
       const filesRes = await fetch(`${GITCODE_API}/repos/${repoPath}/pulls/${pr.number}/files?per_page=100`, {
@@ -75,6 +64,48 @@ export async function fetchPrs(repoPath: string, limit = 8, timeoutMs = 25000): 
     }
   }));
   return prs as GitCodePr[];
+}
+
+function mapPr(pr: Record<string, any>): GitCodePr {
+  return {
+    number: Number(pr.number ?? pr.iid),
+    title: String(pr.title ?? ''),
+    state: String(pr.state ?? ''),
+    body: String(pr.body ?? '').slice(0, 2000),
+    created_at: String(pr.created_at ?? ''),
+    merged_at: pr.merged_at ? String(pr.merged_at) : null,
+    added_lines: Number(pr.added_lines) || 0,
+    removed_lines: Number(pr.removed_lines) || 0,
+    web_url: String(pr.html_url ?? pr.web_url ?? ''),
+    files: [] as PrFile[],
+  };
+}
+
+/** 拉取单个 PR（含变更文件），供「选择 #PR 分析」使用。 */
+export async function fetchPr(repoPath: string, prNumber: number, timeoutMs = 25000): Promise<GitCodePr> {
+  const res = await fetch(`${GITCODE_API}/repos/${repoPath}/pulls/${prNumber}`, {
+    signal: AbortSignal.timeout(timeoutMs),
+  });
+  if (!res.ok) {
+    throw new Error(`拉取 PR #${prNumber} 失败：GitCode HTTP ${res.status}`);
+  }
+  const pr = mapPr((await res.json()) as Record<string, any>);
+  try {
+    const filesRes = await fetch(`${GITCODE_API}/repos/${repoPath}/pulls/${prNumber}/files?per_page=100`, {
+      signal: AbortSignal.timeout(12000),
+    });
+    if (filesRes.ok) {
+      const files = (await filesRes.json()) as Array<Record<string, any>>;
+      pr.files = files.slice(0, 30).map((f) => ({
+        filename: String(f.filename ?? ''),
+        additions: Number(f.additions) || 0,
+        deletions: Number(f.deletions) || 0,
+      }));
+    }
+  } catch {
+    pr.files = [];
+  }
+  return pr;
 }
 
 export interface LibraryRow {
@@ -165,8 +196,14 @@ export interface AnalyzeResult {
 }
 
 /** PR 数据分析：每个 PR 产出「更新点 / 影响 / 建议用例更新 / 风险」。 */
-export async function analyzePrChanges(llm: LlmCall, library: LibraryRow, prs: GitCodePr[]): Promise<AnalyzeResult> {
+export async function analyzePrChanges(
+  llm: LlmCall,
+  library: LibraryRow,
+  prs: GitCodePr[],
+  onStage?: (stage: string) => void,
+): Promise<AnalyzeResult> {
   if (prs.length === 0) return { analyzed: 0, prs: 0, source: 'fallback', message: '仓库暂无 PR' };
+  onStage?.(`拉取到 ${prs.length} 条 PR，AI 分析中…`);
   const sys = `你是鸿蒙三方库测试分析 Agent。分析给定 GitCode PR 列表，输出 JSON 数组，每项：
 {"prNumber":number,"title":"PR 标题","updatePoints":["更新点1",...],"impact":"影响范围与可能影响的模块/用例","affectedFeatures":["受影响功能"],"suggestedCaseUpdates":["建议的用例更新动作"],"risk":"low|medium|high"}
 只输出 JSON。`;
@@ -181,6 +218,7 @@ ${prContext(prs)}`;
       system: sys, user, maxTokens: 8192,
       temperature: getSetting('exec.llmTemperature', 0.4), timeoutMs: getSetting('exec.llmTimeoutMs', 180000),
     });
+    onStage?.('AI 已返回分析结果，正在写入 analyses…');
     const parsed = extractJson<Array<Record<string, unknown>>>(text);
     const items = Array.isArray(parsed) ? parsed.slice(0, prs.length) : [];
     for (const item of items) {
@@ -191,8 +229,10 @@ ${prContext(prs)}`;
         title: `PR #${item.prNumber} · 数据分析`, content: item,
       });
     }
+    onStage?.('完成');
     return { analyzed: items.length, prs: prs.length, source: 'llm', message: `AI 分析完成：${items.length}/${prs.length} 条 PR` };
   } catch (e) {
+    onStage?.('LLM 不可用，规则分析降级中…');
     const items = ruleBasedPrAnalysis(prs);
     for (const item of items) {
       saveAnalysis({
@@ -205,13 +245,19 @@ ${prContext(prs)}`;
 }
 
 /** 用例更新分析：结合 PR 变更与现有用例，产出需要更新的用例及理由。 */
-export async function analyzeCaseUpdates(llm: LlmCall, library: LibraryRow, prs: GitCodePr[]): Promise<AnalyzeResult> {
+export async function analyzeCaseUpdates(
+  llm: LlmCall,
+  library: LibraryRow,
+  prs: GitCodePr[],
+  onStage?: (stage: string) => void,
+): Promise<AnalyzeResult> {
   const db = getDb();
   const samples = db.prepare('SELECT case_no, name, expected FROM cases WHERE library_id = ? ORDER BY id LIMIT 15')
     .all(library.id) as Array<{ case_no: string; name: string; expected: string }>;
   if (prs.length === 0 || samples.length === 0) {
     return { analyzed: 0, prs: prs.length, source: 'fallback', message: '没有 PR 或用例可供分析' };
   }
+  onStage?.('结合 PR 变更与现有用例，AI 分析中…');
   const sys = `你是鸿蒙三方库用例维护 Agent。结合最新 PR 变更与现有用例，输出需要更新/新增的用例建议，JSON 数组，每项：
 {"caseNo":"现有用例编号（新增填 null）","reason":"为什么需要更新（对应哪个 PR 的更新点）","suggestedAction":"建议动作（更新前置/步骤/预期/新增用例）","newExpected":"更新后的预期结果"}
 只输出 JSON。`;
@@ -227,6 +273,7 @@ ${samples.map((c) => `- ${c.case_no} ${c.name}：${(c.expected || '').slice(0, 1
       system: sys, user, maxTokens: 8192,
       temperature: getSetting('exec.llmTemperature', 0.4), timeoutMs: getSetting('exec.llmTimeoutMs', 180000),
     });
+    onStage?.('AI 已返回建议，正在写入 analyses…');
     const parsed = extractJson<Array<Record<string, unknown>>>(text);
     const items = Array.isArray(parsed) ? parsed.slice(0, 20) : [];
     for (const item of items) {
@@ -235,8 +282,10 @@ ${samples.map((c) => `- ${c.case_no} ${c.name}：${(c.expected || '').slice(0, 1
         title: `用例更新建议 · ${String(item.caseNo ?? '新增')}`, content: item,
       });
     }
+    onStage?.('完成');
     return { analyzed: items.length, prs: prs.length, source: 'llm', message: `AI 分析完成：${items.length} 条用例更新建议` };
   } catch (e) {
+    onStage?.('LLM 不可用，规则分析降级中…');
     const items = prs.slice(0, 6).map((pr) => ({
       caseNo: null,
       reason: `PR #${pr.number}：${pr.title}（规则降级分析）`,

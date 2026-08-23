@@ -6,12 +6,19 @@ import { caseTableFor, shardOf, shardStats } from '../db/repository.js';
 import { runTask } from '../services/executor.js';
 import { executePlan } from '../services/planExecutor.js';
 import { registerScheduledPlan } from '../services/scheduler.js';
-import { analyzeAttribution, analyzeCaseUpdates, analyzePrChanges, fetchPrs, parseRepoPath, } from '../services/analyzer.js';
+import { analyzeAttribution, analyzeCaseUpdates, analyzePrChanges, fetchPr, fetchPrs, parseRepoPath, } from '../services/analyzer.js';
 import { getAllSettings, setSetting } from '../services/settings.js';
 import { cacheDel, cacheGet, cacheSet } from '../services/cache.js';
 import { deviceInfo, hdcAvailable, listTargets } from '../services/hdc.js';
 import { repoDirFor, scriptsDirFor } from '../services/gitRepo.js';
 const routes = [];
+// 分析进度（内存态，供前端轮询展示实时过程；完成后 60s 自动清理）
+const analysisProgress = new Map();
+function setProgress(runId, p) {
+    analysisProgress.set(runId, { stage: p.stage, done: p.done ?? false, error: p.error });
+    if (p.done)
+        setTimeout(() => analysisProgress.delete(runId), 60_000);
+}
 function compile(pattern) {
     const keys = [];
     const regex = new RegExp('^' + pattern.replace(/[.+?^${}()|[\]\\:]/g, '\\$&').replace(/\\:([A-Za-z0-9_]+)/g, (_, k) => { keys.push(k); return '([^/]+)'; }) + '$');
@@ -135,6 +142,22 @@ function defineRoutes(llm) {
                 throw Object.assign(new Error('库不存在'), { statusCode: 404 });
             return mapLibrary(row);
         });
+    });
+    // PR 列表（供前端选择 #PR 分析）
+    route('GET', '/libraries/:libraryId/prs', async ({ params }) => {
+        const lib = getDb().prepare('SELECT * FROM libraries WHERE id = ?').get(Number(params.libraryId));
+        if (!lib)
+            throw Object.assign(new Error('三方库不存在'), { statusCode: 404 });
+        const repoPath = parseRepoPath(lib.repo_url);
+        if (!repoPath)
+            return { items: [], error: '未配置 GitCode 仓库地址，无法拉取 PR' };
+        try {
+            const prs = await fetchPrs(repoPath, 8);
+            return { items: prs.map((p) => ({ number: p.number, title: p.title, state: p.state, createdAt: p.created_at })) };
+        }
+        catch (e) {
+            return { items: [], error: e.message };
+        }
     });
     route('GET', '/libraries/stats/sources', async () => {
         const db = getDb();
@@ -812,7 +835,7 @@ ${(row.logs ?? '').slice(0, 4000) || '（无）'}
             return getDb().prepare(`SELECT * FROM analyses ${where} ORDER BY id DESC LIMIT 100`).all(p).map(mapAnalysis);
         });
     });
-    route('POST', '/analyses/pr/:libraryId', async ({ params }) => {
+    route('POST', '/analyses/pr/:libraryId', async ({ params, body }) => {
         void cacheDel('analyses');
         const db = getDb();
         const lib = db.prepare('SELECT * FROM libraries WHERE id = ?').get(Number(params.libraryId));
@@ -821,10 +844,23 @@ ${(row.logs ?? '').slice(0, 4000) || '（无）'}
         const repoPath = parseRepoPath(lib.repo_url);
         if (!repoPath)
             throw Object.assign(new Error(`库「${lib.name}」未配置 GitCode 仓库地址（repo_url），无法拉取 PR`), { statusCode: 400 });
-        const prs = await fetchPrs(repoPath);
-        return analyzePrChanges(llm, lib, prs);
+        const prNumber = Number(body?.prNumber) || null;
+        const runId = `pr-${Date.now()}-${Math.floor(Math.random() * 10000)}`;
+        setProgress(runId, { stage: prNumber ? `拉取 PR #${prNumber}…` : '拉取 PR 列表…' });
+        setImmediate(async () => {
+            try {
+                const prs = prNumber ? [await fetchPr(repoPath, prNumber)] : await fetchPrs(repoPath);
+                setProgress(runId, { stage: `已获取 ${prs.length} 条 PR` });
+                const r = await analyzePrChanges(llm, lib, prs, (s) => setProgress(runId, { stage: s }));
+                setProgress(runId, { stage: r.message, done: true });
+            }
+            catch (e) {
+                setProgress(runId, { stage: '分析失败', done: true, error: e.message });
+            }
+        });
+        return { runId };
     });
-    route('POST', '/analyses/case-updates/:libraryId', async ({ params }) => {
+    route('POST', '/analyses/case-updates/:libraryId', async ({ params, body }) => {
         void cacheDel('analyses');
         const db = getDb();
         const lib = db.prepare('SELECT * FROM libraries WHERE id = ?').get(Number(params.libraryId));
@@ -833,8 +869,27 @@ ${(row.logs ?? '').slice(0, 4000) || '（无）'}
         const repoPath = parseRepoPath(lib.repo_url);
         if (!repoPath)
             throw Object.assign(new Error(`库「${lib.name}」未配置 GitCode 仓库地址（repo_url），无法拉取 PR`), { statusCode: 400 });
-        const prs = await fetchPrs(repoPath, 6);
-        return analyzeCaseUpdates(llm, lib, prs);
+        const prNumber = Number(body?.prNumber) || null;
+        const runId = `case-${Date.now()}-${Math.floor(Math.random() * 10000)}`;
+        setProgress(runId, { stage: prNumber ? `拉取 PR #${prNumber}…` : '拉取 PR 列表…' });
+        setImmediate(async () => {
+            try {
+                const prs = prNumber ? [await fetchPr(repoPath, prNumber)] : await fetchPrs(repoPath, 6);
+                setProgress(runId, { stage: `已获取 ${prs.length} 条 PR` });
+                const r = await analyzeCaseUpdates(llm, lib, prs, (s) => setProgress(runId, { stage: s }));
+                setProgress(runId, { stage: r.message, done: true });
+            }
+            catch (e) {
+                setProgress(runId, { stage: '分析失败', done: true, error: e.message });
+            }
+        });
+        return { runId };
+    });
+    route('GET', '/analyses/progress/:runId', async ({ params }) => {
+        const p = analysisProgress.get(String(params.runId));
+        if (!p)
+            throw Object.assign(new Error('进度不存在或已过期'), { statusCode: 404 });
+        return p;
     });
     route('POST', '/analyses/attribution', async ({ body }) => {
         void cacheDel('analyses');

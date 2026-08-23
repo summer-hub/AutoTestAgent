@@ -20,6 +20,8 @@ export interface GitCodePr {
 export declare function parseRepoPath(repoUrl: string | null | undefined): string | null;
 /** 拉取仓库 PR 列表 + 每个 PR 的变更文件（并发拉取文件，失败不影响主体）。 */
 export declare function fetchPrs(repoPath: string, limit?: number, timeoutMs?: number): Promise<GitCodePr[]>;
+/** 拉取单个 PR（含变更文件），供「选择 #PR 分析」使用。 */
+export declare function fetchPr(repoPath: string, prNumber: number, timeoutMs?: number): Promise<GitCodePr>;
 export interface LibraryRow {
     id: number;
     name: string;
@@ -34,9 +36,9 @@ export interface AnalyzeResult {
     message: string;
 }
 /** PR 数据分析：每个 PR 产出「更新点 / 影响 / 建议用例更新 / 风险」。 */
-export declare function analyzePrChanges(llm: LlmCall, library: LibraryRow, prs: GitCodePr[]): Promise<AnalyzeResult>;
+export declare function analyzePrChanges(llm: LlmCall, library: LibraryRow, prs: GitCodePr[], onStage?: (stage: string) => void): Promise<AnalyzeResult>;
 /** 用例更新分析：结合 PR 变更与现有用例，产出需要更新的用例及理由。 */
-export declare function analyzeCaseUpdates(llm: LlmCall, library: LibraryRow, prs: GitCodePr[]): Promise<AnalyzeResult>;
+export declare function analyzeCaseUpdates(llm: LlmCall, library: LibraryRow, prs: GitCodePr[], onStage?: (stage: string) => void): Promise<AnalyzeResult>;
 export interface AttributionOptions {
     granularity: 'single' | 'lib' | 'multi';
     libraryId?: number | null;
