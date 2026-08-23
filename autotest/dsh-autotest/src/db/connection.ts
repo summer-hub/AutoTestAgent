@@ -55,6 +55,11 @@ export function ensureSchemaAndSeed(): void {
   } catch {
     /* 列已存在 */
   }
+  try {
+    db.exec(`ALTER TABLE cases ADD COLUMN dts_url TEXT NOT NULL DEFAULT ''`);
+  } catch {
+    /* 列已存在 */
+  }
   const n = (db.prepare('SELECT COUNT(*) AS n FROM libraries').get() as { n: number }).n;
   if (n === 0) {
     seed(db);

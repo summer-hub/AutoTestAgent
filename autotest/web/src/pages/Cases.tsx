@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState, type CSSProperties } from 'react';
 import type { CaseVersion, Library, Page, TestCase } from 'shared';
 import { api } from '../api';
 
@@ -21,6 +21,8 @@ export default function CasesPage() {
   const [drawer, setDrawer] = useState<{ case: TestCase; versions: CaseVersion[] } | null>(null);
   const [drawerLoading, setDrawerLoading] = useState(false);
   const [compare, setCompare] = useState<{ from: number; to: number } | null>(null);
+  const [caseForm, setCaseForm] = useState<null | { mode: 'create' } | { mode: 'edit'; case: TestCase }>(null);
+  const [savingCase, setSavingCase] = useState(false);
 
   const loadCases = useCallback((libraryId: number, page: number) => {
     api.cases(libraryId, { page, pageSize: 50, source: source || undefined, q: caseQ || undefined })
@@ -63,6 +65,44 @@ export default function CasesPage() {
       if (curLib !== null) loadCases(curLib);
     } catch (e) {
       setError(String((e as Error).message));
+    }
+  };
+
+  const deleteCase = async (c: TestCase) => {
+    if (!window.confirm(`确认删除用例 ${c.caseNo}（${c.name}）？版本历史与执行记录将一并删除。`)) return;
+    try {
+      await api.deleteCase(c.id);
+      if (curLib !== null) loadCases(curLib, casePage);
+    } catch (e) {
+      setError(String((e as Error).message));
+    }
+  };
+
+  const saveCaseForm = async (form: { caseNo: string; name: string; source: string; precondition: string; steps: string; expected: string; dtsUrl: string }) => {
+    if (curLib === null) return;
+    setSavingCase(true);
+    setError('');
+    try {
+      const body = {
+        caseNo: form.caseNo.trim(),
+        name: form.name.trim(),
+        source: form.source,
+        precondition: form.precondition.trim(),
+        steps: form.steps.split('\n').map((s) => s.trim()).filter(Boolean),
+        expected: form.expected.trim(),
+        dtsUrl: form.dtsUrl.trim(),
+      };
+      if (caseForm?.mode === 'edit') {
+        await api.updateCase(caseForm.case.id, { ...body, changeNote: '人工编辑：手动修改用例内容。', author: '测试工程师', authorType: 'human' });
+      } else {
+        await api.createCase({ libraryId: curLib, ...body });
+      }
+      setCaseForm(null);
+      loadCases(curLib, casePage);
+    } catch (e) {
+      setError(String((e as Error).message));
+    } finally {
+      setSavingCase(false);
     }
   };
 
@@ -176,6 +216,7 @@ export default function CasesPage() {
             />
             <button className="btn sm" disabled={curLib === null} onClick={onExport}>⬇ 导出 Excel</button>
             <button className="btn sm" disabled={curLib === null} onClick={() => fileRef.current?.click()}>⬆ 导入 Excel</button>
+            <button className="btn sm primary" disabled={curLib === null} onClick={() => setCaseForm({ mode: 'create' })}>＋ 新增用例</button>
             {importMsg && <span className="muted" style={{ fontSize: 11.5 }}>{importMsg}</span>}
             <span className="muted" style={{ fontSize: 11.5, marginLeft: 'auto' }}>
               版本按单条用例迭代 · 更新自动递增 · 可单独回滚
@@ -187,12 +228,14 @@ export default function CasesPage() {
             ) : (
               <table>
                 <tr>
-                  <th>用例 ID</th><th>用例名称</th><th>来源</th><th>版本</th><th>状态</th><th>脚本</th><th>操作</th>
+                  <th>用例 ID</th><th>用例名称</th><th>来源</th><th>版本</th><th>状态</th><th>脚本</th><th>问题单</th><th>操作</th>
                 </tr>
                 {cases.items.map((c) => (
                   <tr key={c.id}>
                     <td className="mono">{c.caseNo}</td>
-                    <td>{c.name}</td>
+                    <td>
+                      <span className="link" onClick={() => openDrawer(c)}>{c.name}</span>
+                    </td>
                     <td><span className={`tag ${SOURCE_COLORS[c.source] ?? 'gray'}`}>{c.source}</span></td>
                     <td><span className="tag plain">V{c.currentVersion}</span></td>
                     <td><span className={`tag ${STATUS_COLORS[c.status] ?? 'gray'}`}>{c.status}</span></td>
@@ -202,7 +245,16 @@ export default function CasesPage() {
                         : <span className="tag gray">未绑定</span>}
                     </td>
                     <td>
+                      {c.dtsUrl
+                        ? <a className="link" href={c.dtsUrl} target="_blank" rel="noreferrer" title={c.dtsUrl}>DTS 单 ↗</a>
+                        : <span className="muted">—</span>}
+                    </td>
+                    <td>
+                      <span className="link" onClick={() => setCaseForm({ mode: 'edit', case: c })}>编辑</span>
+                      <span style={{ margin: '0 6px', color: 'var(--text3)' }}>·</span>
                       <span className="link" onClick={() => openDrawer(c)}>版本历史</span>
+                      <span style={{ margin: '0 6px', color: 'var(--text3)' }}>·</span>
+                      <span className="link" style={{ color: 'var(--red)' }} onClick={() => void deleteCase(c)}>删除</span>
                     </td>
                   </tr>
                 ))}
@@ -338,6 +390,94 @@ export default function CasesPage() {
           </div>
         </div>
       </div>
+
+      {caseForm && (
+        <CaseFormModal
+          mode={caseForm.mode}
+          initial={caseForm.mode === 'edit' ? caseForm.case : undefined}
+          saving={savingCase}
+          onClose={() => setCaseForm(null)}
+          onSave={(f) => void saveCaseForm(f)}
+        />
+      )}
     </>
+  );
+}
+
+function CaseFormModal(props: {
+  mode: 'create' | 'edit';
+  initial?: TestCase;
+  saving: boolean;
+  onClose: () => void;
+  onSave: (f: { caseNo: string; name: string; source: string; precondition: string; steps: string; expected: string; dtsUrl: string }) => void;
+}) {
+  const c = props.initial;
+  const [form, setForm] = useState(() => ({
+    caseNo: c?.caseNo ?? `C-MAN-${Date.now().toString().slice(-6)}`,
+    name: c?.name ?? '',
+    source: c?.source ?? '新需求引入',
+    precondition: c?.precondition ?? '',
+    steps: (c?.steps ?? []).join('\n'),
+    expected: c?.expected ?? '',
+    dtsUrl: c?.dtsUrl ?? '',
+  }));
+  const set = (k: keyof typeof form, v: string) => setForm((f) => ({ ...f, [k]: v }));
+  const input: CSSProperties = { width: '100%' };
+  return (
+    <div className="s-overlay show">
+      <div className="s-mask" onClick={props.onClose} />
+      <div style={{ position: 'relative', zIndex: 1, width: 720, maxWidth: 'calc(100vw - 40px)', maxHeight: 'calc(100vh - 40px)', background: 'var(--panel)', border: '1px solid var(--border2)', borderRadius: 16, boxShadow: '0 24px 80px rgba(0,0,0,.55)', display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '14px 18px', borderBottom: '1px solid var(--border)' }}>
+          <span style={{ fontSize: 15, fontWeight: 600 }}>{props.mode === 'create' ? '＋ 新增用例' : `编辑用例 ${c?.caseNo}`}</span>
+          <div style={{ flex: 1 }} />
+          <button className="s-header x" onClick={props.onClose} style={{ width: 28, height: 28, borderRadius: 28, border: 'none', background: 'none', color: 'var(--text2)', cursor: 'pointer', fontSize: 14 }}>✕</button>
+        </div>
+        <div style={{ padding: '18px 20px', overflowY: 'auto', display: 'flex', flexDirection: 'column', gap: 12 }}>
+          <div style={{ display: 'flex', gap: 12 }}>
+            <label style={{ flex: 1, display: 'flex', flexDirection: 'column', gap: 5 }}>
+              <span className="muted" style={{ fontSize: 12 }}>用例编号</span>
+              <input className="input mono" style={input} value={form.caseNo} onChange={(e) => set('caseNo', e.target.value)} />
+            </label>
+            <label style={{ flex: 2, display: 'flex', flexDirection: 'column', gap: 5 }}>
+              <span className="muted" style={{ fontSize: 12 }}>用例名称 *</span>
+              <input className="input" style={input} value={form.name} onChange={(e) => set('name', e.target.value)} />
+            </label>
+          </div>
+          <label style={{ display: 'flex', flexDirection: 'column', gap: 5 }}>
+            <span className="muted" style={{ fontSize: 12 }}>来源</span>
+            <select className="select" value={form.source} onChange={(e) => set('source', e.target.value)}>
+              <option>新需求引入</option>
+              <option>老库存量</option>
+              <option>问题单跟踪</option>
+              <option>AI 生成</option>
+            </select>
+          </label>
+          <label style={{ display: 'flex', flexDirection: 'column', gap: 5 }}>
+            <span className="muted" style={{ fontSize: 12 }}>前置条件</span>
+            <input className="input" style={input} value={form.precondition} onChange={(e) => set('precondition', e.target.value)} placeholder="如：应用已安装，已登录" />
+          </label>
+          <label style={{ display: 'flex', flexDirection: 'column', gap: 5 }}>
+            <span className="muted" style={{ fontSize: 12 }}>操作步骤（每行一步）</span>
+            <textarea className="input" style={{ ...input, minHeight: 110, resize: 'vertical', lineHeight: 1.6 }} value={form.steps}
+              onChange={(e) => set('steps', e.target.value)} placeholder={'打开应用主界面\n点击「xxx」按钮\n等待 2 秒\n验证「xxx」文本显示'} />
+          </label>
+          <label style={{ display: 'flex', flexDirection: 'column', gap: 5 }}>
+            <span className="muted" style={{ fontSize: 12 }}>预期结果</span>
+            <textarea className="input" style={{ ...input, minHeight: 70, resize: 'vertical', lineHeight: 1.6 }} value={form.expected}
+              onChange={(e) => set('expected', e.target.value)} placeholder="界面显示 xxx 动画 / 打印日志 xxx" />
+          </label>
+          <label style={{ display: 'flex', flexDirection: 'column', gap: 5 }}>
+            <span className="muted" style={{ fontSize: 12 }}>问题单链接（DTS，可空）</span>
+            <input className="input mono" style={input} value={form.dtsUrl} onChange={(e) => set('dtsUrl', e.target.value)} placeholder="https://dts.xxx/issue/12345" />
+          </label>
+          <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8, marginTop: 4 }}>
+            <button className="btn" onClick={props.onClose}>取消</button>
+            <button className="btn primary" disabled={props.saving || !form.name.trim()} onClick={() => props.onSave(form)}>
+              {props.saving ? '保存中…' : '保存'}
+            </button>
+          </div>
+        </div>
+      </div>
+    </div>
   );
 }

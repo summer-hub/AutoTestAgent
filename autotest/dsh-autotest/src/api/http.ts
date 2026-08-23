@@ -215,23 +215,28 @@ function defineRoutes(llm: LlmCall): void {
   });
 
   route('POST', '/cases', async ({ body }) => {
-    const b = body as { libraryId?: number; caseNo?: string; name?: string };
+    const b = body as { libraryId?: number; caseNo?: string; name?: string; source?: string; precondition?: string; steps?: string[]; expected?: string; dtsUrl?: string; status?: string };
     if (!b.libraryId || !b.caseNo || !b.name) throw Object.assign(new Error('libraryId / caseNo / name 必填'), { statusCode: 400 });
     const db = getDb();
     void cacheDel('cases'); void cacheDel('stats'); void cacheDel('lib'); void cacheDel('libs');
     const t = now();
     const created = db.transaction(() => {
-      const res = db.prepare(`INSERT INTO cases (library_id, case_no, name, source, precondition, steps, expected, status, script_status, current_version, created_at, updated_at)
-        VALUES (?, ?, ?, '新需求引入', '', '[]', '', '未执行', '未绑定', 1, ?, ?)`).run(b.libraryId, b.caseNo, b.name, t, t);
+      const steps = Array.isArray(b.steps) ? b.steps : [];
+      const res = db.prepare(`INSERT INTO cases (library_id, case_no, name, source, precondition, steps, expected, status, script_status, dts_url, current_version, created_at, updated_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, '未绑定', ?, 1, ?, ?)`).run(
+        b.libraryId, b.caseNo, b.name, b.source ?? '新需求引入', b.precondition ?? '', JSON.stringify(steps),
+        b.expected ?? '', b.status ?? '未执行', b.dtsUrl ?? '', t, t,
+      );
       const caseId = Number(res.lastInsertRowid);
       db.prepare(`INSERT INTO case_versions (case_id, version, snapshot, change_note, author, author_type, created_at)
         VALUES (?, 1, ?, '初始创建', 'AI 用例生成 Agent', 'ai', ?)`).run(caseId, JSON.stringify({
-        id: caseId, libraryId: b.libraryId, caseNo: b.caseNo, name: b.name, source: '新需求引入',
-        precondition: '', steps: [], expected: '', status: '未执行', scriptStatus: '未绑定', currentVersion: 1, createdAt: t, updatedAt: t,
+        id: caseId, libraryId: b.libraryId, caseNo: b.caseNo, name: b.name, source: b.source ?? '新需求引入',
+        precondition: b.precondition ?? '', steps, expected: b.expected ?? '', status: b.status ?? '未执行',
+        scriptStatus: '未绑定', dtsUrl: b.dtsUrl ?? '', currentVersion: 1, createdAt: t, updatedAt: t,
       }), t);
       return caseId;
     })();
-    return { id: created };
+    return mapCase(db.prepare('SELECT * FROM cases WHERE id = ?').get(created) as Record<string, unknown>);
   });
 
   route('PUT', '/cases/:id', async ({ params, body }) => {
@@ -251,11 +256,12 @@ function defineRoutes(llm: LlmCall): void {
         expected: (b.expected as string) ?? row.expected,
         status: (b.status as string) ?? row.status,
         scriptStatus: (b.scriptStatus as string) ?? row.script_status,
+        dtsUrl: (b.dtsUrl as string) ?? row.dts_url,
         currentVersion: nextVersion, createdAt: row.created_at, updatedAt: t,
       };
-      db.prepare(`UPDATE cases SET name=?, source=?, precondition=?, steps=?, expected=?, status=?, script_status=?, current_version=?, updated_at=? WHERE id=?`).run(
+      db.prepare(`UPDATE cases SET name=?, source=?, precondition=?, steps=?, expected=?, status=?, script_status=?, dts_url=?, current_version=?, updated_at=? WHERE id=?`).run(
         snapshot.name, snapshot.source, snapshot.precondition, JSON.stringify(snapshot.steps),
-        snapshot.expected, snapshot.status, snapshot.scriptStatus, nextVersion, t, id,
+        snapshot.expected, snapshot.status, snapshot.scriptStatus, snapshot.dtsUrl, nextVersion, t, id,
       );
       db.prepare(`INSERT INTO case_versions (case_id, version, snapshot, change_note, author, author_type, created_at)
         VALUES (?, ?, ?, ?, ?, ?, ?)`).run(
@@ -265,6 +271,20 @@ function defineRoutes(llm: LlmCall): void {
       return snapshot;
     })();
     return updated;
+  });
+
+  route('DELETE', '/cases/:id', async ({ params }) => {
+    const id = Number(params.id);
+    const db = getDb();
+    void cacheDel('cases'); void cacheDel('stats'); void cacheDel('lib'); void cacheDel('libs');
+    const row = getCaseOr404(db, id);
+    db.transaction(() => {
+      db.prepare('DELETE FROM case_versions WHERE case_id = ?').run(id);
+      db.prepare('DELETE FROM executions WHERE case_id = ?').run(id);
+      db.prepare('DELETE FROM analyses WHERE case_id = ?').run(id);
+      db.prepare('DELETE FROM cases WHERE id = ?').run(id);
+    })();
+    return { ok: true, deletedCaseNo: row.case_no };
   });
 
   route('POST', '/cases/:id/rollback', async ({ params, body }) => {
@@ -852,6 +872,7 @@ function mapCase(row: Record<string, unknown>, libraryName?: string) {
     id: row.id, libraryId: row.library_id, libraryName, caseNo: row.case_no, name: row.name,
     source: row.source, precondition: row.precondition, steps: JSON.parse((row.steps as string) || '[]'),
     expected: row.expected, status: row.status, scriptStatus: row.script_status,
+    dtsUrl: (row.dts_url as string | undefined) ?? '',
     currentVersion: row.current_version, createdAt: row.created_at, updatedAt: row.updated_at,
   };
 }

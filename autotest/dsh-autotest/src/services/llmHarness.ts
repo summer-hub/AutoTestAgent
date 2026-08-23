@@ -89,6 +89,11 @@ export function extractJson<T>(text: string): T {
       try {
         return JSON.parse(noTrailingComma) as T;
       } catch (finalErr) {
+        // 兜底：多个连续 JSON 对象（无数组包裹，模型常见输出）→ 自动包装为数组
+        const objects = extractTopLevelObjects(t);
+        if (objects.length > 0) {
+          return (objects.length === 1 ? objects[0] : objects) as T;
+        }
         try {
           writeFileSync('D:/code/HarmonyProject/20260604/AutoTestAgent/autotest/dsh-autotest/data/llm-raw.json', t, 'utf8');
         } catch { /* 落盘失败不阻塞 */ }
@@ -97,6 +102,45 @@ export function extractJson<T>(text: string): T {
       }
     }
   }
+}
+
+/** 扫描文本中所有顶层 JSON 对象（容忍对象间任意分隔文本）。 */
+function extractTopLevelObjects(text: string): unknown[] {
+  const out: unknown[] = [];
+  let i = 0;
+  while (i < text.length) {
+    const start = text.indexOf('{', i);
+    if (start < 0) break;
+    let depth = 0;
+    let inStr = false;
+    let esc = false;
+    let end = -1;
+    for (let j = start; j < text.length; j++) {
+      const ch = text[j];
+      if (esc) { esc = false; continue; }
+      if (ch === '\\') { esc = true; continue; }
+      if (ch === '"') { inStr = !inStr; continue; }
+      if (!inStr) {
+        if (ch === '{') depth++;
+        else if (ch === '}') {
+          depth--;
+          if (depth === 0) { end = j; break; }
+        }
+      }
+    }
+    if (end < 0) {
+      // 该对象未闭合（如外层容器被截断）→ 跳过起点，继续收集内部完整对象
+      i = start + 1;
+      continue;
+    }
+    try {
+      out.push(JSON.parse(text.slice(start, end + 1)));
+    } catch {
+      /* 单个对象解析失败则跳过 */
+    }
+    i = end + 1;
+  }
+  return out;
 }
 
 /** 修复字符串内的原始控制字符（换行/回车/制表符），使其成为合法 JSON。 */

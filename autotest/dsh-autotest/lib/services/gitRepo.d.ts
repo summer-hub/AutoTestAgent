@@ -15,8 +15,21 @@ export interface RepoLib {
     current_version: string;
     last_commit: string;
 }
+export interface RepoInspect {
+    dir: string;
+    bundleName: string;
+    abilityName: string;
+    pages: string[];
+    entryDemo: string;
+}
 /** 工作区根目录（app.workspace 配置；未配置时落到插件进程 cwd/workspace）。 */
 export declare function workspaceDir(): string;
+/** 解析已克隆仓库工程：bundleName / mainAbility / 页面列表 / 入口页代码（供 AI 设计真实 UI 用例）。 */
+export declare function inspectRepo(lib: {
+    name: string;
+}): RepoInspect;
+/** 最近一次同步以来的仓库变更文件列表（用于用例更新上下文）。 */
+export declare function recentChanges(lib: RepoLib): string[];
 /** 仓库本地目录（工作区 repos/<name>）。 */
 export declare function repoDirFor(name: string): string;
 /** 自动化脚本落盘目录（工作区 scripts/<name>）。 */

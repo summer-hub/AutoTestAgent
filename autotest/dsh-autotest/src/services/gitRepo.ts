@@ -1,7 +1,7 @@
 // 真实 git 集成：pull_repo / update_repo 任务执行（替代原模拟占位）
 // 依赖系统 git CLI；仓库根目录 = 配置 app.workspace/repos/<lib>，
 // 每库在 libraries.last_commit 记录上次同步提交，用于拉取后的变更文件解析。
-import { execFile } from 'node:child_process';
+import { execFile, execFileSync } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
 import { promisify } from 'node:util';
@@ -29,6 +29,14 @@ export interface RepoLib {
   last_commit: string;
 }
 
+export interface RepoInspect {
+  dir: string;
+  bundleName: string;
+  abilityName: string;
+  pages: string[];
+  entryDemo: string;
+}
+
 /** 工作区根目录（app.workspace 配置；未配置时落到插件进程 cwd/workspace）。 */
 export function workspaceDir(): string {
   const base = String(getSetting('app.workspace', '') || '').trim();
@@ -50,6 +58,58 @@ async function runGit(args: string[], cwd?: string, timeoutMs = 180000): Promise
 
 function repoName(name: string): string {
   return name.replace(/[^\w.-]/g, '_');
+}
+
+/** 解析已克隆仓库工程：bundleName / mainAbility / 页面列表 / 入口页代码（供 AI 设计真实 UI 用例）。 */
+export function inspectRepo(lib: { name: string }): RepoInspect {
+  const dir = path.join(workspaceDir(), 'repos', repoName(lib.name));
+  const result: RepoInspect = { dir, bundleName: '', abilityName: '', pages: [], entryDemo: '' };
+  if (!fs.existsSync(path.join(dir, '.git'))) return result;
+  const candidates = [
+    'AppScope/app.json5', 'AppScope/app.json',
+    'entry/src/main/module.json5', 'entry/src/main/module.json',
+  ];
+  for (const rel of candidates) {
+    const file = path.join(dir, rel);
+    if (!fs.existsSync(file)) continue;
+    try {
+      const txt = fs.readFileSync(file, 'utf8');
+      const bn = txt.match(/bundleName\s*[:=]\s*["']([^"']+)/);
+      if (bn) result.bundleName = bn[1];
+      const ab = txt.match(/(?:mainAbility|abilityName)\s*[:=]\s*["']([^"']+)/);
+      if (ab) result.abilityName = ab[1];
+      if (result.bundleName && result.abilityName) break;
+    } catch { /* 忽略不可读文件 */ }
+  }
+  const pagesRoot = path.join(dir, 'entry', 'src', 'main', 'ets', 'pages');
+  if (fs.existsSync(pagesRoot)) {
+    result.pages = fs.readdirSync(pagesRoot).filter((f) => f.endsWith('.ets')).sort();
+  }
+  if (result.pages.length > 0) {
+    try {
+      result.entryDemo = fs.readFileSync(path.join(pagesRoot, result.pages[0]), 'utf8').slice(0, 8000);
+    } catch { /* 忽略 */ }
+  }
+  return result;
+}
+
+/** 最近一次同步以来的仓库变更文件列表（用于用例更新上下文）。 */
+export function recentChanges(lib: RepoLib): string[] {
+  const dir = path.join(workspaceDir(), 'repos', repoName(lib.name));
+  if (!fs.existsSync(path.join(dir, '.git'))) return [];
+  try {
+    const head = runGitSync(['rev-parse', 'HEAD'], dir);
+    if (lib.last_commit && lib.last_commit !== head) {
+      return runGitSync(['diff', '--name-only', lib.last_commit, head], dir).split(/\r?\n/).filter(Boolean);
+    }
+    return runGitSync(['show', '--name-only', '--format=', 'HEAD'], dir).split(/\r?\n/).filter(Boolean);
+  } catch {
+    return [];
+  }
+}
+
+function runGitSync(args: string[], cwd: string): string {
+  return execFileSync('git', args, { cwd, encoding: 'utf8', timeout: 60000, windowsHide: true }).trim();
 }
 
 /** 仓库本地目录（工作区 repos/<name>）。 */

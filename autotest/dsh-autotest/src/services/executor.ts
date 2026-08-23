@@ -4,7 +4,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { getDb, now } from '../db/connection.js';
-import { ensureLibraryByRepoUrl, pullRepo, updateRepo, workspaceDir } from './gitRepo.js';
+import { ensureLibraryByRepoUrl, inspectRepo, pullRepo, recentChanges, updateRepo, workspaceDir, type RepoLib } from './gitRepo.js';
 import { getSetting } from './settings.js';
 import { extractJson, type LlmCall } from './llmHarness.js';
 
@@ -96,22 +96,70 @@ async function withProgress<T>(taskId: number, steps: Array<[number, () => Promi
   return out;
 }
 
-async function writeCases(task: TaskRow, lib: { id: number; name: string; description: string; current_version: string }, llm: LlmCall): Promise<string> {
-  const sys = promptFor('用例生成', `你是鸿蒙三方库测试用例生成 Agent。
-基于三方库代码与仓库规则生成结构化测试用例，输出 JSON 数组，每项包含：
-name(用例名称), source(来源: 新需求引入|老库存量|问题单跟踪|AI 生成), precondition(前置条件),
-steps(操作步骤数组), expected(预期结果), status(默认 未执行), scriptStatus(默认 未绑定)。
+async function writeCases(task: TaskRow, lib: RepoLib & { description: string }, llm: LlmCall): Promise<string> {
+  // 确保仓库已下载到本地（真实代码上下文）
+  const insp0 = inspectRepo(lib);
+  if (!fs.existsSync(path.join(insp0.dir, '.git')) && lib.repo_url) {
+    await pullRepo(lib);
+  }
+  const insp = inspectRepo(lib);
+  const repoContext = insp.bundleName || insp.pages.length > 0
+    ? `已下载仓库目录：${insp.dir}
+bundleName：${insp.bundleName || '（未解析到，尝试 AppScope/app.json5）'}
+mainAbility：${insp.abilityName || '（未解析到，默认 EntryAbility）'}
+页面文件：${insp.pages.join(', ') || '（未找到 entry/src/main/ets/pages）'}
+入口页代码（截取前 8000 字符）：
+${insp.entryDemo || '（无）'}`
+    : '仓库未下载或未解析到工程结构，请基于库简介合理设计通用用例。';
+
+  const sys = promptFor('用例生成', `你是鸿蒙三方库 UI 测试用例设计 Agent。基于已下载到本地工作区仓库的【真实代码】设计用例。
+必须遵循：
+1. 结合仓库工程解析出的 bundleName / mainAbility 与 entry/src/main/ets/pages 真实页面、控件、动画与日志设计用例；
+2. 操作步骤必须是真实界面上可触发的动作（打开应用、点击、输入、滑动、等待、验证文本/控件/动画），严禁臆造不存在的控件或步骤；
+3. 预期结果必须具体可验证：界面动画要写明具体动画（如 Lottie 播放 xxx.json、进度条、转场动画）；代码中有 hilog 打印时要写明应打印的日志内容；
+4. 来源固定为 'AI 生成'；
+5. 输出 JSON 数组，每项：{ name, precondition, steps(字符串数组), expected, status(默认 '待确认'), scriptStatus(默认 '未绑定') }，覆盖正向/边界/异常场景。
 只输出 JSON，不要任何解释。`);
   const user = `三方库：${lib.name}
 库版本：${lib.current_version}
 库简介：${lib.description}
-任务要求：${task.input || '为上述三方库生成 5 条覆盖正向/边界/异常场景的测试用例。'}`;
-  const [parsed] = await withProgress(task.id, [
-    [35, async () => extractJson<Array<{ name: string; source?: string; precondition?: string; steps?: string[]; expected?: string }>>(
-      await llm({ system: sys, user }),
-    )],
-  ]);
-  const rows = Array.isArray(parsed) ? parsed : [];
+${repoContext}
+任务要求：${task.input || '基于真实界面设计 6-10 条覆盖主要页面与交互的 UI 测试用例。'}`;
+  // LLM 解析：首次失败用「精简模式」重试一次（防输出过长被截断）
+  const sysCompact = `只输出一个 JSON 数组，不要任何解释、围栏或多余字段。4 条精简用例，每项仅：{ name, precondition, steps(≤4 步), expected }，steps/expected 简洁具体。`;
+  let parsed: Array<Record<string, unknown>> | Record<string, unknown> | null = null;
+  let lastErr: unknown = null;
+  for (let attempt = 0; attempt < 2 && !parsed; attempt++) {
+    try {
+      const text = await llm(attempt === 0
+        ? { system: sys, user, maxTokens: 4000 }
+        : { system: sysCompact, user: `三方库：${lib.name}（${lib.current_version}）\n${repoContext}`, maxTokens: 2500 });
+      parsed = extractJson<Array<Record<string, unknown>> | Record<string, unknown>>(text);
+    } catch (e) {
+      lastErr = e;
+    }
+  }
+  if (!parsed) throw lastErr instanceof Error ? lastErr : new Error(String(lastErr));
+  getDb().prepare('UPDATE tasks SET progress = 35, updated_at = ? WHERE id = ?').run(now(), task.id);
+  // 归一化：兼容模型自然输出（title/preconditions/expected 对象等字段）
+  const rawList: Array<Record<string, unknown>> = Array.isArray(parsed)
+    ? (parsed as Array<Record<string, unknown>>)
+    : parsed && Array.isArray((parsed as { testCases?: unknown }).testCases)
+      ? ((parsed as { testCases: unknown }).testCases as Array<Record<string, unknown>>)
+      : parsed
+        ? [parsed as Record<string, unknown>]
+        : [];
+  const rows = rawList.map((r) => {
+    const pre = r.preconditions ?? r.precondition ?? '';
+    const exp = r.expected ?? '';
+    return {
+      name: String(r.name ?? r.title ?? r.id ?? '未命名用例'),
+      source: String(r.source ?? 'AI 生成'),
+      precondition: Array.isArray(pre) ? (pre as string[]).join('；') : String(pre ?? ''),
+      steps: Array.isArray(r.steps) && (r.steps as unknown[]).length > 0 ? r.steps as string[] : ['步骤待细化'],
+      expected: typeof exp === 'string' ? exp : exp ? JSON.stringify(exp) : '',
+    };
+  });
   if (rows.length === 0) throw new Error('AI 未返回有效用例（JSON 解析失败）');
 
   const db = getDb();
@@ -140,15 +188,20 @@ steps(操作步骤数组), expected(预期结果), status(默认 未执行), scr
   return `AI 已生成 ${rows.length} 条用例，入库 ${inserted} 条（V1，状态：待确认）。`;
 }
 
-async function updateCases(task: TaskRow, lib: { id: number; name: string; current_version: string }, llm: LlmCall): Promise<string> {
+async function updateCases(task: TaskRow, lib: RepoLib & { current_version: string }, llm: LlmCall): Promise<string> {
   const db = getDb();
   const samples = db.prepare(`SELECT case_no, name FROM cases WHERE library_id = ? ORDER BY id LIMIT 10`).all(lib.id) as
     Array<{ case_no: string; name: string }>;
+  const changes = recentChanges(lib);
+  const changeCtx = changes.length > 0
+    ? `自上次同步以来的仓库变更文件（前 20）：\n${changes.slice(0, 20).join('\n')}`
+    : '（未检测到仓库变更，按版本号变更更新）';
   const sys = promptFor('用例更新', `你是鸿蒙三方库测试用例更新 Agent。
 根据三方库版本变更，迭代更新给定用例，输出 JSON 数组，每项包含：
 caseNo(原用例编号), name(新名称), expected(更新后的预期), changeNote(更新点说明)。
 只输出 JSON。`);
   const user = `三方库：${lib.name}（${lib.current_version}）
+${changeCtx}
 现有用例：${JSON.stringify(samples)}
 任务要求：${task.input || '根据最新版本变更更新上述用例（版本自动递增）。'}`;
   const [updates] = await withProgress(task.id, [

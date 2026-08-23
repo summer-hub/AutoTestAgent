@@ -39,6 +39,7 @@ export interface TestCase {
   expected: string;
   status: CaseStatus;
   scriptStatus: ScriptStatus;
+  dtsUrl: string;              // 问题单（DTS）链接，空 = 无关联问题单
   /** 当前版本号：每次更新自动 +1，无上限（单条用例粒度） */
   currentVersion: number;
   createdAt: string;

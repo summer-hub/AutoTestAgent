@@ -38,6 +38,7 @@ CREATE TABLE IF NOT EXISTS cases (
   expected TEXT NOT NULL DEFAULT '',
   status TEXT NOT NULL DEFAULT '未执行',
   script_status TEXT NOT NULL DEFAULT '未绑定',
+  dts_url TEXT NOT NULL DEFAULT '',
   current_version INTEGER NOT NULL DEFAULT 1,
   created_at TEXT NOT NULL,
   updated_at TEXT NOT NULL,
