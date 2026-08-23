@@ -83,6 +83,7 @@ export const api = {
   createTask: (b: { type: string; libraryId?: number; input?: string; title?: string }) =>
     req<Task>(`${API_BASE}/tasks`, { method: 'POST', body: JSON.stringify(b) }),
   retryTask: (id: number) => req<{ ok: boolean }>(`${API_BASE}/tasks/${id}/retry`, { method: 'POST' }),
+  deleteTask: (id: number) => req<{ ok: boolean; deletedTaskNo: string }>(`${API_BASE}/tasks/${id}`, { method: 'DELETE' }),
 
   // 仓库本地目录
   repos: () => req<RepoInfo[]>(`${API_BASE}/repos`),
