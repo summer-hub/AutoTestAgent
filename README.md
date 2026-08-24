@@ -142,6 +142,21 @@ docker compose up -d          # 启动 MySQL 8 + Redis 7（只监听 127.0.0.1�
 
 之后宿主机直接 `dsh --profile web` 启动插件，首次连接引导读 `data/.mysql-url`（迁移脚本自动写入）。防火墙只开放 DSH Web 端口（3080），3306/6379 不对外。
 
+### 常见问题：DSH「Failed to load plugins」
+
+症状：启动 DSH 后控制台/浏览器提示 `failed to import loader entry ... (@linxin666/dsh-client-ui-community-plugins): bundle script .../client.js failed to load`。
+
+原因：`@linxin666/dsh-web-ui-all` 0.3.3 把 `dsh-client-ui-community-plugins`（纯数据源包，**没有客户端产物**）注册为客户端插件，浏览器加载其 `client.js` 时 404。上游无修复版本（迁移目标 `dsh-web-all` 依赖相同，同样有问题）。
+
+修复（每次 `pnpm install` 后重跑一次，再完全重启 DSH）：
+
+```powershell
+powershell -ExecutionPolicy Bypass -File docs/deploy/fix-dsh-community-plugin.ps1
+# 影响：仅禁用「社区插件商店」数据源挂载；AutoTest / 任务看板 / SSH 等插件不受影响
+```
+
+脚本会把 `~/.dsh/profiles/web/node_modules/@linxin666/dsh-web-ui-all/cordis.patch.yml` 中 community-plugins 的客户端注册段注释掉（自动备份 `.bak`，幂等可重复执行）。
+
 ### 加固能力（阶段 2）
 
 - **LLM 限流**：每用户每分钟调用上限（系统配置 `exec.llmRatePerMin`，默认 10），防刷模型额度，超限返回 429。
