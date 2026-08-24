@@ -159,8 +159,8 @@ export function fetchPrsFromGit(dir, opts = {}) {
     return prs;
 }
 function saveAnalysis(row) {
-    getDb().prepare(`INSERT INTO analyses (kind, granularity, library_id, case_id, title, content, created_at)
-    VALUES (?, ?, ?, ?, ?, ?, ?)`).run(row.kind, row.granularity, row.libraryId, row.caseId, row.title, JSON.stringify(row.content), now());
+    getDb().prepare(`INSERT INTO analyses (kind, granularity, library_id, case_id, title, content, round, created_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?)`).run(row.kind, row.granularity, row.libraryId, row.caseId, row.title, JSON.stringify(row.content), row.round, now());
 }
 function prContext(prs) {
     return prs.map((pr) => {
@@ -222,7 +222,7 @@ function ruleBasedPrAnalysis(prs) {
     });
 }
 /** PR 数据分析：每个 PR 产出「更新点 / 影响 / 建议用例更新 / 风险」。 */
-export async function analyzePrChanges(llm, library, prs, onStage) {
+export async function analyzePrChanges(llm, library, prs, onStage, round = '') {
     if (prs.length === 0)
         return { analyzed: 0, prs: 0, source: 'fallback', message: '仓库暂无 PR' };
     onStage?.(`拉取到 ${prs.length} 条 PR，AI 分析中…`);
@@ -248,7 +248,7 @@ ${prContext(prs)}`;
             if (pr)
                 item.webUrl = pr.web_url;
             saveAnalysis({
-                kind: 'pr_analysis', granularity: 'single', libraryId: library.id, caseId: null,
+                kind: 'pr_analysis', granularity: 'single', libraryId: library.id, caseId: null, round,
                 title: `PR #${item.prNumber} · 数据分析`, content: item,
             });
         }
@@ -260,7 +260,7 @@ ${prContext(prs)}`;
         const items = ruleBasedPrAnalysis(prs);
         for (const item of items) {
             saveAnalysis({
-                kind: 'pr_analysis', granularity: 'single', libraryId: library.id, caseId: null,
+                kind: 'pr_analysis', granularity: 'single', libraryId: library.id, caseId: null, round,
                 title: `PR #${item.prNumber} · 数据分析（规则降级）`, content: item,
             });
         }
@@ -268,7 +268,7 @@ ${prContext(prs)}`;
     }
 }
 /** 用例更新分析：结合 PR 变更与现有用例，产出需要更新的用例及理由。 */
-export async function analyzeCaseUpdates(llm, library, prs, onStage) {
+export async function analyzeCaseUpdates(llm, library, prs, onStage, round = '') {
     const db = getDb();
     const samples = db.prepare('SELECT case_no, name, expected FROM cases WHERE library_id = ? ORDER BY id LIMIT 15')
         .all(library.id);
@@ -296,7 +296,7 @@ ${samples.map((c) => `- ${c.case_no} ${c.name}：${(c.expected || '').slice(0, 1
         const items = Array.isArray(parsed) ? parsed.slice(0, 20) : [];
         for (const item of items) {
             saveAnalysis({
-                kind: 'case_update_analysis', granularity: 'single', libraryId: library.id, caseId: null,
+                kind: 'case_update_analysis', granularity: 'single', libraryId: library.id, caseId: null, round,
                 title: `用例更新建议 · ${String(item.caseNo ?? '新增')}`, content: item,
             });
         }
@@ -313,7 +313,7 @@ ${samples.map((c) => `- ${c.case_no} ${c.name}：${(c.expected || '').slice(0, 1
         }));
         for (const item of items) {
             saveAnalysis({
-                kind: 'case_update_analysis', granularity: 'single', libraryId: library.id, caseId: null,
+                kind: 'case_update_analysis', granularity: 'single', libraryId: library.id, caseId: null, round,
                 title: `用例更新建议 · PR #${prs[items.indexOf(item)].number}（规则降级）`, content: item,
             });
         }
@@ -365,7 +365,7 @@ ${rows.map((r) => `- [${r.started_at ?? ''}] ${r.library_name ?? '?'}/${r.case_n
         const parsed = extractJson(text);
         saveAnalysis({
             kind: 'attribution', granularity: opts.granularity, libraryId: opts.libraryId ?? null,
-            caseId: opts.caseId ?? null, title, content: parsed,
+            caseId: opts.caseId ?? null, title, round: '', content: parsed,
         });
         return { analyzed: 1, prs: rows.length, source: 'llm', message: `AI 归因完成（基于 ${rows.length} 条失败执行）` };
     }
@@ -385,7 +385,7 @@ ${rows.map((r) => `- [${r.started_at ?? ''}] ${r.library_name ?? '?'}/${r.case_n
         });
         saveAnalysis({
             kind: 'attribution', granularity: opts.granularity, libraryId: opts.libraryId ?? null,
-            caseId: opts.caseId ?? null, title: `${title}（规则降级）`,
+            caseId: opts.caseId ?? null, round: '', title: `${title}（规则降级）`,
             content: {
                 conclusion: `基于 ${rows.length} 条失败执行记录，按 ${granularityLabel} 粒度聚合：失败集中在 ${[...new Set(conclusions.flatMap((c) => c.causes))].join('、')}。`,
                 rootCauses: [...new Set(conclusions.flatMap((c) => c.causes))],

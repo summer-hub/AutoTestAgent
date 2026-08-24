@@ -5,14 +5,16 @@
 //  - AI 任务经 ctx.llm（模型配置全部来自 DSH 设置）
 //  - 定时计划经内置 node-cron 调度
 import { Context } from '@deepseek-ai/cordis';
+import fs from 'node:fs';
 // 引入类型声明：把 webServer 挂到 Context（dsh-host-webserver 的 declare module）
 import type WebServer from '@deepseek-ai/dsh-host-webserver';
 import { fileURLToPath } from 'node:url';
-import { ensureSchemaAndSeed } from './db/connection.js';
+import { ensureSchemaAndSeed, getDb } from './db/connection.js';
 import { makeLlm } from './services/llmHarness.js';
 import { makeApiHandler } from './api/http.js';
 import { startScheduler } from './services/scheduler.js';
 import { makeStaticHandler } from './static.js';
+import { repoDirFor } from './services/gitRepo.js';
 
 declare module '@deepseek-ai/cordis' {
   interface Context {
@@ -27,6 +29,14 @@ export function apply(ctx: Context): void {
   // 1. 业务库初始化（幂等 + 首次自动种子）
   try {
     ensureSchemaAndSeed();
+    // 启动对账：本地没有克隆目录的库，同步状态一律清空（迁移/拷贝旧库后不再显示过期记录）
+    const db = getDb();
+    const libs = db.prepare('SELECT id, name FROM libraries').all() as Array<{ id: number; name: string }>;
+    for (const lib of libs) {
+      if (!fs.existsSync(`${repoDirFor(lib.name)}/.git`)) {
+        db.prepare(`UPDATE libraries SET last_commit = '', last_synced_at = NULL WHERE id = ? AND (last_commit != '' OR last_synced_at IS NOT NULL)`).run(lib.id);
+      }
+    }
     console.log('[dsh-autotest] 业务库就绪');
   } catch (e) {
     console.error('[dsh-autotest] 业务库初始化失败：', (e as Error).message);

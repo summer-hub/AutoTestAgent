@@ -67,6 +67,12 @@ export function ensureSchemaAndSeed() {
     catch {
         /* 列已存在 */
     }
+    try {
+        db.exec(`ALTER TABLE analyses ADD COLUMN round TEXT NOT NULL DEFAULT ''`);
+    }
+    catch {
+        /* 列已存在 */
+    }
     const n = db.prepare('SELECT COUNT(*) AS n FROM libraries').get().n;
     if (n === 0) {
         seed(db);

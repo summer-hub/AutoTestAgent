@@ -904,6 +904,7 @@ ${(row.logs ?? '').slice(0, 4000) || '（无）'}
       : [];
     const runId = `pr-${Date.now()}-${Math.floor(Math.random() * 10000)}`;
     const target = prNumbers.length > 0 ? prNumbers : prNumber ? [prNumber] : [];
+    const round = `R-${Date.now()}-${Math.floor(Math.random() * 10000)}`;
     setProgress(runId, { stage: target.length > 0 ? `拉取 ${target.length} 条 PR…` : '拉取 PR 列表…' });
     setImmediate(async () => {
       try {
@@ -929,7 +930,7 @@ ${(row.logs ?? '').slice(0, 4000) || '（无）'}
           if (prs.length === 0) throw new Error('本地仓库无可用提交');
         }
         setProgress(runId, { stage: `已获取 ${prs.length} 条 PR` });
-        const r = await analyzePrChanges(llm, lib as LibraryRow, prs, (s) => setProgress(runId, { stage: s }));
+        const r = await analyzePrChanges(llm, lib as LibraryRow, prs, (s) => setProgress(runId, { stage: s }), round);
         setProgress(runId, { stage: r.message, done: true });
       } catch (e) {
         setProgress(runId, { stage: '分析失败', done: true, error: (e as Error).message });
@@ -951,6 +952,7 @@ ${(row.logs ?? '').slice(0, 4000) || '（无）'}
       : [];
     const runId = `case-${Date.now()}-${Math.floor(Math.random() * 10000)}`;
     const target = prNumbers.length > 0 ? prNumbers : prNumber ? [prNumber] : [];
+    const round = `R-${Date.now()}-${Math.floor(Math.random() * 10000)}`;
     setProgress(runId, { stage: target.length > 0 ? `拉取 ${target.length} 条 PR…` : '拉取 PR 列表…' });
     setImmediate(async () => {
       try {
@@ -976,7 +978,7 @@ ${(row.logs ?? '').slice(0, 4000) || '（无）'}
           if (prs.length === 0) throw new Error('本地仓库无可用提交');
         }
         setProgress(runId, { stage: `已获取 ${prs.length} 条 PR` });
-        const r = await analyzeCaseUpdates(llm, lib as LibraryRow, prs, (s) => setProgress(runId, { stage: s }));
+        const r = await analyzeCaseUpdates(llm, lib as LibraryRow, prs, (s) => setProgress(runId, { stage: s }), round);
         setProgress(runId, { stage: r.message, done: true });
       } catch (e) {
         setProgress(runId, { stage: '分析失败', done: true, error: (e as Error).message });
@@ -989,6 +991,24 @@ ${(row.logs ?? '').slice(0, 4000) || '（无）'}
     const p = analysisProgress.get(String(params.runId));
     if (!p) throw Object.assign(new Error('进度不存在或已过期'), { statusCode: 404 });
     return p;
+  });
+
+  // 按扫描轮次删除整轮分析结果（多次扫描时标识/清理用）
+  route('DELETE', '/analyses/round/:round', async ({ params }) => {
+    const round = String(params.round);
+    const db = getDb();
+    const n = db.prepare('DELETE FROM analyses WHERE round = ?').run(round).changes;
+    void cacheDel('analyses');
+    return { ok: true, deleted: n };
+  });
+
+  // 清空某个三方库的全部分析结果（换库/重新开始用）
+  route('DELETE', '/analyses/library/:libraryId', async ({ params }) => {
+    const libId = Number(params.libraryId);
+    const db = getDb();
+    const n = db.prepare('DELETE FROM analyses WHERE library_id = ?').run(libId).changes;
+    void cacheDel('analyses');
+    return { ok: true, deleted: n };
   });
 
   route('DELETE', '/analyses/:id', async ({ params }) => {
@@ -1070,7 +1090,8 @@ function mapDevice(row: Record<string, unknown>) {
 function mapAnalysis(row: Record<string, unknown>) {
   return {
     id: row.id, kind: row.kind, granularity: row.granularity, libraryId: row.library_id,
-    caseId: row.case_id, title: row.title, content: safeJsonParse(row.content, {}), createdAt: row.created_at,
+    caseId: row.case_id, title: row.title, content: safeJsonParse(row.content, {}),
+    round: (row.round as string | undefined) ?? '', createdAt: row.created_at,
   };
 }
 function safeJsonArray(v: unknown): unknown[] {

@@ -45,9 +45,9 @@ export interface AnalyzeResult {
     message: string;
 }
 /** PR 数据分析：每个 PR 产出「更新点 / 影响 / 建议用例更新 / 风险」。 */
-export declare function analyzePrChanges(llm: LlmCall, library: LibraryRow, prs: GitCodePr[], onStage?: (stage: string) => void): Promise<AnalyzeResult>;
+export declare function analyzePrChanges(llm: LlmCall, library: LibraryRow, prs: GitCodePr[], onStage?: (stage: string) => void, round?: string): Promise<AnalyzeResult>;
 /** 用例更新分析：结合 PR 变更与现有用例，产出需要更新的用例及理由。 */
-export declare function analyzeCaseUpdates(llm: LlmCall, library: LibraryRow, prs: GitCodePr[], onStage?: (stage: string) => void): Promise<AnalyzeResult>;
+export declare function analyzeCaseUpdates(llm: LlmCall, library: LibraryRow, prs: GitCodePr[], onStage?: (stage: string) => void, round?: string): Promise<AnalyzeResult>;
 export interface AttributionOptions {
     granularity: 'single' | 'lib' | 'multi';
     libraryId?: number | null;

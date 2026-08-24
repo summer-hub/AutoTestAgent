@@ -116,6 +116,49 @@ export default function AnalysisPage() {
     }
   };
 
+  const removeRound = async (round: string) => {
+    if (!window.confirm('确认删除这一轮的全部分析结果？')) return;
+    try {
+      await api.deleteAnalysisRound(round);
+      if (curLib !== null) loadRows(curLib);
+    } catch (e) {
+      setError(String((e as Error).message));
+    }
+  };
+
+  const clearLibrary = async () => {
+    if (curLib === null) return;
+    if (!window.confirm(`确认清空「${libs.find((l) => l.id === curLib)?.name}」的全部历史分析？`)) return;
+    try {
+      await api.deleteLibraryAnalyses(curLib);
+      loadRows(curLib);
+    } catch (e) {
+      setError(String((e as Error).message));
+    }
+  };
+
+  // 按扫描轮次分组（同一轮扫描的所有 PR 卡片归到一起，可整体删除）
+  const groupByRound = (rows: Analysis[]): Array<[string, Analysis[]]> => {
+    const m = new Map<string, Analysis[]>();
+    for (const r of rows) {
+      const k = r.round || '';
+      if (!m.has(k)) m.set(k, []);
+      m.get(k)!.push(r);
+    }
+    return Array.from(m.entries());
+  };
+
+  const roundLabel = (round: string) => {
+    if (!round) return '历史记录（升级前）';
+    const m = round.match(/^R-(\d+)/);
+    if (m) {
+      const d = new Date(Number(m[1]));
+      const p = (n: number) => String(n).padStart(2, '0');
+      return `扫描 ${d.getMonth() + 1}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}`;
+    }
+    return round;
+  };
+
   // 详情内容：按类型渲染成可读视图，而不是裸 JSON
   const renderDetail = (a: Analysis) => {
     const c = a.content ?? {};
@@ -172,6 +215,7 @@ export default function AnalysisPage() {
         </select>
         <button className="btn primary" disabled={curLib === null} onClick={() => void openPrModal('pr')}>🔍 拉取并分析 PR</button>
         <button className="btn" disabled={curLib === null} onClick={() => void openPrModal('case')}>📝 用例更新分析</button>
+        <button className="btn" disabled={curLib === null} onClick={() => void clearLibrary()} title="删除该三方库全部历史分析">🗑 清空该库</button>
         <span className="muted" style={{ fontSize: 11.5, marginLeft: 'auto' }}>
           {curLib === null ? '' : `${libs.find((l) => l.id === curLib)?.name} · PR 分析 ${prRows.length} 条 / 用例更新建议 ${caseRows.length} 条`}
         </span>
@@ -183,24 +227,37 @@ export default function AnalysisPage() {
           暂无 PR 分析结果，点「拉取并分析 PR」生成
         </div>
       ) : (
-        <div className="grid" style={{ gridTemplateColumns: 'repeat(auto-fill, minmax(300px, 1fr))', marginBottom: 22 }}>
-          {prRows.map((a) => {
-            const c = a.content ?? {};
-            return (
-              <div key={a.id} className="card" style={{ cursor: 'pointer', padding: 12 }} onClick={() => setDetail(a)}>
-                <div className="card-h" style={{ marginBottom: 6 }}>
-                  <span className="t" style={{ fontSize: 13, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>PR #{c.prNumber} · {c.title ?? a.title}</span>
-                  <span className="link" style={{ fontSize: 11.5, color: 'var(--red)', flexShrink: 0 }} onClick={(e) => { e.stopPropagation(); void removeAnalysis(a); }}>删除</span>
-                </div>
-                <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', marginBottom: 6 }}>
-                  <span className={`tag ${STATE_TAG[c.state ?? ''] ?? 'gray'}`}>{c.state ?? ''}</span>
-                  <span className={`tag ${RISK_TAG[c.risk ?? ''] ?? 'gray'}`}>风险 {c.risk ?? '—'}</span>
-                  <span className="tag plain">{a.createdAt?.slice(0, 16)}</span>
-                </div>
-                <div className="muted" style={{ fontSize: 11.5, lineHeight: 1.5, maxHeight: 34, overflow: 'hidden' }}>{prSummary(a)}</div>
+        <div style={{ marginBottom: 22 }}>
+          {groupByRound(prRows).map(([round, rows]) => (
+            <div key={round || 'legacy'} style={{ marginBottom: 18 }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 8 }}>
+                <span className="muted" style={{ fontSize: 12 }}>⏱ {roundLabel(round)}</span>
+                <span className="tag plain">{rows.length} 条</span>
+                {round !== '' && (
+                  <button className="btn sm" style={{ color: 'var(--red)', marginLeft: 'auto' }} onClick={() => void removeRound(round)}>删除本轮</button>
+                )}
               </div>
-            );
-          })}
+              <div className="grid" style={{ gridTemplateColumns: 'repeat(auto-fill, minmax(300px, 1fr))' }}>
+                {rows.map((a) => {
+                  const c = a.content ?? {};
+                  return (
+                    <div key={a.id} className="card" style={{ cursor: 'pointer', padding: 12 }} onClick={() => setDetail(a)}>
+                      <div className="card-h" style={{ marginBottom: 6 }}>
+                        <span className="t" style={{ fontSize: 13, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>PR #{c.prNumber} · {c.title ?? a.title}</span>
+                        <span className="link" style={{ fontSize: 11.5, color: 'var(--red)', flexShrink: 0 }} onClick={(e) => { e.stopPropagation(); void removeAnalysis(a); }}>删除</span>
+                      </div>
+                      <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', marginBottom: 6 }}>
+                        <span className={`tag ${STATE_TAG[c.state ?? ''] ?? 'gray'}`}>{c.state ?? ''}</span>
+                        <span className={`tag ${RISK_TAG[c.risk ?? ''] ?? 'gray'}`}>风险 {c.risk ?? '—'}</span>
+                        <span className="tag plain">{a.createdAt?.slice(0, 16)}</span>
+                      </div>
+                      <div className="muted" style={{ fontSize: 11.5, lineHeight: 1.5, maxHeight: 34, overflow: 'hidden' }}>{prSummary(a)}</div>
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+          ))}
         </div>
       )}
 
@@ -210,20 +267,33 @@ export default function AnalysisPage() {
           暂无用例更新建议，点「用例更新分析」生成
         </div>
       ) : (
-        <div className="grid" style={{ gridTemplateColumns: 'repeat(auto-fill, minmax(300px, 1fr))' }}>
-          {caseRows.map((a) => {
-            const c = a.content ?? {};
-            return (
-              <div key={a.id} className="card" style={{ cursor: 'pointer', padding: 12 }} onClick={() => setDetail(a)}>
-                <div className="card-h" style={{ marginBottom: 6 }}>
-                  <span className="t" style={{ fontSize: 13 }}>{c.caseNo ? `用例 ${c.caseNo}` : '新增用例'}</span>
-                  <span className="tag plain">{a.createdAt?.slice(0, 16)}</span>
-                  <span className="link" style={{ fontSize: 11.5, color: 'var(--red)', marginLeft: 'auto' }} onClick={(e) => { e.stopPropagation(); void removeAnalysis(a); }}>删除</span>
-                </div>
-                <div className="muted" style={{ fontSize: 11.5, lineHeight: 1.5, maxHeight: 34, overflow: 'hidden' }}>{caseSummary(a)}</div>
+        <div>
+          {groupByRound(caseRows).map(([round, rows]) => (
+            <div key={round || 'legacy'} style={{ marginBottom: 18 }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 8 }}>
+                <span className="muted" style={{ fontSize: 12 }}>⏱ {roundLabel(round)}</span>
+                <span className="tag plain">{rows.length} 条</span>
+                {round !== '' && (
+                  <button className="btn sm" style={{ color: 'var(--red)', marginLeft: 'auto' }} onClick={() => void removeRound(round)}>删除本轮</button>
+                )}
               </div>
-            );
-          })}
+              <div className="grid" style={{ gridTemplateColumns: 'repeat(auto-fill, minmax(300px, 1fr))' }}>
+                {rows.map((a) => {
+                  const c = a.content ?? {};
+                  return (
+                    <div key={a.id} className="card" style={{ cursor: 'pointer', padding: 12 }} onClick={() => setDetail(a)}>
+                      <div className="card-h" style={{ marginBottom: 6 }}>
+                        <span className="t" style={{ fontSize: 13 }}>{c.caseNo ? `用例 ${c.caseNo}` : '新增用例'}</span>
+                        <span className="tag plain">{a.createdAt?.slice(0, 16)}</span>
+                        <span className="link" style={{ fontSize: 11.5, color: 'var(--red)', marginLeft: 'auto' }} onClick={(e) => { e.stopPropagation(); void removeAnalysis(a); }}>删除</span>
+                      </div>
+                      <div className="muted" style={{ fontSize: 11.5, lineHeight: 1.5, maxHeight: 34, overflow: 'hidden' }}>{caseSummary(a)}</div>
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+          ))}
         </div>
       )}
 

@@ -175,6 +175,7 @@ CREATE TABLE IF NOT EXISTS analyses (
   case_id INTEGER REFERENCES cases(id),
   title TEXT NOT NULL DEFAULT '',
   content TEXT NOT NULL,
+  round TEXT NOT NULL DEFAULT '',
   created_at TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_analyses_kind ON analyses(kind, granularity);

@@ -1,15 +1,25 @@
+import fs from 'node:fs';
 import { fileURLToPath } from 'node:url';
-import { ensureSchemaAndSeed } from './db/connection.js';
+import { ensureSchemaAndSeed, getDb } from './db/connection.js';
 import { makeLlm } from './services/llmHarness.js';
 import { makeApiHandler } from './api/http.js';
 import { startScheduler } from './services/scheduler.js';
 import { makeStaticHandler } from './static.js';
+import { repoDirFor } from './services/gitRepo.js';
 export const name = 'dsh-autotest';
 export const inject = ['webServer', 'llm'];
 export function apply(ctx) {
     // 1. 业务库初始化（幂等 + 首次自动种子）
     try {
         ensureSchemaAndSeed();
+        // 启动对账：本地没有克隆目录的库，同步状态一律清空（迁移/拷贝旧库后不再显示过期记录）
+        const db = getDb();
+        const libs = db.prepare('SELECT id, name FROM libraries').all();
+        for (const lib of libs) {
+            if (!fs.existsSync(`${repoDirFor(lib.name)}/.git`)) {
+                db.prepare(`UPDATE libraries SET last_commit = '', last_synced_at = NULL WHERE id = ? AND (last_commit != '' OR last_synced_at IS NOT NULL)`).run(lib.id);
+            }
+        }
         console.log('[dsh-autotest] 业务库就绪');
     }
     catch (e) {

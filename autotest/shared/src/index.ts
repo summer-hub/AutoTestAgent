@@ -191,6 +191,7 @@ export interface Analysis {
   caseId: number | null;
   title: string;
   content: Record<string, any>;
+  round: string;              // 扫描轮次标识（每次「拉取并分析 PR / 用例更新分析」一轮）
   createdAt: string;
 }
 

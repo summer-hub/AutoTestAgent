@@ -146,6 +146,8 @@ export const api = {
   analysisProgress: (runId: string) =>
     req<{ stage: string; done: boolean; error?: string }>(`${API_BASE}/analyses/progress/${runId}`),
   deleteAnalysis: (id: number) => req<{ ok: boolean }>(`${API_BASE}/analyses/${id}`, { method: 'DELETE' }),
+  deleteAnalysisRound: (round: string) => req<{ ok: boolean; deleted: number }>(`${API_BASE}/analyses/round/${encodeURIComponent(round)}`, { method: 'DELETE' }),
+  deleteLibraryAnalyses: (libraryId: number) => req<{ ok: boolean; deleted: number }>(`${API_BASE}/analyses/library/${libraryId}`, { method: 'DELETE' }),
   runAttribution: (b: { granularity: string; libraryId?: number; caseId?: number }) =>
     req<{ analyzed: number; prs: number; source: 'llm' | 'fallback'; message: string }>(
       `${API_BASE}/analyses/attribution`, { method: 'POST', body: JSON.stringify(b) },
