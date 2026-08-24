@@ -1,6 +1,8 @@
 import { createUserMessage } from '@deepseek-ai/dsh-llm';
 import { writeFileSync } from 'node:fs';
 import { getSetting } from './settings.js';
+/** 最近一次实际使用的 provider/model（供执行器写入任务轨迹展示） */
+export const lastLlmCall = { provider: '', model: '' };
 /** 从 ctx.llm 构造一个非流式文本调用（优先默认 provider；若配置了 agent.defaultModel 且存在于模型列表，则优先使用该模型） */
 export function makeLlm(ctx) {
     return async (input) => {
@@ -40,6 +42,8 @@ export function makeLlm(ctx) {
         for (const { provider, model } of ordered) {
             for (let attempt = 0; attempt < 2; attempt++) {
                 try {
+                    lastLlmCall.provider = provider;
+                    lastLlmCall.model = model;
                     console.log(`[dsh-autotest] llm call: provider=${provider} model=${model} attempt=${attempt + 1}`);
                     let text = '';
                     for await (const chunk of ctx.llm.stream({

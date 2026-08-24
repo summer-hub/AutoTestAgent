@@ -72,6 +72,7 @@ CREATE TABLE IF NOT EXISTS tasks (
   title TEXT NOT NULL,
   library_id INTEGER REFERENCES libraries(id),
   input TEXT NOT NULL DEFAULT '',
+  trace TEXT NOT NULL DEFAULT '[]',
   status TEXT NOT NULL DEFAULT 'pending',
   progress INTEGER NOT NULL DEFAULT 0,
   result_summary TEXT,

@@ -494,8 +494,14 @@ function defineRoutes(llm) {
         const db = getDb();
         const t = now();
         const taskNo = nextTaskNo();
+        // 服务端按 type 归一化标题，防止客户端传错标题（如「更新测试用例」显示成「编写测试用例」）
+        const titleByType = {
+            pull_repo: '拉取仓库代码', update_repo: '更新仓库代码', write_cases: '编写测试用例',
+            update_cases: '更新测试用例', to_script: '用例转自动化脚本',
+        };
+        const title = b.title ?? titleByType[b.type] ?? b.type;
         const res = db.prepare(`INSERT INTO tasks (task_no, type, title, library_id, input, status, progress, created_at, updated_at)
-      VALUES (?, ?, ?, ?, ?, 'pending', 0, ?, ?)`).run(taskNo, b.type, b.title ?? b.type, b.libraryId ?? null, b.input ?? '', t, t);
+      VALUES (?, ?, ?, ?, ?, 'pending', 0, ?, ?)`).run(taskNo, b.type, title, b.libraryId ?? null, b.input ?? '', t, t);
         const id = Number(res.lastInsertRowid);
         setImmediate(() => { runTask(id, llm).catch(() => { }); });
         return mapTask(db.prepare('SELECT * FROM tasks WHERE id = ?').get(id));
@@ -989,7 +995,7 @@ function mapPrompt(row) {
 function mapTask(row) {
     return {
         id: row.id, taskNo: row.task_no, type: row.type, title: row.title, libraryId: row.library_id,
-        input: row.input ?? '', status: row.status, progress: row.progress, resultSummary: row.result_summary,
+        input: row.input ?? '', trace: safeJsonArray(row.trace), status: row.status, progress: row.progress, resultSummary: row.result_summary,
         error: row.error, createdAt: row.created_at, updatedAt: row.updated_at,
     };
 }

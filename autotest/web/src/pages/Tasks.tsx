@@ -23,6 +23,7 @@ export default function TasksPage() {
   const [libSel, setLibSel] = useState<number | ''>('');
   const [libPrompt, setLibPrompt] = useState('');
   const [libSaving, setLibSaving] = useState(false);
+  const [traceView, setTraceView] = useState<Task | null>(null);
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
   const load = useCallback(() => {
@@ -158,6 +159,9 @@ export default function TasksPage() {
                 {t.type === 'to_script' && t.status === 'done' && t.libraryId && (
                   <span className="link" style={{ fontSize: 12 }} onClick={() => setRepoDialog({ mode: 'browse', libId: t.libraryId ?? undefined, tab: 'scripts' })}>查看脚本</span>
                 )}
+                {(t.trace?.length ?? 0) > 0 && (
+                  <span className="link" style={{ fontSize: 12 }} onClick={() => setTraceView(t)}>查看轨迹</span>
+                )}
                 {t.status === 'failed' && <button className="btn sm" onClick={() => retry(t.id)}>重试</button>}
                 <span className="link" style={{ fontSize: 12, color: 'var(--red)' }} onClick={() => void removeTask(t)}>删除</span>
               </div>
@@ -165,6 +169,39 @@ export default function TasksPage() {
           ))
         )}
       </div>
+
+      {traceView && (
+        <div className="s-overlay show">
+          <div className="s-mask" onClick={() => setTraceView(null)} />
+          <div style={{ position: 'relative', zIndex: 1, width: 760, maxWidth: 'calc(100vw - 40px)', maxHeight: 'calc(100vh - 40px)', background: 'var(--panel)', border: '1px solid var(--border2)', borderRadius: 16, boxShadow: '0 24px 80px rgba(0,0,0,.55)', display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '14px 18px', borderBottom: '1px solid var(--border)' }}>
+              <span style={{ fontSize: 15, fontWeight: 600 }}>🤖 {traceView.taskNo} · {traceView.title} 执行轨迹</span>
+              <span className={`tag ${traceView.status === 'done' ? 'green' : traceView.status === 'failed' ? 'red' : 'blue'}`}>{traceView.status}</span>
+              <div style={{ flex: 1 }} />
+              <button className="s-header x" onClick={() => setTraceView(null)} style={{ width: 28, height: 28, borderRadius: 28, border: 'none', background: 'none', color: 'var(--text2)', cursor: 'pointer', fontSize: 14 }}>✕</button>
+            </div>
+            <div style={{ flex: 1, minHeight: 0, overflowY: 'auto', padding: '16px 18px', display: 'flex', flexDirection: 'column', gap: 10 }}>
+              {traceView.trace && traceView.trace.length > 0 ? traceView.trace.map((e) => (
+                <div key={e.seq} style={{ display: 'flex', gap: 10 }}>
+                  <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', flexShrink: 0 }}>
+                    <span style={{ width: 22, height: 22, borderRadius: '50%', background: 'var(--accent-dim)', color: 'var(--accent2)', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 11, fontWeight: 600 }}>{e.seq}</span>
+                    {e.seq < (traceView.trace?.length ?? 0) && <span style={{ width: 2, flex: 1, background: 'var(--border2)' }} />}
+                  </div>
+                  <div style={{ flex: 1, minWidth: 0, paddingBottom: 4 }}>
+                    <div style={{ fontSize: 12.5, color: 'var(--text2)' }}>
+                      <b style={{ color: 'var(--text)' }}>{e.title}</b>
+                      <span className="muted" style={{ fontSize: 11, marginLeft: 8 }}>{e.at}</span>
+                    </div>
+                    {e.detail && (
+                      <pre className="mono" style={{ marginTop: 6, fontSize: 11.5, lineHeight: 1.6, whiteSpace: 'pre-wrap', wordBreak: 'break-word', background: 'var(--bg2)', border: '1px solid var(--border)', borderRadius: 8, padding: '8px 10px', maxHeight: 160, overflowY: 'auto', color: 'var(--text2)' }}>{e.detail}</pre>
+                    )}
+                  </div>
+                </div>
+              )) : <div className="muted" style={{ fontSize: 12.5 }}>该任务暂无轨迹记录</div>}
+            </div>
+          </div>
+        </div>
+      )}
 
       {libTask && (
         <div className="s-overlay show">

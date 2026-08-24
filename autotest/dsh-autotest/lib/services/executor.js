@@ -6,7 +6,17 @@ import path from 'node:path';
 import { getDb, now } from '../db/connection.js';
 import { ensureLibraryByRepoUrl, inspectRepo, pullRepo, recentChanges, updateRepo, workspaceDir } from './gitRepo.js';
 import { getSetting } from './settings.js';
-import { extractJson } from './llmHarness.js';
+import { extractJson, lastLlmCall } from './llmHarness.js';
+/** 往任务的 AI 执行轨迹追加一条记录（tasks.trace JSON 数组）。 */
+function traceTask(taskId, title, detail = '') {
+    const db = getDb();
+    const row = db.prepare('SELECT trace FROM tasks WHERE id = ?').get(taskId);
+    if (!row)
+        return;
+    const trace = JSON.parse(row.trace || '[]');
+    trace.push({ seq: trace.length + 1, at: now(), title, detail });
+    db.prepare('UPDATE tasks SET trace = ? WHERE id = ?').run(JSON.stringify(trace), taskId);
+}
 export async function runTask(taskId, llm) {
     const db = getDb();
     const task = db.prepare('SELECT * FROM tasks WHERE id = ?').get(taskId);
@@ -19,11 +29,14 @@ export async function runTask(taskId, llm) {
     };
     try {
         set({ status: 'running', progress: 10, error: null });
+        traceTask(taskId, '任务开始', `${task.title}（${task.type}）`);
         const result = await execute(task, llm);
         set({ status: 'done', progress: 100, result_summary: result });
+        traceTask(taskId, '任务完成', result);
     }
     catch (e) {
         set({ status: 'failed', error: e.message.slice(0, 500), result_summary: null });
+        traceTask(taskId, '任务失败', e.message.slice(0, 500));
     }
 }
 async function execute(task, llm) {
@@ -53,9 +66,11 @@ async function repoTask(task, lib) {
     const url = (task.input || '').trim();
     const looksLikeUrl = /^(https?:\/\/|git@|ssh:\/\/|git:\/\/)/i.test(url);
     let target = lib;
+    traceTask(task.id, '解析仓库', target ? `库：${target.name}` : url || '（未指定）');
     if (!target && looksLikeUrl) {
         target = ensureLibraryByRepoUrl(url);
         db.prepare('UPDATE tasks SET library_id = ? WHERE id = ?').run(target.id, task.id);
+        traceTask(task.id, '自动创建三方库', `${target.name}（${url}）`);
     }
     else if (target && !target.repo_url && looksLikeUrl) {
         db.prepare('UPDATE libraries SET repo_url = ?, updated_at = ? WHERE id = ?').run(url, now(), target.id);
@@ -66,6 +81,7 @@ async function repoTask(task, lib) {
     const [r] = await withProgress(task.id, [
         [25, async () => (task.type === 'pull_repo' ? pullRepo(target) : updateRepo(target))],
     ]);
+    traceTask(task.id, task.type === 'pull_repo' ? 'git clone/pull 完成' : 'git 更新完成', r.summary);
     return r.summary;
 }
 function promptFor(role, fallback) {
@@ -93,8 +109,10 @@ async function writeCases(task, lib, llm) {
     const insp0 = inspectRepo(lib);
     if (!fs.existsSync(path.join(insp0.dir, '.git')) && lib.repo_url) {
         await pullRepo(lib);
+        traceTask(task.id, '拉取仓库', lib.repo_url);
     }
     const insp = inspectRepo(lib);
+    traceTask(task.id, '解析仓库工程', `bundleName=${insp.bundleName || '—'} · mainAbility=${insp.abilityName || 'EntryAbility'} · 页面=${insp.pages.join(', ') || '—'}`);
     const repoContext = insp.bundleName || insp.pages.length > 0
         ? `已下载仓库目录：${insp.dir}
 bundleName：${insp.bundleName || '（未解析到，尝试 AppScope/app.json5）'}
@@ -126,6 +144,7 @@ ${repoContext}
             const text = await llm(attempt === 0
                 ? { system: sys, user, maxTokens: 4000 }
                 : { system: sysCompact, user: `三方库：${lib.name}（${lib.current_version}）\n${repoContext}`, maxTokens: 2500 });
+            traceTask(task.id, `AI 返回（${text.length} 字符${lastLlmCall.model ? ` · ${lastLlmCall.provider}/${lastLlmCall.model}` : ''}）`, text.slice(0, 600));
             parsed = extractJson(text);
         }
         catch (e) {
@@ -181,6 +200,7 @@ ${repoContext}
         }
         return n;
     })();
+    traceTask(task.id, '写入用例库', `生成 ${rows.length} 条，入库 ${inserted} 条（V1，状态：待确认）`);
     return `AI 已生成 ${rows.length} 条用例，入库 ${inserted} 条（V1，状态：待确认）。`;
 }
 async function updateCases(task, lib, llm) {
@@ -199,9 +219,25 @@ caseNo(原用例编号), name(新名称), expected(更新后的预期), changeNo
 ${changeCtx}
 现有用例：${JSON.stringify(samples)}
 任务要求：${task.input || '根据最新版本变更更新上述用例（版本自动递增）。'}`;
-    const [updates] = await withProgress(task.id, [
-        [40, async () => extractJson(await llm({ system: sys, user }))],
-    ]);
+    // 与 write_cases 相同的健壮性：首次解析失败用「精简模式」重试一次
+    const sysCompactUpd = `只输出一个 JSON 数组，不要任何解释、围栏或多余字段。4 条精简建议，每项仅：{ caseNo, reason, suggestedAction, newExpected }，文本简洁。`;
+    let updates = null;
+    let lastErr = null;
+    for (let attempt = 0; attempt < 2 && !updates; attempt++) {
+        try {
+            const text = await llm(attempt === 0
+                ? { system: sys, user }
+                : { system: sysCompactUpd, user: `三方库：${lib.name}（${lib.current_version}）\n${changeCtx}\n现有用例：${JSON.stringify(samples)}` });
+            traceTask(task.id, `AI 返回（${text.length} 字符${lastLlmCall.model ? ` · ${lastLlmCall.provider}/${lastLlmCall.model}` : ''}）`, text.slice(0, 600));
+            updates = extractJson(text);
+        }
+        catch (e) {
+            lastErr = e;
+        }
+    }
+    if (!updates)
+        throw lastErr instanceof Error ? lastErr : new Error(String(lastErr));
+    getDb().prepare('UPDATE tasks SET progress = 40, updated_at = ? WHERE id = ?').run(now(), task.id);
     const t = now();
     let updated = 0;
     db.transaction(() => {
@@ -222,6 +258,7 @@ ${changeCtx}
             updated++;
         }
     })();
+    traceTask(task.id, '写入用例库', `更新 ${updated} 条用例（版本自动递增）`);
     return `AI 已更新 ${updated} 条用例（版本自动递增，时间线完整）。`;
 }
 async function toScript(task, lib, llm) {
@@ -234,9 +271,24 @@ async function toScript(task, lib, llm) {
 输出 JSON 数组，每项：{ caseNo, script }。script 为可直接使用的代码文本。只输出 JSON。`;
     const user = `三方库：${lib.name}
 用例：${JSON.stringify(cases.map((c) => ({ ...c, steps: JSON.parse(c.steps) })))}`;
-    const [scripts] = await withProgress(task.id, [
-        [45, async () => extractJson(await llm({ system: sys, user }))],
-    ]);
+    const sysCompactScript = `只输出一个 JSON 数组，不要任何解释、围栏或多余字段。3 条精简脚本，每项仅：{ caseNo, script }，script 为简短 TS 骨架。`;
+    let scripts = null;
+    let lastErrScript = null;
+    for (let attempt = 0; attempt < 2 && !scripts; attempt++) {
+        try {
+            const text = await llm(attempt === 0
+                ? { system: sys, user }
+                : { system: sysCompactScript, user: `三方库：${lib.name}\n用例：${JSON.stringify(cases.map((c) => ({ ...c, steps: JSON.parse(c.steps) })))}` });
+            traceTask(task.id, `AI 返回（${text.length} 字符${lastLlmCall.model ? ` · ${lastLlmCall.provider}/${lastLlmCall.model}` : ''}）`, text.slice(0, 600));
+            scripts = extractJson(text);
+        }
+        catch (e) {
+            lastErrScript = e;
+        }
+    }
+    if (!scripts)
+        throw lastErrScript instanceof Error ? lastErrScript : new Error(String(lastErrScript));
+    getDb().prepare('UPDATE tasks SET progress = 45, updated_at = ? WHERE id = ?').run(now(), task.id);
     const t = now();
     const dir = path.join(workspaceDir(), 'scripts', lib.name.replace(/[^\w.-]/g, '_'));
     fs.mkdirSync(dir, { recursive: true });
@@ -254,5 +306,6 @@ async function toScript(task, lib, llm) {
             bound++;
         }
     })();
+    traceTask(task.id, '脚本落盘', `${bound} 个文件 → ${dir}`);
     return `AI 已生成 ${bound} 个自动化脚本并落盘到：${dir}\n文件：${files.map((f) => path.basename(f)).join(', ') || '—'}`;
 }

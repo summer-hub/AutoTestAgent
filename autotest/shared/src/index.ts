@@ -76,6 +76,7 @@ export interface Task {
   title: string;
   libraryId: number | null;
   input: string;             // 用户对话/任务描述
+  trace: Array<{ seq: number; at: string; title: string; detail: string }>; // AI 执行轨迹
   status: TaskStatus;
   progress: number;          // 0-100
   resultSummary: string | null;
