@@ -1,0 +1,33 @@
+# AutoTest / DSH Web HTTPS 反向代理（Caddy）
+# 用法：把 example.com 换成你的域名；Caddy 自动申请 Let's Encrypt 证书。
+# 内网环境：用 IP 或自签域名时去掉下面三行 https 块前的注释说明，见 gateway.md。
+
+example.com {
+	# 统一入口：HTTP/HTTPS 都转发到本机 DSH Web（3080）
+	reverse_proxy 127.0.0.1:3080 {
+		# WebSocket / SSE 长连接支持（DSH 执行轨迹、进度轮询、终端需要）
+		header_up Upgrade {http.request.header.Upgrade}
+		header_up Connection {http.request.header.Connection}
+	}
+
+	# 大文件上传放宽（Excel 导入等）
+	request_body {
+		max_size 100MB
+	}
+
+	# 安全头
+	header {
+		-X-Frame-Options
+		X-Content-Type-Options nosniff
+		Referrer-Policy no-referrer
+	}
+
+	# 可选：压缩
+	encode gzip zstd
+}
+
+# ---------- 内网 IP / 自签证书示例（无公网域名时） ----------
+# https://192.168.1.10:3443 {
+# 	tls internal              # Caddy 生成自签证书（浏览器首次需信任）
+# 	reverse_proxy 127.0.0.1:3080
+# }

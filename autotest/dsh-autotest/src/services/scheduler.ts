@@ -4,10 +4,15 @@ import { getDb } from '../db/connection.js';
 import { executePlan } from './planExecutor.js';
 import { archiveOldExecutions } from './archive.js';
 import { warmStatsCache } from './stats.js';
+import { getSetting } from './settings.js';
 
 const jobs = new Map<number, cron.ScheduledTask>();
 
 export async function startScheduler(): Promise<void> {
+  if (!getSetting('exec.schedulerEnabled', true)) {
+    console.log('[autotest] 调度器已禁用（exec.schedulerEnabled=false，多节点模式仅主节点开启）');
+    return;
+  }
   const db = getDb();
   const plans = await db.prepare(`SELECT id, name, cron FROM plans WHERE type = 'scheduled' AND status != 'stopped' AND cron IS NOT NULL`).all<{ id: number; name: string; cron: string }>();
   for (const p of plans) {

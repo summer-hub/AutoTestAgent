@@ -20,6 +20,7 @@ export const SETTING_DEFAULTS: Record<string, unknown> = {
   'device.execEngine': 'hdc',
   'device.appAbilities': '{}',
   'exec.scriptMode': 'script',
+  'exec.schedulerEnabled': true,   // 多节点部署时仅主节点开启调度器（防定时计划/统计预热重复执行）
   // ---- 多用户 / 服务器化 ----
   'db.mysqlUrl': '',
   'auth.jwtSecret': '',
