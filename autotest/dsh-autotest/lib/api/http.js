@@ -130,6 +130,15 @@ export function makeApiHandler(llm) {
     };
 }
 // ---------- 业务路由 ----------
+// 插件版本（读 package.json，供 /health 暴露；用于核对运行进程加载的代码版本）
+const PKG_VERSION = (() => {
+    try {
+        return String(JSON.parse(fs.readFileSync(new URL('../../package.json', import.meta.url), 'utf8')).version ?? 'unknown');
+    }
+    catch {
+        return 'unknown';
+    }
+})();
 function defineRoutes(llm) {
     if (defineRoutes.done)
         return;
@@ -137,7 +146,7 @@ function defineRoutes(llm) {
     // ---- 认证（auth_* 建在 MySQL；初始化由 index.ts 在 ensureReady 之后完成） ----
     registerAuthRoutes(route);
     // ---- health ----
-    route('GET', '/health', async () => ({ ok: true, service: 'dsh-autotest', time: new Date().toISOString() }), { permission: '@public' });
+    route('GET', '/health', async () => ({ ok: true, service: 'dsh-autotest', version: PKG_VERSION, routes: routes.length, time: new Date().toISOString() }), { permission: '@public' });
     // ---- 系统配置 ----
     route('GET', '/settings', async () => getAllSettings(), { permission: 'settings:read' });
     route('PUT', '/settings/:key', async ({ params, body }) => {

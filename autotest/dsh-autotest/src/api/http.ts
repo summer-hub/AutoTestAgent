@@ -140,6 +140,13 @@ export function makeApiHandler(llm: LlmCall): (req: IncomingMessage, res: Server
 
 // ---------- 业务路由 ----------
 
+// 插件版本（读 package.json，供 /health 暴露；用于核对运行进程加载的代码版本）
+const PKG_VERSION: string = (() => {
+  try {
+    return String((JSON.parse(fs.readFileSync(new URL('../../package.json', import.meta.url), 'utf8')) as { version?: string }).version ?? 'unknown');
+  } catch { return 'unknown'; }
+})();
+
 function defineRoutes(llm: LlmCall): void {
   if (defineRoutes.done) return;
   defineRoutes.done = true;
@@ -148,7 +155,7 @@ function defineRoutes(llm: LlmCall): void {
   registerAuthRoutes(route as RouteFn);
 
   // ---- health ----
-  route('GET', '/health', async () => ({ ok: true, service: 'dsh-autotest', time: new Date().toISOString() }), { permission: '@public' });
+  route('GET', '/health', async () => ({ ok: true, service: 'dsh-autotest', version: PKG_VERSION, routes: routes.length, time: new Date().toISOString() }), { permission: '@public' });
 
   // ---- 系统配置 ----
   route('GET', '/settings', async () => getAllSettings(), { permission: 'settings:read' });
