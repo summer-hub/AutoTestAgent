@@ -1,9 +1,37 @@
 import { createUserMessage } from '@deepseek-ai/dsh-llm';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
 import { writeFileSync } from 'node:fs';
 import { getSetting } from './settings.js';
 /** 最近一次实际使用的 provider/model（供执行器写入任务轨迹展示） */
 export const lastLlmCall = { provider: '', model: '' };
-/** 从 ctx.llm 构造一个非流式文本调用（优先默认 provider；若配置了 agent.defaultModel 且存在于模型列表，则优先使用该模型） */
+/** 读取 DSH 设置（~/.dsh/settings.yaml）里的 agent-default-model，即 DSH 当前实际默认模型。 */
+export function readDshDefaultModel() {
+    const home = process.env.DSH_HOME || path.join(os.homedir(), '.dsh');
+    const file = path.join(home, 'settings.yaml');
+    if (!fs.existsSync(file))
+        return null;
+    try {
+        const txt = fs.readFileSync(file, 'utf8');
+        const block = txt.match(/agent-default-model:\s*\n((?:\s+[^\n]*\n?)*)/);
+        if (!block)
+            return null;
+        const provider = block[1].match(/provider:\s*["']?([^\s"']+)/)?.[1] ?? '';
+        const model = block[1].match(/model:\s*["']?([^\s"']+)/)?.[1] ?? '';
+        return provider && model ? { provider, model } : null;
+    }
+    catch {
+        return null;
+    }
+}
+/**
+ * 从 ctx.llm 构造一个非流式文本调用：
+ *  - 优先使用「系统配置 → 默认模型」（若存在于 DSH 模型列表）
+ *  - 未配置时跟随 DSH 实际默认模型（agent-default-model）
+ *  - 都没有则用第一个可用模型
+ * 确定性执行：只调用选定模型（最多 3 次重试），不跨模型切换。
+ */
 export function makeLlm(ctx) {
     return async (input) => {
         const providers = ctx.llm.listProviders();
@@ -33,44 +61,44 @@ export function makeLlm(ctx) {
         if (unique.length === 0) {
             throw new Error('未配置可用模型：请在 DSH 设置（设置 → 模型）中配置模型后重试');
         }
-        // 系统配置「默认模型」优先：命中（跨 provider 匹配）则排到最前，未命中保持原顺序回退
         const defaultModel = String(getSetting('agent.defaultModel', '') || '').trim();
-        const ordered = defaultModel
-            ? [...unique.filter((x) => x.model === defaultModel), ...unique.filter((x) => x.model !== defaultModel)]
-            : unique;
+        const dshDefault = readDshDefaultModel();
+        const preferred = defaultModel && unique.some((x) => x.model === defaultModel)
+            ? unique.find((x) => x.model === defaultModel)
+            : dshDefault && unique.some((x) => x.provider === dshDefault.provider && x.model === dshDefault.model)
+                ? { provider: dshDefault.provider, model: dshDefault.model }
+                : unique[0];
         let lastErr = new Error('LLM 返回为空');
-        for (const { provider, model } of ordered) {
-            for (let attempt = 0; attempt < 2; attempt++) {
-                try {
-                    lastLlmCall.provider = provider;
-                    lastLlmCall.model = model;
-                    console.log(`[dsh-autotest] llm call: provider=${provider} model=${model} attempt=${attempt + 1}`);
-                    let text = '';
-                    for await (const chunk of ctx.llm.stream({
-                        provider,
-                        model,
-                        system: input.system,
-                        messages: [createUserMessage({ content: [{ type: 'text', text: input.user }], source: { kind: 'user' } })],
-                        temperature: input.temperature ?? 0.4,
-                        maxTokens: input.maxTokens ?? 2048,
-                        signal: AbortSignal.timeout(input.timeoutMs ?? 60_000),
-                    })) {
-                        if (chunk.type === 'text-delta')
-                            text += chunk.text;
-                        if (chunk.type === 'finish' && chunk.reason.kind === 'error') {
-                            throw new Error(chunk.reason.failure?.message ?? 'LLM 调用失败');
-                        }
+        for (let attempt = 0; attempt < 3; attempt++) {
+            try {
+                lastLlmCall.provider = preferred.provider;
+                lastLlmCall.model = preferred.model;
+                console.log(`[dsh-autotest] llm call: provider=${preferred.provider} model=${preferred.model} attempt=${attempt + 1}`);
+                let text = '';
+                for await (const chunk of ctx.llm.stream({
+                    provider: preferred.provider,
+                    model: preferred.model,
+                    system: input.system,
+                    messages: [createUserMessage({ content: [{ type: 'text', text: input.user }], source: { kind: 'user' } })],
+                    temperature: input.temperature ?? 0.4,
+                    maxTokens: input.maxTokens ?? 2048,
+                    signal: AbortSignal.timeout(input.timeoutMs ?? 60_000),
+                })) {
+                    if (chunk.type === 'text-delta')
+                        text += chunk.text;
+                    if (chunk.type === 'finish' && chunk.reason.kind === 'error') {
+                        throw new Error(chunk.reason.failure?.message ?? 'LLM 调用失败');
                     }
-                    if (text.trim())
-                        return text;
-                    lastErr = new Error('LLM 返回为空');
                 }
-                catch (e) {
-                    lastErr = e;
-                }
+                if (text.trim())
+                    return text;
+                lastErr = new Error('LLM 返回为空');
+            }
+            catch (e) {
+                lastErr = e;
             }
         }
-        throw lastErr instanceof Error ? lastErr : new Error(String(lastErr));
+        throw new Error(`模型 ${preferred.provider}/${preferred.model} 连续失败：${lastErr instanceof Error ? lastErr.message : String(lastErr)}`);
     };
 }
 /** 从 LLM 输出中提取 JSON（容忍 ```json 围栏与前后杂文） */

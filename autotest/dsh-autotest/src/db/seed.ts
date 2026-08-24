@@ -42,7 +42,7 @@ export function seed(db: Database.Database): void {
 
   db.prepare(`INSERT OR IGNORE INTO settings (key, value, updated_at) VALUES
    ('app.workspace', '"D:\\autotest\\workspace"', @t),
-   ('agent.defaultModel', '"deepseek-chat"', @t),
+   ('agent.defaultModel', '""', @t),
    ('data.redisCache', 'false', @t),
    ('device.execEngine', '"hdc"', @t),
    ('exec.scriptMode', '"script"', @t)`).run({ t: t1 });

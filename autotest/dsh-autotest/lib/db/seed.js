@@ -31,7 +31,7 @@ export function seed(db) {
    ('ollama 本地', 'ollama', 'http://localhost:11434/v1', 'qwen2.5:7b', '', 0, @t, @t)`).run({ t: t1 });
     db.prepare(`INSERT OR IGNORE INTO settings (key, value, updated_at) VALUES
    ('app.workspace', '"D:\\autotest\\workspace"', @t),
-   ('agent.defaultModel', '"deepseek-chat"', @t),
+   ('agent.defaultModel', '""', @t),
    ('data.redisCache', 'false', @t),
    ('device.execEngine', '"hdc"', @t),
    ('exec.scriptMode', '"script"', @t)`).run({ t: t1 });

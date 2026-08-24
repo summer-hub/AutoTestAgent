@@ -12,7 +12,7 @@ const SECTIONS: Array<{ title: string; desc: string; fields: Array<{ key: string
   },
   {
     title: 'Agent 与任务', desc: 'AI 任务执行参数', fields: [
-      { key: 'agent.defaultModel', label: '默认模型', type: 'text' },
+      { key: 'agent.defaultModel', label: '默认模型', type: 'text', hint: '留空 = 跟随 DSH 当前默认模型' },
       { key: 'agent.maxCasesPerTask', label: '单任务用例上限', type: 'number' },
       { key: 'exec.llmTemperature', label: 'LLM 温度（0-1）', type: 'number' },
       { key: 'exec.llmTimeoutMs', label: 'LLM 超时（毫秒）', type: 'number' },
@@ -47,6 +47,7 @@ export default function SettingsPage() {
   const [values, setValues] = useState<Record<string, string | number | boolean>>({});
   const [loaded, setLoaded] = useState(false);
   const [shards, setShards] = useState<ShardStat[]>([]);
+  const [dshDefault, setDshDefault] = useState<{ provider: string; model: string } | null>(null);
   const [msg, setMsg] = useState('');
   const [error, setError] = useState('');
   const [saving, setSaving] = useState(false);
@@ -61,6 +62,7 @@ export default function SettingsPage() {
       })
       .catch((e) => setError(String((e as Error).message)));
     api.sharding().then(setShards).catch(() => {});
+    api.dshDefaultModel().then((r) => setDshDefault(r.dshDefault)).catch(() => {});
   }, []);
 
   useEffect(() => { load(); }, [load]);
@@ -129,6 +131,11 @@ export default function SettingsPage() {
               </label>
             ))}
           </div>
+          {sec.title === 'Agent 与任务' && dshDefault && (
+            <div className="muted" style={{ fontSize: 11.5, marginTop: 10 }}>
+              ⚡ DSH 当前默认模型：{dshDefault.provider}/{dshDefault.model}（默认模型留空时自动跟随）
+            </div>
+          )}
         </div>
       ))}
 

@@ -14,8 +14,9 @@ import {
   analyzeAttribution, analyzeCaseUpdates, analyzePrChanges, fetchPr, fetchPrs, parseRepoPath,
   type LibraryRow,
 } from '../services/analyzer.js';
-import { getAllSettings, setSetting, type SettingValue } from '../services/settings.js';
+import { getAllSettings, getSetting, setSetting, type SettingValue } from '../services/settings.js';
 import { cacheDel, cacheGet, cacheSet } from '../services/cache.js';
+import { readDshDefaultModel } from '../services/llmHarness.js';
 import { deviceInfo, hdcAvailable, listTargets } from '../services/hdc.js';
 import { repoDirFor, scriptsDirFor } from '../services/gitRepo.js';
 
@@ -402,6 +403,11 @@ function defineRoutes(llm: LlmCall): void {
   // ---- models ----
   route('GET', '/models', async () => {
     return (getDb().prepare('SELECT * FROM models ORDER BY is_default DESC, id').all() as Record<string, unknown>[]).map(mapModel);
+  });
+
+  // DSH 当前实际默认模型（供系统配置页展示，agent.defaultModel 留空时即跟随它）
+  route('GET', '/models/dsh-default', async () => {
+    return { configured: getSetting('agent.defaultModel', '') as string, dshDefault: readDshDefaultModel() };
   });
 
   route('POST', '/models', async ({ body }) => {

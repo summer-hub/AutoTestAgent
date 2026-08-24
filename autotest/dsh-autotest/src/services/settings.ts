@@ -4,7 +4,7 @@ import { getDb, now } from '../db/connection.js';
 
 export const SETTING_DEFAULTS: Record<string, unknown> = {
   'app.workspace': 'D:\\autotest\\workspace',
-  'agent.defaultModel': 'deepseek-chat',
+  'agent.defaultModel': '',
   'agent.maxCasesPerTask': 20,
   'exec.llmTemperature': 0.4,
   'exec.llmTimeoutMs': 180000,
