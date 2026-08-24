@@ -5,6 +5,7 @@
 //  - AI 任务经 ctx.llm（模型配置全部来自 DSH 设置）
 //  - 定时计划经内置 node-cron 调度
 import { Context } from '@deepseek-ai/cordis';
+import crypto from 'node:crypto';
 import fs from 'node:fs';
 // 引入类型声明：把 webServer 挂到 Context（dsh-host-webserver 的 declare module）
 import type WebServer from '@deepseek-ai/dsh-host-webserver';
@@ -15,6 +16,9 @@ import { makeApiHandler } from './api/http.js';
 import { startScheduler } from './services/scheduler.js';
 import { makeStaticHandler } from './static.js';
 import { repoDirFor } from './services/gitRepo.js';
+import { ensureAuthSchema, authPool } from './auth/db.js';
+import { createUser } from './auth/service.js';
+import { getSetting } from './services/settings.js';
 
 declare module '@deepseek-ai/cordis' {
   interface Context {
@@ -41,6 +45,28 @@ export function apply(ctx: Context): void {
   } catch (e) {
     console.error('[dsh-autotest] 业务库初始化失败：', (e as Error).message);
   }
+
+  // 1b. 认证库初始化（MySQL）：建表 + 角色权限种子 + 首启创建 admin
+  ensureAuthSchema()
+    .then(async () => {
+      try {
+        const db = await authPool();
+        const [rows] = await db.query('SELECT COUNT(*) AS n FROM auth_users') as [Array<{ n: number }>, unknown];
+        if (rows[0].n === 0) {
+          const pw = String(getSetting('auth.bootstrapPassword', '') || '').trim()
+            || crypto.randomBytes(6).toString('base64url');
+          await createUser('admin', pw, ['admin']);
+          console.log('[dsh-autotest] 已创建初始管理员：admin / ' + pw + '（请尽快登录后修改密码）');
+        } else {
+          console.log('[dsh-autotest] 认证库就绪（用户已存在）');
+        }
+      } catch (e) {
+        console.error('[dsh-autotest] 初始管理员创建失败：', (e as Error).message);
+      }
+    })
+    .catch((e) => {
+      console.error('[dsh-autotest] 认证库初始化失败：', (e as Error).message);
+    });
 
   // 2. LLM 调用（复用 DSH 模型配置）
   const llm = makeLlm(ctx);

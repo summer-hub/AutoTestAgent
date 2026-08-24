@@ -17,6 +17,13 @@ export const SETTING_DEFAULTS = {
     'device.execEngine': 'hdc',
     'device.appAbilities': '{}',
     'exec.scriptMode': 'script',
+    // ---- 多用户 / 服务器化 ----
+    'db.mysqlUrl': '', // MySQL 连接串（认证数据源；业务库迁移后统一）
+    'auth.jwtSecret': '', // JWT 签名密钥（首次启动自动生成并持久化）
+    'auth.bootstrapPassword': '', // 首启 admin 密码（留空则随机生成并打印到日志）
+    'auth.inviteOnly': true, // 注册必须凭邀请码
+    'auth.accessTtlSec': 3600, // access token 有效期（秒）
+    'auth.refreshTtlDays': 7, // refresh token 有效期（天）
 };
 /** 读取配置（未设置/解析失败回默认值）。 */
 export function getSetting(key, fallback) {

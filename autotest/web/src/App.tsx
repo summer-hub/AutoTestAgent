@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react';
+import { api, authState, type AuthUser } from './api';
 import HomePage from './pages/Home';
 import CasesPage from './pages/Cases';
 import TasksPage from './pages/Tasks';
@@ -10,9 +11,11 @@ import DevicesPage from './pages/Devices';
 import PromptsPage from './pages/Prompts';
 import SettingsPage from './pages/Settings';
 import ScriptsPage from './pages/Scripts';
+import LoginPage from './pages/Login';
+import UsersPage from './pages/Users';
 import SettingsModal from './components/SettingsModal';
 
-export type PageKey = 'home' | 'tasks' | 'cases' | 'scripts' | 'plans' | 'analysis' | 'attribution' | 'debug' | 'devices' | 'prompts' | 'settings';
+export type PageKey = 'home' | 'tasks' | 'cases' | 'scripts' | 'plans' | 'analysis' | 'attribution' | 'debug' | 'devices' | 'prompts' | 'settings' | 'users' | 'login';
 
 const NAV: Array<{ group: string; items: Array<{ key: PageKey; icon: string; label: string; badge?: string }> }> = [
   {
@@ -50,7 +53,7 @@ const NAV: Array<{ group: string; items: Array<{ key: PageKey; icon: string; lab
 
 const TITLES: Record<PageKey, string> = {
   home: '首页', tasks: '任务管理', cases: '测试用例', scripts: '自动化脚本', plans: '执行计划', analysis: '数据分析',
-  attribution: '归因分析', debug: '调试会话', devices: '设备管理', prompts: 'Prompt 管理', settings: '系统配置',
+  attribution: '归因分析', debug: '调试会话', devices: '设备管理', prompts: 'Prompt 管理', settings: '系统配置', users: '用户管理', login: '登录',
 };
 
 // 嵌入 DSH GUI 时由构建注入 VITE_EMBED=1：隐藏独立侧边栏/顶栏，改用紧凑导航；
@@ -65,14 +68,37 @@ const parseHash = (): PageKey => {
 
 export default function App() {
   const [page, setPage] = useState<PageKey>(() => {
-    return parseHash();
+    return authState.has() ? parseHash() : 'login';
   });
+  const [me, setMe] = useState<AuthUser | null>(null);
   const [settingsOpen, setSettingsOpen] = useState(false);
 
   const goto = (p: PageKey) => {
     setPage(p);
     try { location.hash = p; } catch { /* noop */ }
   };
+
+  // 挂载后拉取当前用户；token 失效时 api 内部会清理并跳登录
+  useEffect(() => {
+    if (!authState.has()) return;
+    api.me()
+      .then((r) => { setMe(r.user); if (page === 'login') goto('home'); })
+      .catch(() => { /* 401 已由 api 处理 */ });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  const doLogout = async () => {
+    try { await api.logout(authState.refresh); } catch { /* ignore */ }
+    authState.clear();
+    setMe(null);
+    goto('login');
+  };
+
+  const roleLabel = (r: string) => ({ admin: '管理员', manager: '组长', engineer: '测试工程师', viewer: '只读访客' }[r] ?? r);
+
+  if (!authState.has()) {
+    return <LoginPage onLogin={(u) => { setMe(u); goto('home'); }} />;
+  }
 
   useEffect(() => {
     const onHash = () => {
@@ -98,6 +124,7 @@ export default function App() {
       {page === 'devices' && <DevicesPage />}
       {page === 'prompts' && <PromptsPage />}
       {page === 'settings' && <SettingsPage />}
+      {page === 'users' && <UsersPage me={me} />}
     </>
   );
 
@@ -112,7 +139,7 @@ export default function App() {
           </div>
           <nav className="embed-nav">
             {NAV.map((g) =>
-              g.items.map((it) => (
+              g.items.filter((it) => it.key !== 'users' || me?.roles.includes('admin')).map((it) => (
                 <button
                   key={it.key}
                   type="button"
@@ -126,6 +153,9 @@ export default function App() {
             )}
           </nav>
           <div className="tb-spacer" />
+          <span className="tb-pill" style={{ cursor: 'pointer' }} onClick={doLogout} title="退出登录">
+            👤 {me?.username ?? '...'} · {me?.roles.map(roleLabel).join('/')} · 退出
+          </span>
           <div className="tb-pill">
             <span className="dot green" /> 后端在线
           </div>
@@ -158,6 +188,11 @@ export default function App() {
               ))}
             </div>
           ))}
+          {me?.roles.includes('admin') && (
+            <div className={`nav-item ${page === 'users' ? 'active' : ''}`} onClick={() => goto('users')}>
+              <span className="ico">👥</span>用户管理
+            </div>
+          )}
         </nav>
         <div className="set-trigger" onClick={() => setSettingsOpen(true)}>
           <span style={{ fontSize: 15 }}>⚙️</span>设置
@@ -166,8 +201,8 @@ export default function App() {
         <div className="side-foot">
           <div className="avatar">👤</div>
           <div>
-            <div style={{ fontSize: 12, color: 'var(--text2)' }}>测试工程师</div>
-            <div style={{ fontSize: 10.5, color: 'var(--text3)' }}>admin · 本地</div>
+            <div style={{ fontSize: 12, color: 'var(--text2)' }}>{me?.username ?? '...'} · {me?.roles.map(roleLabel).join('/')}</div>
+            <div style={{ fontSize: 10.5, color: 'var(--text3)', cursor: 'pointer' }} onClick={doLogout}>退出登录</div>
           </div>
         </div>
       </aside>

@@ -1,3 +1,4 @@
+import crypto from 'node:crypto';
 import fs from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { ensureSchemaAndSeed, getDb } from './db/connection.js';
@@ -6,6 +7,9 @@ import { makeApiHandler } from './api/http.js';
 import { startScheduler } from './services/scheduler.js';
 import { makeStaticHandler } from './static.js';
 import { repoDirFor } from './services/gitRepo.js';
+import { ensureAuthSchema, authPool } from './auth/db.js';
+import { createUser } from './auth/service.js';
+import { getSetting } from './services/settings.js';
 export const name = 'dsh-autotest';
 export const inject = ['webServer', 'llm'];
 export function apply(ctx) {
@@ -25,6 +29,29 @@ export function apply(ctx) {
     catch (e) {
         console.error('[dsh-autotest] 业务库初始化失败：', e.message);
     }
+    // 1b. 认证库初始化（MySQL）：建表 + 角色权限种子 + 首启创建 admin
+    ensureAuthSchema()
+        .then(async () => {
+        try {
+            const db = await authPool();
+            const [rows] = await db.query('SELECT COUNT(*) AS n FROM auth_users');
+            if (rows[0].n === 0) {
+                const pw = String(getSetting('auth.bootstrapPassword', '') || '').trim()
+                    || crypto.randomBytes(6).toString('base64url');
+                await createUser('admin', pw, ['admin']);
+                console.log('[dsh-autotest] 已创建初始管理员：admin / ' + pw + '（请尽快登录后修改密码）');
+            }
+            else {
+                console.log('[dsh-autotest] 认证库就绪（用户已存在）');
+            }
+        }
+        catch (e) {
+            console.error('[dsh-autotest] 初始管理员创建失败：', e.message);
+        }
+    })
+        .catch((e) => {
+        console.error('[dsh-autotest] 认证库初始化失败：', e.message);
+    });
     // 2. LLM 调用（复用 DSH 模型配置）
     const llm = makeLlm(ctx);
     // 3. 业务 API（挂在 DSH Web 服务器的 /api/autotest 前缀下；插件卸载时自动注销）

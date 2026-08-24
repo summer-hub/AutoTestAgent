@@ -19,10 +19,13 @@ import { cacheDel, cacheGet, cacheSet } from '../services/cache.js';
 import { readDshDefaultModel } from '../services/llmHarness.js';
 import { deviceInfo, hdcAvailable, listTargets } from '../services/hdc.js';
 import { pullRepo, repoDirFor, scriptsDirFor, type RepoLib } from '../services/gitRepo.js';
+import { registerAuthRoutes, requireAuth, type HandlerArgs, type RouteFn } from '../auth/index.js';
+import { AuthError, hasPermission } from '../auth/service.js';
+import { ensureAuthSchema } from '../auth/db.js';
 
 // ---------- mini router ----------
-type Handler = (args: { params: Record<string, string>; query: URLSearchParams; body: any }) => Promise<unknown>;
-interface Route { method: string; keys: string[]; regex: RegExp; handler: Handler; }
+type Handler = (args: HandlerArgs) => Promise<unknown>;
+interface Route { method: string; keys: string[]; regex: RegExp; handler: Handler; permission?: string; }
 
 const routes: Route[] = [];
 
@@ -41,9 +44,9 @@ function compile(pattern: string): { regex: RegExp; keys: string[] } {
   return { regex, keys };
 }
 
-function route(method: string, pattern: string, handler: Handler): void {
+function route(method: string, pattern: string, handler: Handler, opts?: { permission?: string }): void {
   const { regex, keys } = compile(pattern);
-  routes.push({ method, keys, regex, handler });
+  routes.push({ method, keys, regex, handler, permission: opts?.permission });
 }
 
 /** 读缓存 → 未命中执行并回填。 */
@@ -94,7 +97,16 @@ export function makeApiHandler(llm: LlmCall): (req: IncomingMessage, res: Server
       }
       if (!matched) return send(res, 404, { error: 'Not Found', path });
       const body = ['POST', 'PUT', 'PATCH'].includes(method) ? await readBody(req) : {};
-      const data = await matched.handler({ params, query, body });
+      // 认证 / 权限
+      let auth: { id: number; username: string; roles: string[]; permissions: string[] } | undefined;
+      const perm = matched.permission;
+      if (perm && perm !== '@public') {
+        auth = await requireAuth(req);
+        if (perm !== '@login' && !hasPermission(auth, perm)) {
+          throw new AuthError(`无权限：需要 ${perm}`, 403);
+        }
+      }
+      const data = await matched.handler({ params, query, body, auth, req });
       if (Buffer.isBuffer(data)) {
         res.writeHead(200, {
           'Content-Type': 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
@@ -117,17 +129,21 @@ function defineRoutes(llm: LlmCall): void {
   if (defineRoutes.done) return;
   defineRoutes.done = true;
 
+  // ---- 认证（auth_* 建在 MySQL） ----
+  void ensureAuthSchema();
+  registerAuthRoutes(route as RouteFn);
+
   // ---- health ----
-  route('GET', '/health', async () => ({ ok: true, service: 'dsh-autotest', time: new Date().toISOString() }));
+  route('GET', '/health', async () => ({ ok: true, service: 'dsh-autotest', time: new Date().toISOString() }), { permission: '@public' });
 
   // ---- 系统配置 ----
-  route('GET', '/settings', async () => getAllSettings());
+  route('GET', '/settings', async () => getAllSettings(), { permission: 'settings:read' });
   route('PUT', '/settings/:key', async ({ params, body }) => {
     const { value } = body as { value?: SettingValue };
     if (value === undefined) throw Object.assign(new Error('value 必填'), { statusCode: 400 });
     setSetting(decodeURIComponent(params.key), value);
     return { ok: true, key: decodeURIComponent(params.key), value };
-  });
+  }, { permission: 'settings:write' });
 
   // ---- libraries ----
   route('GET', '/libraries', async ({ query }) => {
@@ -143,7 +159,7 @@ function defineRoutes(llm: LlmCall): void {
         FROM libraries l ${where} ORDER BY l.id LIMIT @limit OFFSET @offset`).all({ like, limit: pageSize, offset: (page - 1) * pageSize }) as Array<Record<string, unknown>>;
       return { items: rows.map(mapLibrary), total, page, pageSize };
     }));
-  });
+  }, { permission: 'library:read' });
 
   route('GET', '/libraries/:id', async ({ params }) => {
     return withCache(`lib:${params.id}`, async () => {
@@ -153,7 +169,7 @@ function defineRoutes(llm: LlmCall): void {
       if (!row) throw Object.assign(new Error('库不存在'), { statusCode: 404 });
       return mapLibrary(row);
     });
-  });
+  }, { permission: 'library:read' });
 
   // PR 列表（供前端选择 #PR 分析）
   route('GET', '/libraries/:libraryId/prs', async ({ params }) => {
@@ -178,13 +194,13 @@ function defineRoutes(llm: LlmCall): void {
         error: gitPrs.length > 0 ? undefined : (e as Error).message,
       };
     }
-  });
+  }, { permission: 'library:read' });
 
   route('GET', '/libraries/stats/sources', async () => {
     const db = getDb();
     const rows = db.prepare(`SELECT source, COUNT(*) AS n FROM cases GROUP BY source`).all() as Array<{ source: string; n: number }>;
     return { items: rows, total: rows.reduce((s, r) => s + r.n, 0) };
-  });
+  }, { permission: 'library:read' });
 
   // ---- cases ----
   route('GET', '/libraries/:id/cases', async ({ params, query }) => {
@@ -210,7 +226,7 @@ function defineRoutes(llm: LlmCall): void {
       const lib = db.prepare('SELECT name FROM libraries WHERE id = ?').get(libraryId) as { name: string } | undefined;
       return { items: rows.map((r) => mapCase(r, lib?.name)), total, page, pageSize };
     }));
-  });
+  }, { permission: 'case:read' });
 
   // 注意：/cases/export 必须注册在 /cases/:id 之前（单段路径会被 :id 捕获）
   route('GET', '/cases/export', async ({ query }) => {
@@ -229,7 +245,7 @@ function defineRoutes(llm: LlmCall): void {
     const wb = XLSX.utils.book_new();
     XLSX.utils.book_append_sheet(wb, sheet, '用例');
     return XLSX.write(wb, { type: 'buffer', bookType: 'xlsx' }) as Buffer;
-  });
+  }, { permission: 'case:read' });
 
   route('GET', '/cases/:id', async ({ params }) => {
     return withCache(`case:${params.id}`, async () => {
@@ -238,14 +254,14 @@ function defineRoutes(llm: LlmCall): void {
       const lib = db.prepare('SELECT name FROM libraries WHERE id = ?').get(row.library_id) as { name: string } | undefined;
       return mapCase(row, lib?.name);
     });
-  });
+  }, { permission: 'case:read' });
 
   route('GET', '/cases/:id/versions', async ({ params }) => {
     const db = getDb();
     getCaseOr404(db, Number(params.id));
     const rows = db.prepare('SELECT * FROM case_versions WHERE case_id = ? ORDER BY version DESC').all(Number(params.id)) as Array<Record<string, unknown>>;
     return rows.map(mapVersion);
-  });
+  }, { permission: 'case:read' });
 
   route('POST', '/cases', async ({ body }) => {
     const b = body as { libraryId?: number; caseNo?: string; name?: string; source?: string; precondition?: string; steps?: string[]; expected?: string; dtsUrl?: string; status?: string };
@@ -270,7 +286,7 @@ function defineRoutes(llm: LlmCall): void {
       return caseId;
     })();
     return mapCase(db.prepare('SELECT * FROM cases WHERE id = ?').get(created) as Record<string, unknown>);
-  });
+  }, { permission: 'case:write' });
 
   route('PUT', '/cases/:id', async ({ params, body }) => {
     const id = Number(params.id);
@@ -304,7 +320,7 @@ function defineRoutes(llm: LlmCall): void {
       return snapshot;
     })();
     return updated;
-  });
+  }, { permission: 'case:write' });
 
   route('DELETE', '/cases/:id', async ({ params }) => {
     const id = Number(params.id);
@@ -318,7 +334,7 @@ function defineRoutes(llm: LlmCall): void {
       db.prepare('DELETE FROM cases WHERE id = ?').run(id);
     })();
     return { ok: true, deletedCaseNo: row.case_no };
-  });
+  }, { permission: 'case:delete' });
 
   route('POST', '/cases/:id/rollback', async ({ params, body }) => {
     const id = Number(params.id);
@@ -343,7 +359,7 @@ function defineRoutes(llm: LlmCall): void {
       );
     })();
     return { id, currentVersion: nextVersion, rolledBackTo: target, updatedAt: t };
-  });
+  }, { permission: 'case:write' });
 
   // ---- Excel 导入 / 导出（需求：导入 excel 表格并保存到数据库 / 导出 excel）----
   const CASE_HEADERS = ['用例编号', '用例名称', '来源', '前置条件', '操作步骤', '预期结果', '状态', '脚本状态', '当前版本', '更新时间'];
@@ -397,7 +413,7 @@ function defineRoutes(llm: LlmCall): void {
     })();
 
     return { imported, skipped, errors, libraryId, libraryName: lib.name, fileName: b.fileName ?? null };
-  });
+  }, { permission: 'case:write' });
 
   route('GET', '/cases/stats/overview', async () => {
     return withCache('stats:cases', () => withRead((db) => {
@@ -406,20 +422,20 @@ function defineRoutes(llm: LlmCall): void {
       const versioned = (db.prepare('SELECT COUNT(*) AS n FROM cases WHERE current_version > 1').get() as { n: number }).n;
       return { total, byStatus, versioned };
     }));
-  });
+  }, { permission: 'case:read' });
 
   // ---- M7 分表统计 ----
-  route('GET', '/stats/sharding', async () => withCache('stats:sharding', async () => shardStats()));
+  route('GET', '/stats/sharding', async () => withCache('stats:sharding', async () => shardStats()), { permission: 'settings:read' });
 
   // ---- models ----
   route('GET', '/models', async () => {
     return (getDb().prepare('SELECT * FROM models ORDER BY is_default DESC, id').all() as Record<string, unknown>[]).map(mapModel);
-  });
+  }, { permission: 'settings:read' });
 
   // DSH 当前实际默认模型（供系统配置页展示，agent.defaultModel 留空时即跟随它）
   route('GET', '/models/dsh-default', async () => {
     return { configured: getSetting('agent.defaultModel', '') as string, dshDefault: readDshDefaultModel() };
-  });
+  }, { permission: 'settings:read' });
 
   route('POST', '/models', async ({ body }) => {
     const b = body as { name?: string; provider?: string; baseUrl?: string; modelId?: string; apiKey?: string };
@@ -429,7 +445,7 @@ function defineRoutes(llm: LlmCall): void {
     const res = db.prepare(`INSERT INTO models (name, provider, base_url, model_id, api_key, is_default, created_at, updated_at)
       VALUES (?, ?, ?, ?, ?, 0, ?, ?)`).run(b.name, b.provider ?? 'custom', b.baseUrl, b.modelId, b.apiKey ?? '', t, t);
     return mapModel(db.prepare('SELECT * FROM models WHERE id = ?').get(Number(res.lastInsertRowid)) as Record<string, unknown>);
-  });
+  }, { permission: 'settings:write' });
 
   route('PUT', '/models/:id', async ({ params, body }) => {
     const id = Number(params.id);
@@ -444,7 +460,7 @@ function defineRoutes(llm: LlmCall): void {
     );
     if (b.isDefault) db.prepare(`UPDATE models SET is_default = CASE WHEN id = ? THEN 1 ELSE 0 END`).run(id);
     return mapModel(db.prepare('SELECT * FROM models WHERE id = ?').get(id) as Record<string, unknown>);
-  });
+  }, { permission: 'settings:write' });
 
   route('DELETE', '/models/:id', async ({ params }) => {
     const id = Number(params.id);
@@ -453,7 +469,7 @@ function defineRoutes(llm: LlmCall): void {
     if (row.is_default === 1) throw Object.assign(new Error('不能删除默认模型'), { statusCode: 400 });
     db.prepare('DELETE FROM models WHERE id = ?').run(id);
     return { ok: true };
-  });
+  }, { permission: 'settings:write' });
 
   route('POST', '/models/:id/test', async ({ params }) => {
     const row = getModelOr404(getDb(), Number(params.id));
@@ -477,14 +493,14 @@ function defineRoutes(llm: LlmCall): void {
     } catch (e) {
       return { ok: false, latencyMs: Date.now() - started, message: (e as Error).message };
     }
-  });
+  }, { permission: 'settings:write' });
 
   // ---- prompts ----
   route('GET', '/prompts', async () =>
     withCache('prompts', async () =>
       (getDb().prepare('SELECT * FROM prompts ORDER BY builtin DESC, id').all() as Record<string, unknown>[]).map(mapPrompt),
     ),
-  );
+  { permission: 'settings:read' });
   route('POST', '/prompts', async ({ body }) => {
     const b = body as { name?: string; role?: string; content?: string; skill?: string; variables?: string[] };
     if (!b.name || !b.content) throw Object.assign(new Error('name / content 必填'), { statusCode: 400 });
@@ -495,7 +511,7 @@ function defineRoutes(llm: LlmCall): void {
       b.name, b.role ?? '', b.content, b.skill ?? '', JSON.stringify(b.variables ?? []), t,
     );
     return mapPrompt(db.prepare('SELECT * FROM prompts WHERE id = ?').get(Number(res.lastInsertRowid)) as Record<string, unknown>);
-  });
+  }, { permission: 'settings:write' });
   route('PUT', '/prompts/:id', async ({ params, body }) => {
     const id = Number(params.id);
     const b = body as Record<string, unknown>;
@@ -508,7 +524,7 @@ function defineRoutes(llm: LlmCall): void {
       JSON.stringify((b.variables as string[]) ?? JSON.parse(row.variables || '[]')), t, id,
     );
     return mapPrompt(db.prepare('SELECT * FROM prompts WHERE id = ?').get(id) as Record<string, unknown>);
-  });
+  }, { permission: 'settings:write' });
   route('DELETE', '/prompts/:id', async ({ params }) => {
     const id = Number(params.id);
     const db = getDb();
@@ -517,7 +533,7 @@ function defineRoutes(llm: LlmCall): void {
     void cacheDel('prompts');
     db.prepare('DELETE FROM prompts WHERE id = ?').run(id);
     return { ok: true };
-  });
+  }, { permission: 'settings:write' });
 
   // ---- tasks ----
   route('POST', '/tasks', async ({ body }) => {
@@ -539,19 +555,19 @@ function defineRoutes(llm: LlmCall): void {
     const id = Number(res.lastInsertRowid);
     setImmediate(() => { runTask(id, llm).catch(() => {}); });
     return mapTask(db.prepare('SELECT * FROM tasks WHERE id = ?').get(id) as Record<string, unknown>);
-  });
+  }, { permission: 'task:read' });
 
   route('GET', '/tasks', async ({ query }) => {
     const status = query.get('status') ?? '';
     const where = status ? 'WHERE status = @status' : '';
     return (getDb().prepare(`SELECT * FROM tasks ${where} ORDER BY id DESC LIMIT 100`).all(status ? { status } : {}) as Record<string, unknown>[]).map(mapTask);
-  });
+  }, { permission: 'task:read' });
 
   route('GET', '/tasks/:id', async ({ params }) => {
     const row = getDb().prepare('SELECT * FROM tasks WHERE id = ?').get(Number(params.id));
     if (!row) throw Object.assign(new Error('任务不存在'), { statusCode: 404 });
     return mapTask(row as Record<string, unknown>);
-  });
+  }, { permission: 'task:create' });
 
   route('POST', '/tasks/:id/retry', async ({ params }) => {
     const id = Number(params.id);
@@ -562,7 +578,7 @@ function defineRoutes(llm: LlmCall): void {
     db.prepare(`UPDATE tasks SET status='pending', progress=0, error=NULL, updated_at=? WHERE id=?`).run(now(), id);
     setImmediate(() => { runTask(id, llm).catch(() => {}); });
     return { ok: true };
-  });
+  }, { permission: 'task:manage' });
 
   route('DELETE', '/tasks/:id', async ({ params }) => {
     const id = Number(params.id);
@@ -591,7 +607,7 @@ function defineRoutes(llm: LlmCall): void {
         lastSyncedAt: r.last_synced_at,
       };
     }).sort((a, b) => Number(b.exists) - Number(a.exists) || a.name.localeCompare(b.name));
-  });
+  }, { permission: 'library:read' });
 
   // 自动化脚本目录（to_script 落盘到 workspace/scripts/<lib>）
   route('GET', '/scripts', async () => {
@@ -604,7 +620,7 @@ function defineRoutes(llm: LlmCall): void {
       }
       return { id: r.id, name: r.name, dir, exists: fileCount > 0, fileCount };
     }).sort((a, b) => Number(b.exists) - Number(a.exists) || a.name.localeCompare(b.name));
-  });
+  }, { permission: 'library:read' });
 
   route('GET', '/repos/:id/files', async ({ params, query }) => {
     const db = getDb();
@@ -635,7 +651,7 @@ function defineRoutes(llm: LlmCall): void {
       })
       .sort((a, b) => (a.type === b.type ? a.name.localeCompare(b.name) : a.type === 'dir' ? -1 : 1));
     return { path: rel, entries };
-  });
+  }, { permission: 'library:read' });
 
   route('GET', '/repos/:id/file', async ({ params, query }) => {
     const db = getDb();
@@ -653,7 +669,7 @@ function defineRoutes(llm: LlmCall): void {
     const buf = fs.readFileSync(file);
     const content = buf.subarray(0, 256 * 1024).toString('utf8');
     return { name: rel, content, truncated, binary: buf.includes(0) };
-  });
+  }, { permission: 'library:read' });
 
   // 删除脚本文件（仅允许 scripts 目录下的 .ts，带路径穿越防护）
   route('DELETE', '/repos/:libraryId/file', async ({ params, query }) => {
@@ -669,7 +685,7 @@ function defineRoutes(llm: LlmCall): void {
     if (!fs.existsSync(file) || !fs.statSync(file).isFile()) throw Object.assign(new Error('文件不存在'), { statusCode: 404 });
     fs.unlinkSync(file);
     return { ok: true, deleted: rel };
-  });
+  }, { permission: 'library:write' });
 
   // ---- plans ----
   route('GET', '/plans', async () => {
@@ -680,7 +696,7 @@ function defineRoutes(llm: LlmCall): void {
       SUM(CASE WHEN status='failed' THEN 1 ELSE 0 END) AS failed,
       COUNT(*) AS total FROM executions GROUP BY plan_id`).all() as Array<{ plan_id: number; passed: number; failed: number; total: number }>;
     return rows.map((r) => ({ ...mapPlan(r), execStats: stats.find((s) => s.plan_id === r.id) ?? null }));
-  });
+  }, { permission: 'plan:read' });
 
   route('POST', '/plans', async ({ body }) => {
     const b = body as { name?: string; type?: string; cron?: string; scope?: { libraryIds: number[]; caseIds: number[] }; deviceIds?: number[]; failPolicy?: string };
@@ -703,7 +719,7 @@ function defineRoutes(llm: LlmCall): void {
       setImmediate(() => { executePlan(id).catch(() => {}); });
     }
     return mapPlan(db.prepare('SELECT * FROM plans WHERE id = ?').get(id) as Record<string, unknown>);
-  });
+  }, { permission: 'plan:create' });
 
   route('POST', '/plans/:id/run', async ({ params }) => {
     const id = Number(params.id);
@@ -713,12 +729,12 @@ function defineRoutes(llm: LlmCall): void {
     db.prepare(`UPDATE plans SET status='running', updated_at=? WHERE id=?`).run(now(), id);
     setImmediate(() => { executePlan(id).catch(() => {}); });
     return { ok: true };
-  });
+  }, { permission: 'exec:run' });
 
   route('DELETE', '/plans/:id', async ({ params }) => {
     getDb().prepare('DELETE FROM plans WHERE id = ?').run(Number(params.id));
     return { ok: true };
-  });
+  }, { permission: 'plan:manage' });
 
   // ---- executions ----
   route('GET', '/executions', async ({ query }) => {
@@ -738,7 +754,7 @@ function defineRoutes(llm: LlmCall): void {
        LEFT JOIN devices d ON d.id = e.device_id
        ${where} ORDER BY e.id DESC LIMIT @limit`).all(p) as Array<Record<string, unknown>>;
     return rows.map(mapExecution);
-  });
+  }, { permission: 'exec:read' });
 
   route('GET', '/executions/:id', async ({ params }) => {
     const row = getDb().prepare(
@@ -750,7 +766,7 @@ function defineRoutes(llm: LlmCall): void {
        WHERE e.id = ?`).get(Number(params.id)) as Record<string, unknown> | undefined;
     if (!row) throw Object.assign(new Error('执行记录不存在'), { statusCode: 404 });
     return mapExecution(row);
-  });
+  }, { permission: 'exec:read' });
 
   // 调试会话追问：基于执行轨迹/思考/日志调用真实 LLM（DSH 模型配置），LLM 不可用时降级规则回答
   route('POST', '/executions/:id/ask', async ({ params, body }) => {
@@ -791,14 +807,14 @@ ${(row.logs ?? '').slice(0, 4000) || '（无）'}
         : '该步骤按用例前置条件执行，日志无异常，界面状态与预期一致，因此判定通过。（LLM 暂不可用，以下为规则推断）';
       return { answer };
     }
-  });
+  }, { permission: 'exec:run' });
 
   // ---- devices ----
   route('GET', '/devices', async () =>
     withCache('devices', async () =>
       (getDb().prepare(`SELECT * FROM devices ORDER BY status = 'online' DESC, id`).all() as Record<string, unknown>[]).map(mapDevice),
     ),
-  );
+  { permission: 'device:read' });
 
   route('POST', '/devices/scan', async () => {
     const db = getDb();
@@ -843,7 +859,7 @@ ${(row.logs ?? '').slice(0, 4000) || '（无）'}
       VALUES (?, ?, ?, 'online', ?, ?, ?, ?)`).run(serial, model, os, 60 + Math.floor(Math.random() * 40), 40 + Math.floor(Math.random() * 40), t, t);
     const row = db.prepare('SELECT * FROM devices WHERE serial = ?').get(serial);
     return { discovered: res.changes > 0, device: mapDevice(row as Record<string, unknown>), total: count(), source: 'simulate', note };
-  });
+  }, { permission: 'device:manage' });
 
   route('PUT', '/devices/:id', async ({ params, body }) => {
     const id = Number(params.id);
@@ -857,7 +873,7 @@ ${(row.logs ?? '').slice(0, 4000) || '（无）'}
       (b.battery as number) ?? row.battery, (b.memoryUsage as number) ?? row.memory_usage, now(), id,
     );
     return mapDevice(db.prepare('SELECT * FROM devices WHERE id = ?').get(id) as Record<string, unknown>);
-  });
+  }, { permission: 'device:manage' });
 
   route('POST', '/devices/:id/connect', async ({ params }) => {
     const id = Number(params.id);
@@ -867,13 +883,13 @@ ${(row.logs ?? '').slice(0, 4000) || '（无）'}
     if (!row) throw Object.assign(new Error('设备不存在'), { statusCode: 404 });
     db.prepare(`UPDATE devices SET status='online', last_seen_at=? WHERE id=?`).run(now(), id);
     return mapDevice(db.prepare('SELECT * FROM devices WHERE id = ?').get(id) as Record<string, unknown>);
-  });
+  }, { permission: 'device:manage' });
 
   route('DELETE', '/devices/:id', async ({ params }) => {
     void cacheDel('devices');
     getDb().prepare('DELETE FROM devices WHERE id = ?').run(Number(params.id));
     return { ok: true };
-  });
+  }, { permission: 'device:manage' });
 
   // ---- 数据分析 / 归因分析 ----
   route('GET', '/analyses', async ({ query }) => {
@@ -889,7 +905,7 @@ ${(row.logs ?? '').slice(0, 4000) || '（无）'}
       const where = conds.length ? `WHERE ${conds.join(' AND ')}` : '';
       return (getDb().prepare(`SELECT * FROM analyses ${where} ORDER BY id DESC LIMIT 100`).all(p) as Record<string, unknown>[]).map(mapAnalysis);
     });
-  });
+  }, { permission: 'analysis:read' });
 
   route('POST', '/analyses/pr/:libraryId', async ({ params, body }) => {
     void cacheDel('analyses');
@@ -937,7 +953,7 @@ ${(row.logs ?? '').slice(0, 4000) || '（无）'}
       }
     });
     return { runId };
-  });
+  }, { permission: 'analysis:run' });
 
   route('POST', '/analyses/case-updates/:libraryId', async ({ params, body }) => {
     void cacheDel('analyses');
@@ -985,13 +1001,13 @@ ${(row.logs ?? '').slice(0, 4000) || '（无）'}
       }
     });
     return { runId };
-  });
+  }, { permission: 'analysis:run' });
 
   route('GET', '/analyses/progress/:runId', async ({ params }) => {
     const p = analysisProgress.get(String(params.runId));
     if (!p) throw Object.assign(new Error('进度不存在或已过期'), { statusCode: 404 });
     return p;
-  });
+  }, { permission: 'analysis:read' });
 
   // 按扫描轮次删除整轮分析结果（多次扫描时标识/清理用）
   route('DELETE', '/analyses/round/:round', async ({ params }) => {
@@ -1000,7 +1016,7 @@ ${(row.logs ?? '').slice(0, 4000) || '（无）'}
     const n = db.prepare('DELETE FROM analyses WHERE round = ?').run(round).changes;
     void cacheDel('analyses');
     return { ok: true, deleted: n };
-  });
+  }, { permission: 'analysis:delete' });
 
   // 清空某个三方库的全部分析结果（换库/重新开始用）
   route('DELETE', '/analyses/library/:libraryId', async ({ params }) => {
@@ -1009,7 +1025,7 @@ ${(row.logs ?? '').slice(0, 4000) || '（无）'}
     const n = db.prepare('DELETE FROM analyses WHERE library_id = ?').run(libId).changes;
     void cacheDel('analyses');
     return { ok: true, deleted: n };
-  });
+  }, { permission: 'analysis:delete' });
 
   route('DELETE', '/analyses/:id', async ({ params }) => {
     const id = Number(params.id);
@@ -1019,7 +1035,7 @@ ${(row.logs ?? '').slice(0, 4000) || '（无）'}
     void cacheDel('analyses');
     db.prepare('DELETE FROM analyses WHERE id = ?').run(id);
     return { ok: true, deletedKind: row.kind };
-  });
+  }, { permission: 'analysis:delete' });
 
   route('POST', '/analyses/attribution', async ({ body }) => {
     void cacheDel('analyses');
@@ -1033,7 +1049,7 @@ ${(row.logs ?? '').slice(0, 4000) || '（无）'}
       libraryId: b.libraryId ? Number(b.libraryId) : null,
       caseId: b.caseId ? Number(b.caseId) : null,
     });
-  });
+  }, { permission: 'analysis:run' });
 }
 
 // ---------- mappers / helpers ----------

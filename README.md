@@ -56,7 +56,7 @@ dsh plugin --profile web install
 
 ```powershell
 # 1. 声明依赖：编辑 ~/.dsh/profiles/web/package.json 的 dependencies 加：
-#    "dsh-autotest": "https://github.com/summer-hub/AutoTestAgent/releases/download/v0.1.29/dsh-autotest-0.1.29.tgz"
+#    "dsh-autotest": "https://github.com/summer-hub/AutoTestAgent/releases/download/v0.1.30/dsh-autotest-0.1.30.tgz"
 #    然后必须执行安装（光写不装等于没写）：
 cd $env:USERPROFILE\.dsh\profiles\web
 pnpm install
@@ -81,7 +81,7 @@ Invoke-RestMethod http://localhost:3080/api/autotest/health
 - `health` 通了但侧边栏看不到 → GUI 缓存问题：强制刷新 / 清浏览器缓存，让 DSH Web 重新加载 client 插件。
 - 之前装过旧 tarball → pnpm 会缓存旧包，需 `pnpm update dsh-autotest` 或删掉 `node_modules/dsh-autotest` 重装（旧包缺 `cordis.patch.yml`，装了也起不来）。
 
-也可以把 tgz 下载到本地后用 `"dsh-autotest": "file:./dsh-autotest-0.1.29.tgz"` 或 `pnpm add ./dsh-autotest-0.1.29.tgz`，离线环境更稳；第 2~5 步不变。
+也可以把 tgz 下载到本地后用 `"dsh-autotest": "file:./dsh-autotest-0.1.30.tgz"` 或 `pnpm add ./dsh-autotest-0.1.30.tgz`，离线环境更稳；第 2~5 步不变。
 
 安装成功后：
 
@@ -95,6 +95,28 @@ Invoke-RestMethod http://localhost:3080/api/autotest/health
 - **迁移到新机器**：插件数据（`~/.dsh/profiles/web/node_modules/dsh-autotest/data/autotest.db`）携带了三方库、用例、分析记录；启动时会自动对账——本地没有对应仓库克隆目录（`<workspace>/repos/<lib>`）的库，会清空 `last_commit` / `last_synced_at`，界面显示「未同步」，不会残留旧机器的拉取记录。仓库克隆目录不随 DB 迁移，首次「拉取仓库代码」会自动 clone。
 - **多次扫描**：每次「拉取并分析 PR / 用例更新分析」都会生成一个新的扫描轮次（`round`，如 `R-<时间戳>-<随机数>`），旧轮次记录保留、按轮次分组展示，可「删除本轮」或「清空该库」。
 - **换仓库互不影响**：所有分析记录按三方库（`library_id`）隔离，切换/更换仓库只影响该库自己的记录。
+
+### 多用户（阶段 0：认证 + 权限）
+
+认证数据放在服务器 MySQL（`auth_*` 表），业务数据当前仍在 SQLite（迁移 MySQL 为下一阶段）；Redis 作缓存。
+
+```powershell
+# 1. 系统配置里填好（或直接改 ~/.dsh/profiles/web/node_modules/dsh-autotest/data/autotest.db 的 settings 表）：
+#    db.mysqlUrl   = mysql://用户:密码@127.0.0.1:3306/autotest   （库需已创建，启动自动建 auth_* 表）
+#    data.redisUrl = redis://127.0.0.1:6379
+#    data.redisCache = true
+
+# 2. 重启 DSH，启动日志会打印初始管理员账号：
+#    [dsh-autotest] 已创建初始管理员：admin / <随机密码>
+
+# 3. 打开 AutoTest 平台会先显示登录页；用 admin 登录后，在「用户管理」页：
+#    - 新建用户并指定角色（管理员/组长/测试工程师/只读访客）
+#    - 生成邀请码给新同事注册（注册即自动登录，初始角色 viewer）
+#    - 给 CI/脚本生成 API Key（Bearer sk_xxx，可吊销）
+#    - 查看审计日志（登录/建号/改密/增删改记录）
+```
+
+角色权限：`admin`（全量+用户/审计）、`manager`（管理业务+设备，不可管用户）、`engineer`（写用例/跑任务/执行）、`viewer`（只读）。所有业务 API 均需登录；未带 token 返回 401，越权返回 403。
 
 ## 快速上手
 
@@ -129,5 +151,5 @@ git tag v0.2.0 && git push origin v0.2.0   # GitHub Actions 自动构建 Release
 
 ```jsonc
 // ~/.dsh/profiles/web/package.json
-"dsh-autotest": "https://github.com/summer-hub/AutoTestAgent/releases/download/v0.1.29/dsh-autotest-0.1.29.tgz"
+"dsh-autotest": "https://github.com/summer-hub/AutoTestAgent/releases/download/v0.1.30/dsh-autotest-0.1.30.tgz"
 ```

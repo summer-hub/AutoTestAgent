@@ -5,11 +5,47 @@ import type { Analysis, CaseVersion, Device, Execution, Library, ModelConfig, Mo
 // 独立版默认 /api（Vite 代理到 3280）。
 const API_BASE: string = (import.meta.env.VITE_API_BASE as string | undefined) ?? '/api';
 
+export interface AuthUser {
+  id: number;
+  username: string;
+  roles: string[];
+  permissions: string[];
+}
+
+// 登录态（localStorage）
+const TOKEN_KEY = 'autotest_token';
+const REFRESH_KEY = 'autotest_refresh';
+export const authState = {
+  get token(): string { return localStorage.getItem(TOKEN_KEY) ?? ''; },
+  set token(v: string) { v ? localStorage.setItem(TOKEN_KEY, v) : localStorage.removeItem(TOKEN_KEY); },
+  get refresh(): string { return localStorage.getItem(REFRESH_KEY) ?? ''; },
+  set refresh(v: string) { v ? localStorage.setItem(REFRESH_KEY, v) : localStorage.removeItem(REFRESH_KEY); },
+  clear() { localStorage.removeItem(TOKEN_KEY); localStorage.removeItem(REFRESH_KEY); },
+  has(): boolean { return !!this.token; },
+};
+
 async function req<T>(url: string, init?: RequestInit): Promise<T> {
-  const res = await fetch(url, {
-    headers: { 'Content-Type': 'application/json' },
-    ...init,
-  });
+  const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+  if (authState.token) headers.Authorization = `Bearer ${authState.token}`;
+  const res = await fetch(url, { headers, ...init });
+  if (res.status === 401 && authState.refresh && !url.includes('/auth/')) {
+    // 自动续期一次
+    try {
+      const r = await fetch(`${API_BASE}/auth/refresh`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ refreshToken: authState.refresh }),
+      });
+      if (r.ok) {
+        const d = (await r.json()) as { token: string; refreshToken: string };
+        authState.token = d.token;
+        authState.refresh = d.refreshToken;
+        return req<T>(url, init);
+      }
+    } catch { /* 续期失败走登出 */ }
+    authState.clear();
+    try { location.hash = 'login'; } catch { /* noop */ }
+  }
   if (!res.ok) {
     const body = await res.json().catch(() => ({}));
     throw new Error((body as { message?: string }).message || `HTTP ${res.status}`);
@@ -19,6 +55,39 @@ async function req<T>(url: string, init?: RequestInit): Promise<T> {
 
 export const api = {
   health: () => req<{ ok: boolean }>(`${API_BASE}/health`),
+
+  // ---- 认证 ----
+  login: (username: string, password: string) =>
+    req<{ ok: boolean; token: string; refreshToken: string; user: AuthUser }>(`${API_BASE}/auth/login`, {
+      method: 'POST', body: JSON.stringify({ username, password }),
+    }),
+  register: (code: string, username: string, password: string) =>
+    req<{ ok: boolean; token: string; refreshToken: string; user: AuthUser }>(`${API_BASE}/auth/register`, {
+      method: 'POST', body: JSON.stringify({ code, username, password }),
+    }),
+  logout: (refreshToken: string) =>
+    req<{ ok: boolean }>(`${API_BASE}/auth/logout`, { method: 'POST', body: JSON.stringify({ refreshToken }) }),
+  me: () => req<{ ok: boolean; user: AuthUser }>(`${API_BASE}/auth/me`),
+  changePassword: (oldPassword: string, newPassword: string) =>
+    req<{ ok: boolean }>(`${API_BASE}/auth/password`, { method: 'PUT', body: JSON.stringify({ oldPassword, newPassword }) }),
+  users: () => req<{ ok: boolean; users: Array<Record<string, unknown>> }>(`${API_BASE}/auth/users`),
+  createUser: (username: string, password: string, roles: string[]) =>
+    req<{ ok: boolean; id: number }>(`${API_BASE}/auth/users`, { method: 'POST', body: JSON.stringify({ username, password, roles }) }),
+  setUserRole: (id: number, roles: string[]) =>
+    req<{ ok: boolean }>(`${API_BASE}/auth/users/${id}/role`, { method: 'PUT', body: JSON.stringify({ roles }) }),
+  setUserStatus: (id: number, status: string) =>
+    req<{ ok: boolean }>(`${API_BASE}/auth/users/${id}/status`, { method: 'PUT', body: JSON.stringify({ status }) }),
+  deleteUser: (id: number) => req<{ ok: boolean }>(`${API_BASE}/auth/users/${id}`, { method: 'DELETE' }),
+  resetPassword: (id: number) => req<{ ok: boolean; tempPassword: string }>(`${API_BASE}/auth/users/${id}/reset-password`, { method: 'POST' }),
+  invites: () => req<{ ok: boolean; invites: Array<Record<string, unknown>> }>(`${API_BASE}/auth/invites`),
+  createInvite: (roleCode: string) =>
+    req<{ ok: boolean; code: string }>(`${API_BASE}/auth/invites`, { method: 'POST', body: JSON.stringify({ roleCode }) }),
+  revokeInvite: (id: number) => req<{ ok: boolean }>(`${API_BASE}/auth/invites/${id}`, { method: 'DELETE' }),
+  keys: () => req<{ ok: boolean; keys: Array<Record<string, unknown>> }>(`${API_BASE}/auth/keys`),
+  createKey: (name: string, scopes: string[]) =>
+    req<{ ok: boolean; key: string; row: Record<string, unknown> }>(`${API_BASE}/auth/keys`, { method: 'POST', body: JSON.stringify({ name, scopes }) }),
+  revokeKey: (id: number) => req<{ ok: boolean }>(`${API_BASE}/auth/keys/${id}`, { method: 'DELETE' }),
+  audit: (limit = 50) => req<{ ok: boolean; rows: Array<Record<string, unknown>> }>(`${API_BASE}/auth/audit?limit=${limit}`),
 
   // 三方库
   libraries: (params: { page?: number; pageSize?: number; q?: string } = {}) => {
