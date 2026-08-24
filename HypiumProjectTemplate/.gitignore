@@ -1,3 +1,7 @@
 /.idea/
 /config/
 /reports/
+__pycache__/
+*.pyc
+reports/
+tmp_hypium/
