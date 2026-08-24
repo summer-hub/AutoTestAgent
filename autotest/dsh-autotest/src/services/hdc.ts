@@ -4,8 +4,11 @@
 //    → 触摸输入（HarmonyOS uinput / Android input）+ aa start + keyevent
 //  - 环境无 hdc 或未连接设备时由调用方回退模拟执行
 import { execFile } from 'node:child_process';
+import fs from 'node:fs';
+import path from 'node:path';
 import { promisify } from 'node:util';
 import { getSetting } from './settings.js';
+import { workspaceDir } from './gitRepo.js';
 
 const execFileAsync = promisify(execFile);
 const HDC = process.env.AUTOTEST_HDC || 'hdc';
@@ -223,6 +226,36 @@ async function keyBack(serial: string): Promise<string> {
   return execShell(serial, ['input', 'keyevent', '4']);
 }
 
+/** 失败诊断截图：设备截图 → recv 到本地 workspace/screenshots。 */
+async function captureScreen(serial: string, localPath: string): Promise<string> {
+  const mode = await detectDumpMode(serial);
+  const remote = '/data/local/tmp/autotest_screen.png';
+  try {
+    if (mode === 'harmony') {
+      await runHdc(['-t', serial, 'shell', 'snapshot_display', '-f', remote], 15000);
+    } else {
+      await runHdc(['-t', serial, 'shell', 'screencap', '-p', remote], 15000);
+    }
+    await runHdc(['-t', serial, 'file', 'recv', remote, localPath], 20000);
+    return fs.existsSync(localPath) ? localPath : `截图文件未生成：${localPath}`;
+  } catch (e) {
+    return `截图失败：${(e as Error).message}`;
+  }
+}
+
+/** 验证 hilog 日志中出现关键字（用例预期结果里写明应打印的日志）。 */
+async function verifyHilog(serial: string, keyword: string): Promise<{ ok: boolean; log: string }> {
+  try {
+    const { stdout } = await runHdc(['-t', serial, 'shell', 'hilog', '-x'], 20000);
+    const hit = stdout.split(/\r?\n/).find((l) => l.toLowerCase().includes(keyword.toLowerCase()));
+    return hit
+      ? { ok: true, log: `hilog 匹配「${keyword}」：${hit.slice(0, 140)}` }
+      : { ok: false, log: `hilog 中未出现「${keyword}」（已检查最近日志）` };
+  } catch (e) {
+    return { ok: false, log: `hilog 抓取失败：${(e as Error).message}` };
+  }
+}
+
 function pickKeyword(desc: string): string {
   return desc
     .replace(/^(点击|单击|选择|选中|确认|打开|启动|切换|滚动|长按|勾选|取消|删除|验证|检查|断言|校验)[:：\s]*/, '')
@@ -296,6 +329,15 @@ async function runStep(serial: string, desc: string): Promise<{ ok: boolean; log
       return pass(`长按「${kw}」@(${node.x},${node.y})`);
     }
     if (/^(验证|检查|断言|校验)/.test(d)) {
+      // 验证日志包含 xxx —— 用 hilog 匹配（预期结果里写明日志时）
+      const logMatch = d.match(/日志[^，。]*?(?:包含|出现|打印|输出)\s*[:：]?\s*(.+)/);
+      if (logMatch) {
+        const kw = logMatch[1].replace(/[「」“”"'，,。.]/g, ' ').trim();
+        if (kw) {
+          const r = await verifyHilog(serial, kw);
+          return r.ok ? pass(r.log) : fail(r.log);
+        }
+      }
       const kw = pickKeyword(d);
       const xml = await uiDump(serial);
       const node = findKeyword(parseNodes(xml), kw);
@@ -346,18 +388,42 @@ async function runStepWithTimeout(serial: string, desc: string, timeoutMs: numbe
 export async function executeCaseSteps(
   steps: string[],
   serial: string,
-  opts: { perStepTimeoutMs?: number } = {},
+  opts: {
+    perStepTimeoutMs?: number;
+    launch?: string;              // 执行前先 aa start 的应用（bundle 或 ability）
+    screenshotDir?: string;       // 失败步骤截图保存目录（默认 workspace/screenshots）
+  } = {},
 ): Promise<CaseRun> {
   const perStep = opts.perStepTimeoutMs ?? 30000;
   const logs: string[] = [`[hdc] 设备 ${serial} · 真实执行开始（${steps.length} 步）`];
   const results: RealStep[] = [];
   let passed = true;
+  const shotDir = opts.screenshotDir || path.join(workspaceDir(), 'screenshots');
+  // 执行前拉起应用（可选）
+  if (opts.launch) {
+    logs.push(`[hdc] 启动应用：${opts.launch}`);
+    try {
+      const out = await execShell(serial, ['aa', 'start', '-a', opts.launch]);
+      logs.push(`[hdc] aa start -a ${opts.launch}：${out}`);
+      await sleep(2000);
+    } catch (e) {
+      logs.push(`[hdc] 启动应用失败（继续执行步骤）：${(e as Error).message}`);
+    }
+  }
   for (let i = 0; i < steps.length; i++) {
     const desc = steps[i] ?? `步骤 ${i + 1}`;
     const r = await runStepWithTimeout(serial, desc, perStep);
     results.push({ seq: i + 1, desc, status: r.ok ? 'passed' : 'failed', durationMs: r.durationMs, log: r.log });
     logs.push(`[${String(i + 1).padStart(2, '0')}] ${desc} → ${r.ok ? '通过' : '失败'}：${r.log}`);
-    if (!r.ok) passed = false;
+    if (!r.ok) {
+      // 失败诊断截图（不影响主流程）
+      try {
+        fs.mkdirSync(shotDir, { recursive: true });
+        const shot = await captureScreen(serial, path.join(shotDir, `${Date.now()}_step${String(i + 1).padStart(2, '0')}.png`));
+        logs.push(`[截图] ${shot}`);
+      } catch { /* 截图失败不阻断 */ }
+      passed = false;
+    }
   }
   logs.push(`[hdc] 执行结束：${passed ? '全部通过' : '存在失败步骤'}`);
   return { steps: results, logs, passed };

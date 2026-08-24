@@ -19,4 +19,6 @@ export interface CaseRun {
 /** 在真实设备上按顺序执行用例步骤（hdc / uiautomator / input）。 */
 export declare function executeCaseSteps(steps: string[], serial: string, opts?: {
     perStepTimeoutMs?: number;
+    launch?: string;
+    screenshotDir?: string;
 }): Promise<CaseRun>;

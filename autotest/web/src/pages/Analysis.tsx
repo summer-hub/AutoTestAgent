@@ -137,6 +137,22 @@ export default function AnalysisPage() {
     }
   };
 
+  const exportExcel = async () => {
+    try {
+      const blob = await api.exportAnalyses({ libraryId: curLib ?? undefined });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `分析结果_${libs.find((l) => l.id === curLib)?.name ?? '全部'}_${new Date().toISOString().slice(0, 10)}.xlsx`;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      URL.revokeObjectURL(url);
+    } catch (e) {
+      setError(String((e as Error).message));
+    }
+  };
+
   // 按扫描轮次分组（同一轮扫描的所有 PR 卡片归到一起，可整体删除）
   const groupByRound = (rows: Analysis[]): Array<[string, Analysis[]]> => {
     const m = new Map<string, Analysis[]>();
@@ -216,6 +232,7 @@ export default function AnalysisPage() {
         <button className="btn primary" disabled={curLib === null} onClick={() => void openPrModal('pr')}>🔍 拉取并分析 PR</button>
         <button className="btn" disabled={curLib === null} onClick={() => void openPrModal('case')}>📝 用例更新分析</button>
         <button className="btn" disabled={curLib === null} onClick={() => void clearLibrary()} title="删除该三方库全部历史分析">🗑 清空该库</button>
+        <button className="btn" disabled={curLib === null} onClick={() => void exportExcel()} title="导出当前库的全部分析结果（Excel）">📥 导出 Excel</button>
         <span className="muted" style={{ fontSize: 11.5, marginLeft: 'auto' }}>
           {curLib === null ? '' : `${libs.find((l) => l.id === curLib)?.name} · PR 分析 ${prRows.length} 条 / 用例更新建议 ${caseRows.length} 条`}
         </span>

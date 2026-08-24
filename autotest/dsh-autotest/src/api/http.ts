@@ -942,6 +942,52 @@ ${(row.logs ?? '').slice(0, 4000) || '（无）'}
     });
   }, { permission: 'analysis:read' });
 
+  // 分析结果导出（Excel）：PR 分析 / 用例更新建议，支持按 kind/库/轮次过滤
+  route('GET', '/analyses/export', async ({ query }) => {
+    const kind = query.get('kind') ?? '';
+    const granularity = query.get('granularity') ?? '';
+    const libraryId = Number(query.get('libraryId')) || null;
+    const round = query.get('round') ?? '';
+    const conds: string[] = [];
+    const p: Record<string, unknown> = {};
+    if (kind) { conds.push('kind = @kind'); p.kind = kind; }
+    if (granularity) { conds.push('granularity = @granularity'); p.granularity = granularity; }
+    if (libraryId) { conds.push('library_id = @libraryId'); p.libraryId = libraryId; }
+    if (round) { conds.push('round = @round'); p.round = round; }
+    const where = conds.length ? `WHERE ${conds.join(' AND ')}` : '';
+    const rows = await getDb().prepare(`SELECT * FROM analyses ${where} ORDER BY id DESC LIMIT 5000`).all<Record<string, unknown>>(p);
+    const data = rows.map((r) => {
+      const c = safeJsonParse(r.content, {}) as Record<string, any>;
+      if (r.kind === 'case_update_analysis') {
+        return {
+          类型: '用例更新建议',
+          用例编号: String(c.caseNo ?? '新增'),
+          原因: String(c.reason ?? ''),
+          建议动作: String(c.suggestedAction ?? ''),
+          新预期: String(c.newExpected ?? ''),
+          轮次: String(r.round ?? ''),
+          分析时间: String(r.created_at ?? ''),
+        };
+      }
+      return {
+        类型: r.kind === 'pr_analysis' ? 'PR 分析' : String(r.kind ?? ''),
+        'PR 编号': c.prNumber !== undefined ? String(c.prNumber) : '',
+        标题: String(c.title ?? r.title ?? ''),
+        更新点: Array.isArray(c.updatePoints) ? (c.updatePoints as unknown[]).join('\n') : String(c.updatePoints ?? ''),
+        影响范围: String(c.impact ?? ''),
+        受影响功能: Array.isArray(c.affectedFeatures) ? (c.affectedFeatures as unknown[]).join('\n') : '',
+        风险: String(c.risk ?? ''),
+        建议用例更新: Array.isArray(c.suggestedCaseUpdates) ? (c.suggestedCaseUpdates as unknown[]).join('\n') : '',
+        轮次: String(r.round ?? ''),
+        分析时间: String(r.created_at ?? ''),
+      };
+    });
+    const sheet = XLSX.utils.json_to_sheet(data);
+    const wb = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(wb, sheet, '分析结果');
+    return XLSX.write(wb, { type: 'buffer', bookType: 'xlsx' }) as Buffer;
+  }, { permission: 'analysis:read' });
+
   route('POST', '/analyses/pr/:libraryId', async ({ params, body }) => {
     void cacheDel('analyses');
     const db = getDb();

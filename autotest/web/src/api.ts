@@ -214,6 +214,21 @@ export const api = {
     req<{ runId: string }>(`${API_BASE}/analyses/case-updates/${libraryId}`, { method: 'POST', body: JSON.stringify({ prNumbers }) }),
   analysisProgress: (runId: string) =>
     req<{ stage: string; done: boolean; error?: string }>(`${API_BASE}/analyses/progress/${runId}`),
+  exportAnalyses: async (params: { kind?: string; granularity?: string; libraryId?: number; round?: string } = {}) => {
+    const qs = new URLSearchParams();
+    if (params.kind) qs.set('kind', params.kind);
+    if (params.granularity) qs.set('granularity', params.granularity);
+    if (params.libraryId) qs.set('libraryId', String(params.libraryId));
+    if (params.round) qs.set('round', params.round);
+    const headers: Record<string, string> = {};
+    if (authState.token) headers.Authorization = `Bearer ${authState.token}`;
+    const res = await fetch(`${API_BASE}/analyses/export?${qs}`, { headers });
+    if (!res.ok) {
+      const body = await res.json().catch(() => ({}));
+      throw new Error((body as { message?: string }).message || `HTTP ${res.status}`);
+    }
+    return res.blob();
+  },
   deleteAnalysis: (id: number) => req<{ ok: boolean }>(`${API_BASE}/analyses/${id}`, { method: 'DELETE' }),
   deleteAnalysisRound: (round: string) => req<{ ok: boolean; deleted: number }>(`${API_BASE}/analyses/round/${encodeURIComponent(round)}`, { method: 'DELETE' }),
   deleteLibraryAnalyses: (libraryId: number) => req<{ ok: boolean; deleted: number }>(`${API_BASE}/analyses/library/${libraryId}`, { method: 'DELETE' }),
