@@ -1,11 +1,14 @@
 import { useCallback, useEffect, useRef, useState, type CSSProperties } from 'react';
-import type { CaseVersion, Library, Page, TestCase } from 'shared';
+import type { CaseSource, CaseVersion, Library, Page, TestCase } from 'shared';
 import { api } from '../api';
 
 const SOURCE_COLORS: Record<string, string> = { 老库存量: 'gray', 新需求引入: 'blue', 问题单跟踪: 'amber', 'AI 生成': 'purple', 真机遍历: 'green' };
 const STATUS_COLORS: Record<string, string> = { 通过: 'green', 失败: 'red', 待确认: 'gray', 未执行: 'gray' };
+const PAGE_SIZES = [30, 50, 100];
 
-export default function CasesPage() {
+export default function CasesPage({ me }: { me?: { permissions?: string[] } | null } = {}) {
+  // case:delete 权限缺失（工程师/访客）时隐藏删除入口，避免 403 困惑
+  const canDelete = me?.permissions ? me.permissions.includes('case:delete') : true;
   const [libs, setLibs] = useState<Page<Library> | null>(null);
   const [libQ, setLibQ] = useState('');
   const [curLib, setCurLib] = useState<number | null>(null);
@@ -16,6 +19,11 @@ export default function CasesPage() {
   const [importMsg, setImportMsg] = useState('');
   const fileRef = useRef<HTMLInputElement>(null);
   const [casePage, setCasePage] = useState(1);
+  const [pageSize, setPageSize] = useState(30);
+
+  // 多选批量操作（跨页保留勾选，切库/切来源时清空）
+  const [sel, setSel] = useState<Set<number>>(new Set());
+  const [batchBusy, setBatchBusy] = useState(false);
 
   // 版本抽屉
   const [drawer, setDrawer] = useState<{ case: TestCase; versions: CaseVersion[] } | null>(null);
@@ -24,58 +32,82 @@ export default function CasesPage() {
   const [detail, setDetail] = useState<TestCase | null>(null);
   const [caseForm, setCaseForm] = useState<null | { mode: 'create' } | { mode: 'edit'; case: TestCase }>(null);
   const [savingCase, setSavingCase] = useState(false);
-  // 真机遍历
-  const [exploreOpen, setExploreOpen] = useState(false);
-  const [exploreStage, setExploreStage] = useState('');
-  const [exploreDone, setExploreDone] = useState(false);
-  const [exploreErr, setExploreErr] = useState('');
 
-  const startExplore = async () => {
-    if (curLib === null) return;
-    setExploreOpen(true);
-    setExploreStage('启动遍历…');
-    setExploreDone(false);
-    setExploreErr('');
+  const toggleSel = (id: number): void => {
+    setSel((s) => {
+      const n = new Set(s);
+      if (n.has(id)) n.delete(id); else n.add(id);
+      return n;
+    });
+  };
+
+  const allPageSelected = !!cases && cases.items.length > 0 && cases.items.every((c) => sel.has(c.id));
+  const toggleAllPage = (): void => {
+    if (!cases) return;
+    setSel((s) => {
+      const n = new Set(s);
+      if (allPageSelected) cases.items.forEach((c) => n.delete(c.id));
+      else cases.items.forEach((c) => n.add(c.id));
+      return n;
+    });
+  };
+
+  const batchDelete = async (): Promise<void> => {
+    if (curLib === null || sel.size === 0) return;
+    if (!window.confirm(`确认删除选中的 ${sel.size} 条用例？版本历史与执行记录将一并删除。`)) return;
+    setBatchBusy(true);
+    setError('');
     try {
-      const r = await api.explore(curLib);
-      const poll = async () => {
-        try {
-          const p = await api.exploreProgress(r.runId);
-          setExploreStage(p.stage);
-          if (p.error) setExploreErr(p.error);
-          if (p.done) {
-            setExploreDone(true);
-            loadCases(curLib, 1);
-          } else {
-            setTimeout(() => void poll(), 2000);
-          }
-        } catch (e) {
-          setExploreErr(String((e as Error).message));
-        }
-      };
-      setTimeout(() => void poll(), 2000);
+      await api.batchDeleteCases([...sel]);
+      setSel(new Set());
+      loadCases(curLib, 1);
+      api.libraries({ pageSize: 100 }).then(setLibs).catch(() => {});
     } catch (e) {
-      setExploreErr(String((e as Error).message));
+      setError(String((e as Error).message));
+    } finally {
+      setBatchBusy(false);
     }
   };
 
+  const batchStatus = async (status: string): Promise<void> => {
+    if (curLib === null || sel.size === 0) return;
+    setBatchBusy(true);
+    setError('');
+    try {
+      const r = await api.batchUpdateCaseStatus([...sel], status);
+      setImportMsg(`批量状态更新：${r.updated} 条 → ${status}`);
+      setSel(new Set());
+      loadCases(curLib, casePage);
+    } catch (e) {
+      setError(String((e as Error).message));
+    } finally {
+      setBatchBusy(false);
+    }
+  };
+
+  const changePageSize = (n: number): void => {
+    setPageSize(n);
+    setCasePage(1);
+    setSel(new Set());
+  };
+
   const loadCases = useCallback((libraryId: number, page: number) => {
-    api.cases(libraryId, { page, pageSize: 50, source: source || undefined, q: caseQ || undefined })
+    api.cases(libraryId, { page, pageSize, source: source || undefined, q: caseQ || undefined })
       .then((r) => { setCases(r); setCasePage(r.page); })
       .catch((e) => setError(String(e.message)));
-  }, [source, caseQ]);
+  }, [source, caseQ, pageSize]);
 
   useEffect(() => {
     api.libraries({ pageSize: 100 })
       .then((r) => {
         setLibs(r);
-        if (r.items.length > 0 && curLib === null) {
-          setCurLib(r.items[0].id);
-          api.cases(r.items[0].id, { page: 1, pageSize: 50 }).then(setCases).catch((e) => setError(String(e.message)));
-        }
+        if (r.items.length > 0 && curLib === null) setCurLib(r.items[0].id);
       })
       .catch((e) => setError(String(e.message)));
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // 切库/来源/搜索词变化时清空勾选
+  useEffect(() => { setSel(new Set()); }, [curLib, source, caseQ]);
 
   useEffect(() => {
     if (curLib !== null) loadCases(curLib, casePage);
@@ -97,7 +129,7 @@ export default function CasesPage() {
       await api.rollbackCase(drawer.case.id, v);
       const [fresh, vs] = await Promise.all([api.caseDetail(drawer.case.id), api.caseVersions(drawer.case.id)]);
       setDrawer({ case: fresh, versions: vs });
-      if (curLib !== null) loadCases(curLib);
+      if (curLib !== null) loadCases(curLib, casePage);
     } catch (e) {
       setError(String((e as Error).message));
     }
@@ -121,7 +153,7 @@ export default function CasesPage() {
       const body = {
         caseNo: form.caseNo.trim(),
         name: form.name.trim(),
-        source: form.source,
+        source: form.source as CaseSource,
         precondition: form.precondition.trim(),
         steps: form.steps.split('\n').map((s) => s.trim()).filter(Boolean),
         expected: form.expected.trim(),
@@ -164,7 +196,7 @@ export default function CasesPage() {
       const base64 = await fileToBase64(file);
       const r = await api.importCases(curLib, file.name, base64);
       setImportMsg(`导入完成：新增 ${r.imported} 条${r.skipped ? `，跳过 ${r.skipped} 条` : ''}${r.errors.length ? `，错误 ${r.errors.length} 条` : ''}`);
-      loadCases(curLib);
+      loadCases(curLib, casePage);
       api.libraries({ pageSize: 100 }).then(setLibs).catch(() => {});
     } catch (e) {
       setImportMsg('');
@@ -253,22 +285,43 @@ export default function CasesPage() {
             <button className="btn sm" disabled={curLib === null} onClick={onExport}>⬇ 导出 Excel</button>
             <button className="btn sm" disabled={curLib === null} onClick={() => fileRef.current?.click()}>⬆ 导入 Excel</button>
             <button className="btn sm primary" disabled={curLib === null} onClick={() => setCaseForm({ mode: 'create' })}>＋ 新增用例</button>
-            <button className="btn sm" disabled={curLib === null} onClick={() => void startExplore()} title="连接真机：启动 demo 遍历页面，自动生成用例与 Hypium 脚本">📡 真机遍历</button>
             {importMsg && <span className="muted" style={{ fontSize: 11.5 }}>{importMsg}</span>}
             <span className="muted" style={{ fontSize: 11.5, marginLeft: 'auto' }}>
               版本按单条用例迭代 · 更新自动递增 · 可单独回滚
             </span>
           </div>
+
+          {/* 批量操作条 */}
+          {sel.size > 0 && (
+            <div style={{
+              margin: '0 14px 10px', padding: '8px 12px', display: 'flex', gap: 10, alignItems: 'center', flexWrap: 'wrap',
+              background: 'var(--accent-dim)', border: '1px solid var(--accent)', borderRadius: 9, fontSize: 12.3,
+            }}>
+              <b>已选 {sel.size} 条</b>
+              <span className="muted" style={{ fontSize: 11.5 }}>批量状态：</span>
+              {(['通过', '失败', '待确认', '未执行'] as const).map((st) => (
+                <button key={st} className="btn sm" disabled={batchBusy} onClick={() => void batchStatus(st)}>{st}</button>
+              ))}
+              {canDelete && <button className="btn sm" style={{ color: 'var(--red)' }} disabled={batchBusy} onClick={() => void batchDelete()}>🗑 批量删除</button>}
+              <button className="btn sm ghost" onClick={() => setSel(new Set())}>取消选择</button>
+            </div>
+          )}
           <div style={{ overflowX: 'auto' }}>
             {!cases ? (
               <div className="loading">加载中…</div>
             ) : (
               <table>
                 <tr>
+                  <th style={{ width: 34 }}>
+                    <input type="checkbox" checked={allPageSelected} onChange={toggleAllPage} title="全选本页" style={{ accentColor: 'var(--accent)', cursor: 'pointer' }} />
+                  </th>
                   <th>用例 ID</th><th>用例名称</th><th>来源</th><th>版本</th><th>状态</th><th>脚本</th><th>问题单</th><th>操作</th>
                 </tr>
                 {cases.items.map((c) => (
                   <tr key={c.id}>
+                    <td>
+                      <input type="checkbox" checked={sel.has(c.id)} onChange={() => toggleSel(c.id)} style={{ accentColor: 'var(--accent)', cursor: 'pointer' }} />
+                    </td>
                     <td className="mono">{c.caseNo}</td>
                     <td>
                       <span className="link" onClick={() => setDetail(c)}>{c.name}</span>
@@ -290,8 +343,12 @@ export default function CasesPage() {
                       <span className="link" onClick={() => setCaseForm({ mode: 'edit', case: c })}>编辑</span>
                       <span style={{ margin: '0 6px', color: 'var(--text3)' }}>·</span>
                       <span className="link" onClick={() => openDrawer(c)}>版本历史</span>
-                      <span style={{ margin: '0 6px', color: 'var(--text3)' }}>·</span>
-                      <span className="link" style={{ color: 'var(--red)' }} onClick={() => void deleteCase(c)}>删除</span>
+                      {canDelete && (
+                        <>
+                          <span style={{ margin: '0 6px', color: 'var(--text3)' }}>·</span>
+                          <span className="link" style={{ color: 'var(--red)' }} onClick={() => void deleteCase(c)}>删除</span>
+                        </>
+                      )}
                     </td>
                   </tr>
                 ))}
@@ -310,6 +367,15 @@ export default function CasesPage() {
               return (
                 <div style={{ padding: '10px 14px', display: 'flex', alignItems: 'center', gap: 6, fontSize: 11.5, color: 'var(--text3)', flexWrap: 'wrap' }}>
                   <span>共 {cases.total} 条 · 第 {cases.page} / {totalPages} 页</span>
+                  <select
+                    className="select"
+                    style={{ width: 92, padding: '3px 8px', fontSize: 11.5 }}
+                    value={pageSize}
+                    onChange={(e) => changePageSize(Number(e.target.value))}
+                    title="每页条数"
+                  >
+                    {PAGE_SIZES.map((n) => <option key={n} value={n}>{n} 条/页</option>)}
+                  </select>
                   <div style={{ flex: 1 }} />
                   <button className="btn sm" disabled={cases.page <= 1} onClick={() => go(1)}>« 首页</button>
                   <button className="btn sm" disabled={cases.page <= 1} onClick={() => go(cases.page - 1)}>‹ 上一页</button>
@@ -489,30 +555,6 @@ export default function CasesPage() {
           onClose={() => setCaseForm(null)}
           onSave={(f) => void saveCaseForm(f)}
         />
-      )}
-
-      {exploreOpen && (
-        <div className="s-overlay show">
-          <div className="s-mask" onClick={() => { if (exploreDone) setExploreOpen(false); }} />
-          <div style={{ position: 'relative', zIndex: 1, width: 520, maxWidth: 'calc(100vw - 40px)', background: 'var(--panel)', border: '1px solid var(--border2)', borderRadius: 16, padding: '26px 24px', boxShadow: '0 24px 80px rgba(0,0,0,.55)' }}>
-            <div style={{ fontSize: 15, fontWeight: 700, marginBottom: 12 }}>📡 真机 UI 遍历</div>
-            {!exploreDone && !exploreErr && (
-              <div style={{ display: 'flex', alignItems: 'center', gap: 14, marginBottom: 12 }}>
-                <div className="ana-spinner" />
-                <div className="muted" style={{ fontSize: 13 }}>{exploreStage || '正在连接设备…'}</div>
-              </div>
-            )}
-            {exploreErr && <div className="error" style={{ marginBottom: 10 }}>⚠️ {exploreErr}</div>}
-            {exploreDone && !exploreErr && (
-              <div className="ok" style={{ marginBottom: 12, lineHeight: 1.7 }}>✓ {exploreStage}</div>
-            )}
-            <div className="muted" style={{ fontSize: 12, lineHeight: 1.7, marginBottom: 16 }}>
-              遍历流程：启动 demo → 逐步获取每页 Layout → 识别按钮/控件 → 遇到越界动画自动滑动到完整可见 →
-              自动生成用例（来源：真机遍历）并生成 Hypium 自动化脚本（参考 HypiumProjectTemplate 模板）。
-            </div>
-            <button className="btn" disabled={!exploreDone && !exploreErr} onClick={() => setExploreOpen(false)}>关闭</button>
-          </div>
-        </div>
       )}
     </>
   );

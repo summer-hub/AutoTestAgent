@@ -4,7 +4,7 @@
 // ============================================================
 
 /** 用例来源分类 */
-export type CaseSource = '新需求引入' | '老库存量' | '问题单跟踪' | 'AI 生成';
+export type CaseSource = '新需求引入' | '老库存量' | '问题单跟踪' | 'AI 生成' | '真机遍历';
 
 /** 用例状态 */
 export type CaseStatus = '通过' | '失败' | '待确认' | '未执行';
@@ -65,6 +65,7 @@ export type TaskType =
   | 'pull_repo'      // 拉取仓库代码
   | 'update_repo'    // 更新仓库代码
   | 'write_cases'    // 编写测试用例
+  | 'explore_cases'  // 真机遍历生成用例（遍历数据 → 用例生成 Agent 优化）
   | 'update_cases'   // 更新测试用例
   | 'to_script';     // 用例转自动化脚本
 
@@ -229,4 +230,58 @@ export interface RepoFile {
   content: string;
   truncated: boolean;
   binary?: boolean;
+}
+
+// ---- 真机 UI 遍历 ----
+
+/** 遍历参数（未传字段时后端读系统配置 explore.*） */
+export interface ExploreParams {
+  deviceId?: number;
+  launchAbility?: string;
+  maxDepth?: number;          // BFS 最大深度
+  maxPages?: number;          // 最多收录页面数
+  controlsPerPage?: number;   // 每页最多收集控件数
+  maxSwipePerPage?: number;   // 单页滑动次数上限
+}
+
+/** 遍历到的控件 */
+export interface ExploredControl {
+  text: string;
+  desc: string;
+  x: number;
+  y: number;
+  w: number;
+  h: number;
+}
+
+/** 遍历到的页面 */
+export interface ExploredPage {
+  path: string[];              // 从首页到达该页的点击文本序列，首元素固定「首页」
+  controls: ExploredControl[];
+  screen: { w: number; h: number };
+  swipes: number;              // 为看全内容滑动的次数（越界动画适配）
+  scrolls?: number;            // 上下滚动探索的屏数（发现首屏外可交互控件）
+  animation?: { x: number; y: number; w: number; h: number };
+  note: string;
+}
+
+/** 遍历结果报告（explore_<ts>.json 内容） */
+export interface ExploreResult {
+  packageName: string;
+  serial: string;
+  pages: ExploredPage[];
+  visitedCount: number;
+  durationMs: number;
+}
+
+/** 遍历报告文件元信息（列表用） */
+export interface ExploreReportMeta {
+  file: string;                // explore_<ts>.json
+  mtime: string;
+  size: number;
+  pages: number;
+  visitedCount: number;
+  durationMs: number;
+  serial: string;
+  packageName: string;
 }

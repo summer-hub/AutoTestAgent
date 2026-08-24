@@ -115,7 +115,7 @@ export default function App() {
     <>
       {page === 'home' && <HomePage />}
       {page === 'tasks' && <TasksPage />}
-      {page === 'cases' && <CasesPage />}
+      {page === 'cases' && <CasesPage me={me} />}
       {page === 'scripts' && <ScriptsPage />}
       {page === 'plans' && <PlansPage />}
       {page === 'analysis' && <AnalysisPage />}

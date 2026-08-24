@@ -113,11 +113,15 @@ export const api = {
   },
   caseDetail: (id: number) => req<TestCase>(`${API_BASE}/cases/${id}`),
   caseVersions: (id: number) => req<CaseVersion[]>(`${API_BASE}/cases/${id}/versions`),
-  updateCase: (id: number, body: Partial<TestCase> & { changeNote?: string }) =>
+  updateCase: (id: number, body: Partial<TestCase> & { changeNote?: string; author?: string; authorType?: string }) =>
     req<TestCase>(`${API_BASE}/cases/${id}`, { method: 'PUT', body: JSON.stringify(body) }),
   createCase: (b: { libraryId: number; caseNo: string; name: string; source?: string; precondition?: string; steps?: string[]; expected?: string; dtsUrl?: string; status?: string }) =>
     req<TestCase>(`${API_BASE}/cases`, { method: 'POST', body: JSON.stringify(b) }),
   deleteCase: (id: number) => req<{ ok: boolean; deletedCaseNo: string }>(`${API_BASE}/cases/${id}`, { method: 'DELETE' }),
+  batchDeleteCases: (ids: number[]) =>
+    req<{ ok: boolean; deleted: number }>(`${API_BASE}/cases/batch-delete`, { method: 'POST', body: JSON.stringify({ ids }) }),
+  batchUpdateCaseStatus: (ids: number[], status: string) =>
+    req<{ ok: boolean; updated: number; status: string }>(`${API_BASE}/cases/batch-status`, { method: 'PUT', body: JSON.stringify({ ids, status }) }),
   rollbackCase: (id: number, version: number, author?: string) =>
     req<{ id: number; currentVersion: number; rolledBackTo: number }>(`${API_BASE}/cases/${id}/rollback`, {
       method: 'POST',
@@ -229,14 +233,6 @@ export const api = {
     }
     return res.blob();
   },
-  // 真机 UI 遍历
-  explore: (libraryId: number, deviceId?: number, launchAbility?: string) =>
-    req<{ runId: string }>(`${API_BASE}/explore`, {
-      method: 'POST',
-      body: JSON.stringify({ libraryId, deviceId, launchAbility }),
-    }),
-  exploreProgress: (runId: string) =>
-    req<{ stage: string; done: boolean; error?: string }>(`${API_BASE}/explore/progress/${runId}`),
   deleteAnalysis: (id: number) => req<{ ok: boolean }>(`${API_BASE}/analyses/${id}`, { method: 'DELETE' }),
   deleteAnalysisRound: (round: string) => req<{ ok: boolean; deleted: number }>(`${API_BASE}/analyses/round/${encodeURIComponent(round)}`, { method: 'DELETE' }),
   deleteLibraryAnalyses: (libraryId: number) => req<{ ok: boolean; deleted: number }>(`${API_BASE}/analyses/library/${libraryId}`, { method: 'DELETE' }),

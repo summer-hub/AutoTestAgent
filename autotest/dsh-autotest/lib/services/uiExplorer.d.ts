@@ -14,6 +14,7 @@ export interface ExploredPage {
         h: number;
     };
     swipes: number;
+    scrolls?: number;
     animation?: {
         x: number;
         y: number;
@@ -35,6 +36,7 @@ export interface ExploreOpts {
     controlsPerPage?: number;
     maxSwipePerPage?: number;
     launchAbility?: string;
+    statusBarFilter?: boolean;
 }
 /**
  * BFS 遍历：从首页出发，逐个点击可交互控件进入子页面，keyBack 返回；去重页面签名。

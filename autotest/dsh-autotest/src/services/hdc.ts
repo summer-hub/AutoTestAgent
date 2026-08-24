@@ -124,6 +124,10 @@ interface UiNode {
   desc: string;
   x: number;
   y: number;
+  /** 节点归属窗口的 bundleName（HarmonyOS dumpLayout JSON 才有，用于过滤系统状态栏） */
+  bundle?: string;
+  /** 完整 bounds（左上/右下），用于越界检测与可视化 */
+  bounds?: { x1: number; y1: number; x2: number; y2: number };
 }
 
 export interface DumpMeta {
@@ -150,15 +154,26 @@ export function dumpMeta(xml: string): DumpMeta {
   return { bundleName: '', pagePath: '' };
 }
 
-export function parseNodes(dump: string): UiNode[] {
+export interface ParseNodesOpts {
+  /** 命中这些 bundleName 的窗口子树整体跳过（状态栏时钟/网速/电量等系统控件） */
+  skipBundles?: ReadonlySet<string>;
+}
+
+export function parseNodes(dump: string, opts?: ParseNodesOpts): UiNode[] {
   const nodes: UiNode[] = [];
   const text = dump.trim();
   // HarmonyOS：uitest dumpLayout 输出 JSON 树
   if (text.startsWith('{')) {
-    const walk = (node: unknown): void => {
+    const skip = opts?.skipBundles;
+    const walk = (node: unknown, parentBundle: string): void => {
       if (!node || typeof node !== 'object') return;
       const n = node as { attributes?: Record<string, unknown>; children?: unknown[] };
       const a = n.attributes ?? {};
+      let curBundle = parentBundle;
+      const b = String(a.bundleName ?? '').trim();
+      if (b) curBundle = b;
+      // 系统窗口（桌面/状态栏/场景板）→ 整棵子树丢弃，彻底过滤时钟等系统文本
+      if (skip && curBundle && skip.has(curBundle)) return;
       const label = String(a.text ?? '');
       const desc = String(a.description ?? '');
       if (label || desc) {
@@ -169,13 +184,15 @@ export function parseNodes(dump: string): UiNode[] {
             desc,
             x: Math.round((Number(m[1]) + Number(m[3])) / 2),
             y: Math.round((Number(m[2]) + Number(m[4])) / 2),
+            bundle: curBundle || undefined,
+            bounds: { x1: Number(m[1]), y1: Number(m[2]), x2: Number(m[3]), y2: Number(m[4]) },
           });
         }
       }
-      for (const child of n.children ?? []) walk(child);
+      for (const child of n.children ?? []) walk(child, curBundle);
     };
     try {
-      walk(JSON.parse(text));
+      walk(JSON.parse(text), '');
       return nodes;
     } catch {
       return [];
@@ -192,6 +209,7 @@ export function parseNodes(dump: string): UiNode[] {
       desc,
       x: Math.round((Number(x1) + Number(x2)) / 2),
       y: Math.round((Number(y1) + Number(y2)) / 2),
+      bounds: { x1: Number(x1), y1: Number(y1), x2: Number(x2), y2: Number(y2) },
     });
   }
   return nodes;

@@ -14,6 +14,7 @@ const SECTIONS: Array<{ title: string; desc: string; fields: Array<{ key: string
     title: 'Agent 与任务', desc: 'AI 任务执行参数', fields: [
       { key: 'agent.defaultModel', label: '默认模型', type: 'text', hint: '留空 = 跟随 DSH 当前默认模型' },
       { key: 'agent.maxCasesPerTask', label: '单任务用例上限', type: 'number' },
+      { key: 'agent.caseReviewRounds', label: '用例自审进化轮次', type: 'number', hint: '0-4，生成后评审 Agent 自动修订（真实可操作/逻辑合理/预期清晰），教训沉淀复用' },
       { key: 'exec.llmTemperature', label: 'LLM 温度（0-1）', type: 'number' },
       { key: 'exec.llmTimeoutMs', label: 'LLM 超时（毫秒）', type: 'number' },
     ],
@@ -39,6 +40,16 @@ const SECTIONS: Array<{ title: string; desc: string; fields: Array<{ key: string
       { key: 'device.execEngine', label: '执行引擎', type: 'text' },
       { key: 'device.appAbilities', label: '应用启动映射（JSON）', type: 'text', hint: '{"时钟":"com.xx/.MainAbility"}' },
       { key: 'exec.scriptMode', label: '脚本执行模式', type: 'text', hint: 'script / step' },
+    ],
+  },
+  {
+    title: '真机遍历', desc: 'UI 遍历引擎参数（任务页「真机遍历生成用例」执行时生效）', fields: [
+      { key: 'explore.maxDepth', label: '遍历深度', type: 'number', hint: 'BFS 最大层级，1-6，默认 2' },
+      { key: 'explore.maxPages', label: '页面数上限', type: 'number', hint: '最多收录页面数，1-200，默认 20' },
+      { key: 'explore.controlsPerPage', label: '每页控件数上限', type: 'number', hint: '每页最多收集可交互控件，1-50，默认 12' },
+      { key: 'explore.maxSwipePerPage', label: '单页滑动次数上限', type: 'number', hint: '为看全越界动画/内容最多滑动次数，0-20，默认 5' },
+      { key: 'explore.statusBarFilter', label: '状态栏过滤', type: 'bool', hint: '按系统 bundleName 子树丢弃 + 高度阈值兜底' },
+      { key: 'explore.systemBundles', label: '系统窗口包名清单', type: 'text', hint: '逗号分隔，追加到内置清单（sceneboard/systemui 等）' },
     ],
   },
   {

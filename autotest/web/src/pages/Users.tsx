@@ -29,7 +29,7 @@ export default function UsersPage({ me }: { me: AuthUser | null }) {
         api.users(), api.invites(), api.keys(),
         canAudit ? api.audit(50, auditAction) : Promise.resolve({ ok: true, rows: [] as Array<Record<string, unknown>> }),
       ]);
-      setUsers(u.users as UserRow[]);
+      setUsers(u.users as unknown as UserRow[]);
       setInvites(i.invites);
       setKeys(k.keys);
       setAudit(a.rows);

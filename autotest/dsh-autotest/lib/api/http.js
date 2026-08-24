@@ -11,11 +11,9 @@ import { getAllSettings, getSetting, setSetting } from '../services/settings.js'
 import { cacheDel, cacheGet, cacheSet } from '../services/cache.js';
 import { readDshDefaultModel } from '../services/llmHarness.js';
 import { deviceInfo, hdcAvailable, listTargets } from '../services/hdc.js';
-import { pullRepo, refreshPackageInfo, repoDirFor, scriptsDirFor } from '../services/gitRepo.js';
+import { pullRepo, repoDirFor, scriptsDirFor, workspaceDir } from '../services/gitRepo.js';
 import { registerAuthRoutes, requireAuth } from '../auth/index.js';
 import { AuthError, hasPermission } from '../auth/service.js';
-import { exploreApp, ensureDeviceOnline, saveExploreReport } from '../services/uiExplorer.js';
-import { writeHypiumProject } from '../services/hypiumGen.js';
 const routes = [];
 // 分析进度（内存态，供前端轮询展示实时过程；完成后 60s 自动清理）
 const analysisProgress = new Map();
@@ -307,6 +305,43 @@ function defineRoutes(llm) {
         });
         return mapCase(await db.prepare('SELECT * FROM cases WHERE id = ?').get(created));
     }, { permission: 'case:write' });
+    // 注意：批量操作必须注册在 /cases/:id 之前（单段路径会被 :id 捕获）
+    route('POST', '/cases/batch-delete', async ({ body }) => {
+        const ids = Array.isArray(body.ids)
+            ? body.ids.map(Number).filter((n) => Number.isInteger(n) && n > 0)
+            : [];
+        if (ids.length === 0)
+            throw Object.assign(new Error('ids 必填（非空数字数组）'), { statusCode: 400 });
+        const db = getDb();
+        void cacheDel('cases');
+        void cacheDel('stats');
+        void cacheDel('lib');
+        void cacheDel('libs');
+        const marks = ids.map(() => '?').join(',');
+        await db.transaction(async () => {
+            await db.prepare(`DELETE FROM case_versions WHERE case_id IN (${marks})`).run(...ids);
+            await db.prepare(`DELETE FROM executions WHERE case_id IN (${marks})`).run(...ids);
+            await db.prepare(`DELETE FROM analyses WHERE case_id IN (${marks})`).run(...ids);
+            const r = await db.prepare(`DELETE FROM cases WHERE id IN (${marks})`).run(...ids);
+            return r.changes;
+        });
+        return { ok: true, deleted: ids.length };
+    }, { permission: 'case:delete' });
+    route('PUT', '/cases/batch-status', async ({ body }) => {
+        const b = body;
+        const ids = Array.isArray(b.ids) ? b.ids.map(Number).filter((n) => Number.isInteger(n) && n > 0) : [];
+        const status = String(b.status ?? '');
+        if (ids.length === 0)
+            throw Object.assign(new Error('ids 必填（非空数字数组）'), { statusCode: 400 });
+        if (!['通过', '失败', '待确认', '未执行'].includes(status))
+            throw Object.assign(new Error('status 非法'), { statusCode: 400 });
+        const db = getDb();
+        void cacheDel('cases');
+        void cacheDel('stats');
+        const marks = ids.map(() => '?').join(',');
+        const r = await db.prepare(`UPDATE cases SET status = ?, updated_at = ? WHERE id IN (${marks})`).run(status, now(), ...ids);
+        return { ok: true, updated: r.changes, status };
+    }, { permission: 'case:write' });
     route('PUT', '/cases/:id', async ({ params, body }) => {
         const id = Number(params.id);
         const b = body;
@@ -550,6 +585,7 @@ function defineRoutes(llm) {
         // 服务端按 type 归一化标题，防止客户端传错标题（如「更新测试用例」显示成「编写测试用例」）
         const titleByType = {
             pull_repo: '拉取仓库代码', update_repo: '更新仓库代码', write_cases: '编写测试用例',
+            explore_cases: '真机遍历生成用例',
             update_cases: '更新测试用例', to_script: '用例转自动化脚本',
         };
         const title = b.title ?? titleByType[b.type] ?? b.type;
@@ -1144,114 +1180,61 @@ ${(row.logs ?? '').slice(0, 4000) || '（无）'}
             caseId: b.caseId ? Number(b.caseId) : null,
         });
     }, { permission: 'analysis:run', llm: true });
-    // ---- 真机 UI 遍历：启动 demo → 遍历页面 → 生成用例 + Hypium 脚本 ----
-    route('POST', '/explore', async ({ body }) => {
-        const b = body;
-        const libraryId = Number(b.libraryId);
-        if (!libraryId)
-            throw Object.assign(new Error('libraryId 必填'), { statusCode: 400 });
+    // ---- 真机遍历报告（可视化展示数据源：workspace/explore/<lib>/explore_*.json）----
+    // 说明：遍历生成用例统一走 AI 任务 explore_cases（executor.exploreCases：遍历数据 → 用例生成 Agent → 自审进化），
+    // 不再提供「直插机械用例」的 /explore 路由；本组路由仅读取历史报告供 API 消费。
+    const exploreDirFor = (libName) => path.join(workspaceDir(), 'explore', libName.replace(/[^\w.-]/g, '_'));
+    // 报告列表（新→旧）
+    route('GET', '/explore/reports/:libraryId', async ({ params }) => {
         const db = getDb();
-        const lib = await db.prepare('SELECT * FROM libraries WHERE id = ?').get(libraryId);
+        const lib = await db.prepare('SELECT name FROM libraries WHERE id = ?').get(Number(params.libraryId));
         if (!lib)
             throw Object.assign(new Error('三方库不存在'), { statusCode: 404 });
-        // 设备：指定 deviceId 或第一个在线设备
-        let serial = '';
-        if (b.deviceId) {
-            const dev = await db.prepare('SELECT serial FROM devices WHERE id = ?').get(Number(b.deviceId));
-            serial = dev?.serial ?? '';
-        }
-        if (!serial) {
-            const online = await db.prepare(`SELECT serial FROM devices WHERE status = 'online' ORDER BY id LIMIT 1`).get();
-            serial = online?.serial ?? '';
-        }
-        if (!serial)
-            throw Object.assign(new Error('没有可用设备，请先在设备管理页连接真机'), { statusCode: 400 });
-        if (!(await ensureDeviceOnline(serial)))
-            throw Object.assign(new Error(`设备 ${serial} 不在线`), { statusCode: 400 });
-        // 启动入口：body.launchAbility > 库的 package_name/main_ability（自动解析入库）> device.appAbilities[库名] > 库名
-        let launchAbility = String(b.launchAbility ?? '').trim();
-        if (!launchAbility) {
-            const pkg = String(lib.package_name ?? '');
-            const ability = String(lib.main_ability ?? '');
-            if (pkg)
-                launchAbility = ability && !ability.includes('.') ? `${pkg}/${ability}` : pkg;
-        }
-        if (!launchAbility) {
+        const dir = exploreDirFor(lib.name);
+        if (!fs.existsSync(dir))
+            return { items: [], dir };
+        const items = fs.readdirSync(dir)
+            .filter((f) => /^explore_\d+\.json$/.test(f))
+            .map((f) => {
+            const full = path.join(dir, f);
+            const st = fs.statSync(full);
+            let pages = 0;
+            let visitedCount = 0;
+            let durationMs = 0;
+            let serial = '';
+            let packageName = '';
             try {
-                const map = JSON.parse(String(getSetting('device.appAbilities', '{}') || '{}'));
-                launchAbility = map[String(lib.name)] ?? '';
+                const j = JSON.parse(fs.readFileSync(full, 'utf8'));
+                pages = Array.isArray(j.pages) ? j.pages.length : 0;
+                visitedCount = Number(j.visitedCount ?? 0) || 0;
+                durationMs = Number(j.durationMs ?? 0) || 0;
+                serial = String(j.serial ?? '');
+                packageName = String(j.packageName ?? '');
             }
-            catch { /* 忽略 */ }
+            catch { /* 损坏文件仍列出，元信息为空 */ }
+            return { file: f, mtime: st.mtime.toISOString(), size: st.size, pages, visitedCount, durationMs, serial, packageName };
+        })
+            .sort((a, b) => b.file.localeCompare(a.file));
+        return { items, dir };
+    }, { permission: 'case:read' });
+    // 报告内容（name=explore_<ts>.json，白名单校验防路径穿越）
+    route('GET', '/explore/reports/:libraryId/content', async ({ params, query }) => {
+        const db = getDb();
+        const lib = await db.prepare('SELECT name FROM libraries WHERE id = ?').get(Number(params.libraryId));
+        if (!lib)
+            throw Object.assign(new Error('三方库不存在'), { statusCode: 404 });
+        const name = String(query.get('name') ?? '');
+        if (!/^explore_\d+\.json$/.test(name))
+            throw Object.assign(new Error('非法报告文件名'), { statusCode: 400 });
+        const file = path.join(exploreDirFor(lib.name), name);
+        if (!fs.existsSync(file))
+            throw Object.assign(new Error('报告不存在或已被清理'), { statusCode: 404 });
+        try {
+            return JSON.parse(fs.readFileSync(file, 'utf8'));
         }
-        if (!launchAbility)
-            launchAbility = String(lib.name);
-        const runId = `explore-${Date.now()}-${Math.floor(Math.random() * 10000)}`;
-        setProgress(runId, { stage: `准备遍历 ${lib.name}（${serial}）…` });
-        setImmediate(async () => {
-            try {
-                // 目标 bundle 用于页面归属过滤：库包名 > launchAbility 的 bundle 段 > 库名
-                const bundle = String(lib.package_name ?? '').split('/')[0]
-                    || launchAbility.split('/')[0]
-                    || String(lib.name);
-                const result = await exploreApp(serial, bundle, { launchAbility });
-                // 解析并回填包名（拉取后自动入库，首次遍历兜底）
-                await refreshPackageInfo({ id: libraryId, name: String(lib.name) });
-                setProgress(runId, { stage: `遍历完成：${result.pages.length} 个页面，正在生成用例…` });
-                // 生成用例（每个页面一条，来源：真机遍历）
-                const t = now();
-                const countRow = (await db.prepare('SELECT COUNT(*) AS n FROM cases WHERE library_id = ?').get(libraryId)) ?? { n: 0 };
-                let seq = countRow.n;
-                const pkg = String(lib.package_name ?? '').split('/')[0] || launchAbility.split('/')[0] || String(lib.name);
-                let created = 0;
-                await db.transaction(async () => {
-                    for (const page of result.pages) {
-                        const pageName = (page.path[page.path.length - 1] ?? '首页').slice(0, 40);
-                        const caseNo = `C-EX-${String(++seq).padStart(3, '0')}`;
-                        const steps = ['打开应用并等待首页加载'];
-                        for (const s of page.path) {
-                            if (s === '首页')
-                                continue;
-                            steps.push(`点击「${s}」`);
-                        }
-                        if (page.swipes > 0)
-                            steps.push(`向上滑动 ${page.swipes} 次查看完整内容`);
-                        steps.push('验证页面内容完整显示');
-                        const controls = page.controls.filter((c) => (c.text || c.desc).trim()).slice(0, 5)
-                            .map((c) => `「${(c.text || c.desc).trim().slice(0, 20)}」`);
-                        const expected = controls.length > 0
-                            ? `页面应显示控件：${controls.join('、')}；${page.animation ? '动画区域完整可见（已自动滑动适配）' : '页面内容正常展示'}`
-                            : '页面正常打开且内容完整显示';
-                        const res = await db.prepare(`INSERT INTO cases (library_id, case_no, name, source, precondition, steps, expected, status, script_status, current_version, created_at, updated_at)
-              VALUES (?, ?, ?, '真机遍历', '设备已连接，应用可启动', ?, ?, '待确认', '未绑定', 1, ?, ?)`).run(libraryId, caseNo, `遍历-${pageName}`, JSON.stringify(steps), expected, t, t);
-                        const caseId = Number(res.lastInsertRowid);
-                        await db.prepare(`INSERT INTO case_versions (case_id, version, snapshot, change_note, author, author_type, created_at)
-              VALUES (?, 1, ?, '真机遍历自动生成', '真机遍历引擎', 'tool', ?)`).run(caseId, JSON.stringify({
-                            id: caseId, libraryId, caseNo, name: `遍历-${pageName}`, source: '真机遍历',
-                            precondition: '设备已连接，应用可启动', steps, expected, status: '待确认',
-                            scriptStatus: '未绑定', currentVersion: 1, createdAt: t, updatedAt: t,
-                        }), t);
-                        created++;
-                    }
-                });
-                // 生成 Hypium 工程
-                const project = writeHypiumProject({ name: String(lib.name), packageName: pkg }, result.pages, serial);
-                saveExploreReport(String(lib.name), result);
-                setProgress(runId, {
-                    stage: `完成：${created} 条用例已入库；Hypium 脚本已生成 → ${project.dir}`,
-                    done: true,
-                });
-            }
-            catch (e) {
-                setProgress(runId, { stage: '遍历失败', done: true, error: e.message });
-            }
-        });
-        return { runId };
-    }, { permission: 'case:write' });
-    route('GET', '/explore/progress/:runId', async ({ params }) => {
-        const p = analysisProgress.get(String(params.runId));
-        if (!p)
-            throw Object.assign(new Error('进度不存在或已过期'), { statusCode: 404 });
-        return p;
+        catch (e) {
+            throw Object.assign(new Error(`报告解析失败：${e.message}`), { statusCode: 500 });
+        }
     }, { permission: 'case:read' });
 }
 // ---------- mappers / helpers ----------

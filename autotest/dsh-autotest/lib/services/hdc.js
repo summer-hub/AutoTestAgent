@@ -114,16 +114,24 @@ export function dumpMeta(xml) {
     }
     return { bundleName: '', pagePath: '' };
 }
-export function parseNodes(dump) {
+export function parseNodes(dump, opts) {
     const nodes = [];
     const text = dump.trim();
     // HarmonyOS：uitest dumpLayout 输出 JSON 树
     if (text.startsWith('{')) {
-        const walk = (node) => {
+        const skip = opts?.skipBundles;
+        const walk = (node, parentBundle) => {
             if (!node || typeof node !== 'object')
                 return;
             const n = node;
             const a = n.attributes ?? {};
+            let curBundle = parentBundle;
+            const b = String(a.bundleName ?? '').trim();
+            if (b)
+                curBundle = b;
+            // 系统窗口（桌面/状态栏/场景板）→ 整棵子树丢弃，彻底过滤时钟等系统文本
+            if (skip && curBundle && skip.has(curBundle))
+                return;
             const label = String(a.text ?? '');
             const desc = String(a.description ?? '');
             if (label || desc) {
@@ -134,14 +142,16 @@ export function parseNodes(dump) {
                         desc,
                         x: Math.round((Number(m[1]) + Number(m[3])) / 2),
                         y: Math.round((Number(m[2]) + Number(m[4])) / 2),
+                        bundle: curBundle || undefined,
+                        bounds: { x1: Number(m[1]), y1: Number(m[2]), x2: Number(m[3]), y2: Number(m[4]) },
                     });
                 }
             }
             for (const child of n.children ?? [])
-                walk(child);
+                walk(child, curBundle);
         };
         try {
-            walk(JSON.parse(text));
+            walk(JSON.parse(text), '');
             return nodes;
         }
         catch {
@@ -160,6 +170,7 @@ export function parseNodes(dump) {
             desc,
             x: Math.round((Number(x1) + Number(x2)) / 2),
             y: Math.round((Number(y1) + Number(y2)) / 2),
+            bounds: { x1: Number(x1), y1: Number(y1), x2: Number(x2), y2: Number(y2) },
         });
     }
     return nodes;

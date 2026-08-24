@@ -4,6 +4,8 @@ import { api } from '../api';
 
 interface ScriptLib { id: number; name: string; dir: string; exists: boolean; fileCount: number; }
 
+const PAGE_SIZES = [30, 50, 100];
+
 function fmtSize(n: number): string {
   if (n >= 1024 * 1024) return (n / 1024 / 1024).toFixed(1) + ' MB';
   if (n >= 1024) return (n / 1024).toFixed(1) + ' KB';
@@ -18,6 +20,11 @@ export default function ScriptsPage() {
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(false);
   const [detail, setDetail] = useState<{ libName: string; file: RepoFile } | null>(null);
+  // 多选批量删除（客户端分页）
+  const [sel, setSel] = useState<Set<string>>(new Set());
+  const [page, setPage] = useState(1);
+  const [pageSize, setPageSize] = useState(30);
+  const [batchBusy, setBatchBusy] = useState(false);
 
   const loadLibs = useCallback(() => {
     api.scripts()
@@ -39,6 +46,8 @@ export default function ScriptsPage() {
 
   useEffect(() => { loadLibs(); }, [loadLibs]);
   useEffect(() => { if (curLib !== null) loadScripts(curLib); }, [curLib, loadScripts]);
+  // 切库/搜索词变化时重置分页与勾选
+  useEffect(() => { setPage(1); setSel(new Set()); }, [curLib, q]);
 
   const openFile = async (f: RepoFileEntry) => {
     if (curLib === null) return;
@@ -62,6 +71,47 @@ export default function ScriptsPage() {
   };
 
   const filtered = (scripts ?? []).filter((s) => s.name.toLowerCase().includes(q.toLowerCase()));
+  const totalPages = Math.max(1, Math.ceil(filtered.length / pageSize));
+  const curPage = Math.min(page, totalPages);
+  const pageItems = filtered.slice((curPage - 1) * pageSize, curPage * pageSize);
+  const allPageSelected = pageItems.length > 0 && pageItems.every((s) => sel.has(s.name));
+
+  const toggleSel = (name: string): void => {
+    setSel((s) => {
+      const n = new Set(s);
+      if (n.has(name)) n.delete(name); else n.add(name);
+      return n;
+    });
+  };
+
+  const toggleAllPage = (): void => {
+    setSel((s) => {
+      const n = new Set(s);
+      if (allPageSelected) pageItems.forEach((x) => n.delete(x.name));
+      else pageItems.forEach((x) => n.add(x.name));
+      return n;
+    });
+  };
+
+  const batchDelete = async (): Promise<void> => {
+    if (curLib === null || sel.size === 0) return;
+    if (!window.confirm(`确认删除选中的 ${sel.size} 个脚本文件？`)) return;
+    setBatchBusy(true);
+    setError('');
+    try {
+      for (const name of sel) {
+        await api.deleteScriptFile(curLib, name);
+      }
+      setSel(new Set());
+      loadScripts(curLib);
+      loadLibs();
+    } catch (e) {
+      setError(String((e as Error).message));
+    } finally {
+      setBatchBusy(false);
+    }
+  };
+
   const curName = curLib !== null ? libs.find((l) => l.id === curLib)?.name ?? '' : '';
 
   return (
@@ -100,10 +150,32 @@ export default function ScriptsPage() {
               <span className="ic">🔍</span>
               <input className="input" placeholder="搜索脚本文件…" value={q} onChange={(e) => setQ(e.target.value)} />
             </div>
+            <select
+              className="select"
+              style={{ width: 92 }}
+              value={pageSize}
+              onChange={(e) => { setPageSize(Number(e.target.value)); setPage(1); }}
+              title="每页条数"
+            >
+              {PAGE_SIZES.map((n) => <option key={n} value={n}>{n} 条/页</option>)}
+            </select>
             <span className="muted" style={{ fontSize: 11.5, marginLeft: 'auto' }}>
               {curName} · {filtered.length} 个脚本
             </span>
           </div>
+
+          {/* 批量操作条 */}
+          {sel.size > 0 && (
+            <div style={{
+              margin: '0 14px 10px', padding: '8px 12px', display: 'flex', gap: 10, alignItems: 'center', flexWrap: 'wrap',
+              background: 'var(--accent-dim)', border: '1px solid var(--accent)', borderRadius: 9, fontSize: 12.3,
+            }}>
+              <b>已选 {sel.size} 个文件</b>
+              <button className="btn sm" style={{ color: 'var(--red)' }} disabled={batchBusy} onClick={() => void batchDelete()}>🗑 批量删除</button>
+              <button className="btn sm ghost" onClick={() => setSel(new Set())}>取消选择</button>
+            </div>
+          )}
+
           <div style={{ overflowX: 'auto' }}>
             {loading ? (
               <div className="loading">加载中…</div>
@@ -112,21 +184,39 @@ export default function ScriptsPage() {
             ) : filtered.length === 0 ? (
               <div className="loading">无匹配脚本</div>
             ) : (
-              <table>
-                <tr><th>文件</th><th>大小</th><th>修改时间</th><th>操作</th></tr>
-                {filtered.map((s) => (
-                  <tr key={s.name}>
-                    <td className="mono">{s.name}</td>
-                    <td className="muted">{fmtSize(s.size)}</td>
-                    <td className="muted">{new Date(s.mtime).toLocaleString('zh-CN', { hour12: false })}</td>
-                    <td>
-                      <span className="link" onClick={() => void openFile(s)}>查看</span>
-                      <span style={{ margin: '0 6px', color: 'var(--text3)' }}>·</span>
-                      <span className="link" style={{ color: 'var(--red)' }} onClick={() => void removeFile(s)}>删除</span>
-                    </td>
+              <>
+                <table>
+                  <tr>
+                    <th style={{ width: 34 }}>
+                      <input type="checkbox" checked={allPageSelected} onChange={toggleAllPage} title="全选本页" style={{ accentColor: 'var(--accent)', cursor: 'pointer' }} />
+                    </th>
+                    <th>文件</th><th>大小</th><th>修改时间</th><th>操作</th>
                   </tr>
-                ))}
-              </table>
+                  {pageItems.map((s) => (
+                    <tr key={s.name}>
+                      <td>
+                        <input type="checkbox" checked={sel.has(s.name)} onChange={() => toggleSel(s.name)} style={{ accentColor: 'var(--accent)', cursor: 'pointer' }} />
+                      </td>
+                      <td className="mono">{s.name}</td>
+                      <td className="muted">{fmtSize(s.size)}</td>
+                      <td className="muted">{new Date(s.mtime).toLocaleString('zh-CN', { hour12: false })}</td>
+                      <td>
+                        <span className="link" onClick={() => void openFile(s)}>查看</span>
+                        <span style={{ margin: '0 6px', color: 'var(--text3)' }}>·</span>
+                        <span className="link" style={{ color: 'var(--red)' }} onClick={() => void removeFile(s)}>删除</span>
+                      </td>
+                    </tr>
+                  ))}
+                </table>
+                <div style={{ padding: '10px 14px', display: 'flex', alignItems: 'center', gap: 6, fontSize: 11.5, color: 'var(--text3)', flexWrap: 'wrap' }}>
+                  <span>共 {filtered.length} 个 · 第 {curPage} / {totalPages} 页</span>
+                  <div style={{ flex: 1 }} />
+                  <button className="btn sm" disabled={curPage <= 1} onClick={() => setPage(1)}>« 首页</button>
+                  <button className="btn sm" disabled={curPage <= 1} onClick={() => setPage(curPage - 1)}>‹ 上一页</button>
+                  <button className="btn sm" disabled={curPage >= totalPages} onClick={() => setPage(curPage + 1)}>下一页 ›</button>
+                  <button className="btn sm" disabled={curPage >= totalPages} onClick={() => setPage(totalPages)}>末页 »</button>
+                </div>
+              </>
             )}
           </div>
         </div>

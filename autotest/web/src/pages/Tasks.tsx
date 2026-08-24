@@ -6,7 +6,8 @@ import RepoBrowser from '../components/RepoBrowser';
 const PRESETS: Array<{ type: TaskType; icon: string; title: string; desc: string }> = [
   { type: 'pull_repo', icon: '📦', title: '拉取仓库代码', desc: '拉取三方库最新代码' },
   { type: 'update_repo', icon: '🔄', title: '更新仓库代码', desc: '同步到指定版本' },
-  { type: 'write_cases', icon: '✍️', title: '编写测试用例', desc: '代码+规则生成用例' },
+  { type: 'write_cases', icon: '✍️', title: '编写测试用例（定向）', desc: '指定页面/场景/功能深挖设计；自动读取命中页面源码与真机遍历控件清单' },
+  { type: 'explore_cases', icon: '📡', title: '真机遍历生成用例', desc: '真机 BFS 遍历页面 → 用例生成 Agent（Prompt+skill）设计用例 → 自审进化后入库（来源=AI 生成）' },
   { type: 'update_cases', icon: '♻️', title: '更新测试用例', desc: '版本迭代 V→V+1' },
   { type: 'to_script', icon: '🤖', title: '用例转自动化脚本', desc: '用例库→可执行脚本' },
 ];
@@ -18,7 +19,7 @@ export default function TasksPage() {
   const [input, setInput] = useState('');
   const [error, setError] = useState('');
   const [repoDialog, setRepoDialog] = useState<null | { mode: 'input'; type: 'pull_repo' | 'update_repo' } | { mode: 'browse'; libId?: number; tab?: 'repos' | 'scripts' }>(null);
-  const [libTask, setLibTask] = useState<null | { type: 'write_cases' | 'update_cases' | 'to_script' }>(null);
+  const [libTask, setLibTask] = useState<null | { type: 'write_cases' | 'explore_cases' | 'update_cases' | 'to_script' }>(null);
   const [libs, setLibs] = useState<Array<{ id: number; name: string; caseCount?: number }>>([]);
   const [libSel, setLibSel] = useState<number | ''>('');
   const [libPrompt, setLibPrompt] = useState('');
@@ -55,7 +56,7 @@ export default function TasksPage() {
   const onPreset = (p: { type: TaskType; title: string }) => {
     if (p.type === 'pull_repo' || p.type === 'update_repo') {
       setRepoDialog({ mode: 'input', type: p.type });
-    } else if (p.type === 'write_cases' || p.type === 'update_cases' || p.type === 'to_script') {
+    } else if (p.type === 'write_cases' || p.type === 'explore_cases' || p.type === 'update_cases' || p.type === 'to_script') {
       setLibTask({ type: p.type });
       setLibSel('');
       setLibPrompt('');
@@ -78,7 +79,10 @@ export default function TasksPage() {
     setLibSaving(true);
     setError('');
     try {
-      const titles: Record<string, string> = { write_cases: '编写测试用例', update_cases: '更新测试用例', to_script: '用例转自动化脚本' };
+      const titles: Record<string, string> = {
+        write_cases: '编写测试用例（定向）', explore_cases: '真机遍历生成用例',
+        update_cases: '更新测试用例', to_script: '用例转自动化脚本',
+      };
       await api.createTask({ type: libTask.type, libraryId: libSel, input: libPrompt.trim() || undefined, title: titles[libTask.type] });
       setLibTask(null);
       load();
@@ -209,7 +213,9 @@ export default function TasksPage() {
           <div style={{ position: 'relative', zIndex: 1, width: 620, maxWidth: 'calc(100vw - 40px)', background: 'var(--panel)', border: '1px solid var(--border2)', borderRadius: 16, boxShadow: '0 24px 80px rgba(0,0,0,.55)', display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
             <div style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '14px 18px', borderBottom: '1px solid var(--border)' }}>
               <span style={{ fontSize: 15, fontWeight: 600 }}>
-                {libTask.type === 'write_cases' ? '✍️ 编写测试用例' : libTask.type === 'update_cases' ? '♻️ 更新测试用例' : '🤖 用例转自动化脚本'}
+                {libTask.type === 'write_cases' ? '✍️ 编写测试用例（定向）'
+                  : libTask.type === 'explore_cases' ? '📡 真机遍历生成用例'
+                  : libTask.type === 'update_cases' ? '♻️ 更新测试用例' : '🤖 用例转自动化脚本'}
               </span>
               <span className="muted" style={{ fontSize: 12 }}>选择三方库并给 Agent 预置提示词</span>
               <div style={{ flex: 1 }} />
@@ -228,7 +234,11 @@ export default function TasksPage() {
                 <textarea
                   className="input"
                   style={{ minHeight: 90, resize: 'vertical', lineHeight: 1.6 }}
-                  placeholder={libTask.type === 'write_cases' ? '如：基于真实界面设计用例，覆盖动画播放/暂停/进度控制，预期写明具体动画与日志' : '如：根据最新版本变更更新用例，版本自动递增'}
+                  placeholder={libTask.type === 'write_cases'
+                    ? '写明目标页面/场景/功能点，越具体越准。如：针对 TextLayer 页面的文本动态属性切换设计边界用例；或：柱状图数据为空/超大值时的异常表现'
+                    : libTask.type === 'explore_cases'
+                      ? '如：重点为动画子页面补充边界场景；需真机在线，遍历数据将交给用例生成 Agent 设计并自审后入库'
+                      : '如：根据最新版本变更更新用例，版本自动递增'}
                   value={libPrompt}
                   onChange={(e) => setLibPrompt(e.target.value)}
                 />

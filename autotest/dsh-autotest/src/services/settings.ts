@@ -7,6 +7,7 @@ export const SETTING_DEFAULTS: Record<string, unknown> = {
   'app.workspace': 'D:\\autotest\\workspace',
   'agent.defaultModel': '',
   'agent.maxCasesPerTask': 20,
+  'agent.caseReviewRounds': 2,     // 用例生成自审进化轮次上限（0=关闭自审）
   'exec.llmTemperature': 0.4,
   'exec.llmTimeoutMs': 180000,
   'exec.llmRatePerMin': 10,        // 每用户每分钟 LLM 调用上限（任务/分析/追问）
@@ -19,6 +20,12 @@ export const SETTING_DEFAULTS: Record<string, unknown> = {
   'data.shardCount': 16,
   'device.execEngine': 'hdc',
   'device.appAbilities': '{}',
+  'explore.maxDepth': 2,             // 真机 UI 遍历：BFS 最大深度
+  'explore.maxPages': 20,            // 真机 UI 遍历：最多收录页面数
+  'explore.controlsPerPage': 12,     // 真机 UI 遍历：每页最多收集控件数
+  'explore.maxSwipePerPage': 5,      // 真机 UI 遍历：单页为看全内容最多滑动次数
+  'explore.statusBarFilter': true,   // 真机 UI 遍历：过滤状态栏/系统窗口控件（时钟等）
+  'explore.systemBundles': 'com.ohos.sceneboard,com.huawei.systemui,com.ohos.systemui,com.android.systemui',
   'exec.scriptMode': 'script',
   'exec.schedulerEnabled': true,   // 多节点部署时仅主节点开启调度器（防定时计划/统计预热重复执行）
   // ---- 多用户 / 服务器化 ----

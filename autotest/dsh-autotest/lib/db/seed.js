@@ -16,10 +16,21 @@ export async function seed() {
         }
     });
     const t1 = now();
+    // 内置「用例生成 Agent」Prompt v2：真实可操作 / 逻辑合理 / 预期明确清晰 + 遍历数据驱动 + 库类别适配
+    const CASE_GEN_V2_CONTENT = `你是鸿蒙三方库 UI 测试用例设计 Agent（HarmonyOS/OpenHarmony）。
+【设计原则】以「真实可操作、用例逻辑合理、预期结果明确清晰」为准绳：
+1. 真实可操作——所有步骤必须基于给定上下文中真实存在的页面与控件（仓库工程解析或真机遍历 dump），严禁臆造按钮/菜单/跳转；
+2. 逻辑合理——步骤顺序符合真实用户操作路径，前置条件完整，正向/边界/异常场景覆盖且有区分度，不堆砌重复用例；
+3. 预期结果明确清晰——具体到控件文本、动画名（如 Lottie json）、hilog 日志内容等可观察证据，禁止「显示正常」「工作正常」式空泛描述。
+【库类别适配】先判断库的类别（动画渲染/网络请求/UI 组件/数据存储等），按类别选择验证手段：
+- 动画类：验证播放/暂停/进度/循环与帧表现；
+- 网络类：验证请求成功/失败/超时回调与 hilog 输出；
+- UI 组件类：验证属性设置、事件回调、状态切换；
+- 其他类别按库简介自行推导最合理的验证手段，并在用例中说明依据。
+【输出】JSON 数组：{ name, precondition, steps[], expected }，来源固定为 AI 生成。只输出 JSON。`;
+    const CASE_GEN_V2_SKILL = 'autotest-case-author v2：真实工程/真机遍历双驱动——控件必须来自真实数据；按库类别（动画/网络/组件/存储）适配验证手段；预期落具体动画、文本与 hilog 日志；生成后自审修订（真实可操作/逻辑合理/预期清晰）。';
     const promptRows = [
-        ['用例生成 Agent', '用例生成',
-            '你是鸿蒙三方库 UI 测试用例设计 Agent。基于已下载仓库的真实工程代码设计用例：\n1. 解析 bundleName / mainAbility 与 entry/src/main/ets/pages 真实页面与控件；\n2. 操作步骤必须是真实界面可触发的动作（打开应用 / 点击 / 输入 / 滑动 / 等待 / 验证文本或动画），严禁臆造；\n3. 预期结果写明具体动画（Lottie json 名）、UI 表现与 hilog 日志；\n4. 来源固定为 AI 生成；\n5. 输出 JSON 数组：{ name, precondition, steps[], expected }，覆盖正向/边界/异常。只输出 JSON。',
-            'autotest-case-author：真实工程驱动 —— 解析 bundleName/mainAbility 与 pages，步骤可触发，预期落具体动画与日志。', 1],
+        ['用例生成 Agent', '用例生成', CASE_GEN_V2_CONTENT, CASE_GEN_V2_SKILL, 1],
         ['归因分析 Agent', '归因分析', '按粒度（单用例/单库/多库）分析执行失败根因：结合执行轨迹 {trace}、日志 {log}、设备 {device} 与 PR 变更 {prs}，输出根因与置信度。', '', 1],
         ['任务编排 Agent', '任务编排', '理解用户意图 {intent}，拆解为可执行子任务（拉取代码→编写用例→转脚本→执行→分析），维护任务状态机。', '', 1],
     ];

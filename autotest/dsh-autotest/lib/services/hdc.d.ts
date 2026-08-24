@@ -22,6 +22,15 @@ interface UiNode {
     desc: string;
     x: number;
     y: number;
+    /** 节点归属窗口的 bundleName（HarmonyOS dumpLayout JSON 才有，用于过滤系统状态栏） */
+    bundle?: string;
+    /** 完整 bounds（左上/右下），用于越界检测与可视化 */
+    bounds?: {
+        x1: number;
+        y1: number;
+        x2: number;
+        y2: number;
+    };
 }
 export interface DumpMeta {
     bundleName: string;
@@ -29,7 +38,11 @@ export interface DumpMeta {
 }
 /** 从 dump XML/JSON 解析当前页面归属（bundleName / pagePath），用于过滤非目标应用页面。 */
 export declare function dumpMeta(xml: string): DumpMeta;
-export declare function parseNodes(dump: string): UiNode[];
+export interface ParseNodesOpts {
+    /** 命中这些 bundleName 的窗口子树整体跳过（状态栏时钟/网速/电量等系统控件） */
+    skipBundles?: ReadonlySet<string>;
+}
+export declare function parseNodes(dump: string, opts?: ParseNodesOpts): UiNode[];
 export declare function findKeyword(nodes: UiNode[], keyword: string): UiNode | undefined;
 export declare function screenSize(xml: string): {
     w: number;

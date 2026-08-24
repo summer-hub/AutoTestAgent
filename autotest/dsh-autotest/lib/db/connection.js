@@ -157,6 +157,17 @@ export async function ensureReady() {
             // settings 内存缓存加载（来自 MySQL settings 表）
             const { loadSettings } = await import('../services/settings.js');
             await loadSettings();
+            // 内置 Prompt 升级：用例生成 Agent v1 → v2（仅当未被人工改过，version < 2；改过则 version 已 ≥2 自动跳过）
+            try {
+                await mysqlPool().query(`UPDATE prompts SET content = ?, skill = ?, variables = '[]', version = 2, updated_at = NOW()
+           WHERE role = '用例生成' AND builtin = 1 AND version < 2`, [
+                    '你是鸿蒙三方库 UI 测试用例设计 Agent（HarmonyOS/OpenHarmony）。\n【设计原则】以「真实可操作、用例逻辑合理、预期结果明确清晰」为准绳：\n1. 真实可操作——所有步骤必须基于给定上下文中真实存在的页面与控件（仓库工程解析或真机遍历 dump），严禁臆造按钮/菜单/跳转；\n2. 逻辑合理——步骤顺序符合真实用户操作路径，前置条件完整，正向/边界/异常场景覆盖且有区分度，不堆砌重复用例；\n3. 预期结果明确清晰——具体到控件文本、动画名（如 Lottie json）、hilog 日志内容等可观察证据，禁止「显示正常」「工作正常」式空泛描述。\n【库类别适配】先判断库的类别（动画渲染/网络请求/UI 组件/数据存储等），按类别选择验证手段：动画类验证播放/暂停/进度/循环；网络类验证请求成功/失败/超时回调与 hilog 输出；UI 组件类验证属性设置、事件回调、状态切换；其他类别按库简介自行推导并在用例中说明依据。\n【输出】JSON 数组：{ name, precondition, steps[], expected }，来源固定为 AI 生成。只输出 JSON。',
+                    'autotest-case-author v2：真实工程/真机遍历双驱动——控件必须来自真实数据；按库类别（动画/网络/组件/存储）适配验证手段；预期落具体动画、文本与 hilog 日志；生成后自审修订（真实可操作/逻辑合理/预期清晰）。',
+                ]);
+            }
+            catch (e) {
+                console.warn('[dsh-autotest] 内置 Prompt 升级跳过：', e.message);
+            }
             // 种子：libraries 为空时灌入
             const row = await getDb().prepare('SELECT COUNT(*) AS n FROM libraries').get();
             if (!row || row.n === 0) {

@@ -1,10 +1,13 @@
 // 真机 UI 遍历引擎：启动 demo → BFS 遍历页面 Layout → 收集控件/动画 → 生成用例数据
 //  - 动画适配：检测 bounds 超出屏幕的大控件/动画区域，自动滑动直到完整可见
+//  - 状态栏过滤：系统窗口（时钟/网速/电量）按 bundleName 子树整体丢弃 + 动态高度阈值兜底
+//  - 参数配置：深度/页数/每页控件数等默认走系统配置（explore.*），调用方可覆盖
 //  - 输出：页面清单（路径/控件/动画/滑动次数），供自动生成用例与 Hypium 脚本
 import fs from 'node:fs';
 import path from 'node:path';
 import { dumpMeta, execShell, findKeyword, keyBack, launchArgs, listTargets, parseNodes, screenSize, tap, uiDump } from './hdc.js';
 import { workspaceDir } from './gitRepo.js';
+import { getSetting } from './settings.js';
 
 export interface ExploredControl {
   text: string;
@@ -19,7 +22,8 @@ export interface ExploredPage {
   path: string[];            // 从首页到达该页的点击文本序列
   controls: ExploredControl[];
   screen: { w: number; h: number };
-  swipes: number;            // 为看到完整内容滑动的次数
+  swipes: number;            // 为看到完整内容滑动的次数（越界动画适配）
+  scrolls?: number;          // 上下滚动探索的屏数（发现首屏外可交互控件）
   animation?: { x: number; y: number; w: number; h: number };
   note: string;
 }
@@ -38,24 +42,63 @@ export interface ExploreOpts {
   controlsPerPage?: number;
   maxSwipePerPage?: number;
   launchAbility?: string;
+  statusBarFilter?: boolean; // 不传时读系统配置 explore.statusBarFilter
 }
 
 function sleep(ms: number): Promise<void> {
   return new Promise((r) => setTimeout(r, ms));
 }
 
-interface RawNode { text: string; desc: string; x: number; y: number }
+interface RawNode { text: string; desc: string; x: number; y: number; bundle?: string; bounds?: { x1: number; y1: number; x2: number; y2: number } }
+
+/** 状态栏/系统窗口默认 bundle 清单（场景板时钟、系统 UI 网速/电量等）。 */
+const DEFAULT_SYSTEM_BUNDLES = [
+  'com.ohos.sceneboard',
+  'com.huawei.systemui',
+  'com.ohos.systemui',
+  'com.android.systemui',
+];
+
+/** 系统包名过滤集合 = 默认清单 + 系统配置 explore.systemBundles（逗号分隔追加）。 */
+function systemSkipBundles(): Set<string> {
+  const s = new Set(DEFAULT_SYSTEM_BUNDLES);
+  try {
+    const extra = String(getSetting('explore.systemBundles', '') ?? '');
+    for (const item of extra.split(/[,;，；]/).map((x) => x.trim()).filter(Boolean)) s.add(item);
+  } catch { /* 配置异常时只用默认清单 */ }
+  return s;
+}
+
+/** 数值参数：调用方覆盖 > 系统配置 > 内置默认，并夹紧到合法区间。 */
+function numOpt(value: number | undefined, key: string, def: number, min: number, max: number): number {
+  const n = Number(value ?? getSetting(key, def));
+  if (!Number.isFinite(n)) return def;
+  return Math.min(max, Math.max(min, Math.round(n)));
+}
+
+/** 控件真实尺寸（bounds 可用时），可视化按真实布局绘制。 */
+function toControl(n: RawNode): ExploredControl {
+  return {
+    text: n.text,
+    desc: n.desc,
+    x: n.x,
+    y: n.y,
+    w: n.bounds ? Math.max(1, n.bounds.x2 - n.bounds.x1) : 40,
+    h: n.bounds ? Math.max(1, n.bounds.y2 - n.bounds.y1) : 40,
+  };
+}
 
 /** 页面签名：控件文本集合排序拼接（去重用）。 */
 function pageSignature(nodes: RawNode[]): string {
   return [...new Set(nodes.map((n) => (n.text || n.desc).trim()).filter(Boolean))].sort().join('|');
 }
 
-/** 检测「超出屏幕」的大控件/动画区域（bounds 越界或占据屏幕比例过大）。 */
+/** 检测「超出屏幕」的大控件/动画区域（bounds 任一边越出屏幕即视为未完整可见）。 */
 function detectOutOfScreen(nodes: RawNode[], sw: number, sh: number): RawNode | undefined {
+  const tol = 2; // 贴边渲染的 1~2px 误差不算越界
   return nodes.find((n) => {
-    const big = n.x > 0 && n.y > 0 && (n.x > sw || n.y > sh); // bounds 起点越界
-    return big;
+    if (!n.bounds) return n.x > sw || n.y > sh;
+    return n.bounds.x1 < -tol || n.bounds.y1 < -tol || n.bounds.x2 > sw + tol || n.bounds.y2 > sh + tol;
   });
 }
 
@@ -85,10 +128,15 @@ export async function exploreApp(
   opts: ExploreOpts = {},
 ): Promise<ExploreResult> {
   const t0 = Date.now();
-  const maxPages = opts.maxPages ?? 20;
-  const maxDepth = opts.maxDepth ?? 2;
-  const controlsPerPage = opts.controlsPerPage ?? 12;
-  const maxSwipePerPage = opts.maxSwipePerPage ?? 5;
+  // 参数优先级：调用方覆盖 > 系统配置（explore.*）> 内置默认
+  const maxPages = numOpt(opts.maxPages, 'explore.maxPages', 20, 1, 200);
+  const maxDepth = numOpt(opts.maxDepth, 'explore.maxDepth', 2, 1, 6);
+  const controlsPerPage = numOpt(opts.controlsPerPage, 'explore.controlsPerPage', 12, 1, 50);
+  const maxSwipePerPage = numOpt(opts.maxSwipePerPage, 'explore.maxSwipePerPage', 5, 0, 20);
+  // 状态栏彻底过滤：bundleName 子树丢弃 + 屏幕高度比例阈值兜底
+  const statusBarFilter = opts.statusBarFilter ?? Boolean(getSetting('explore.statusBarFilter', true));
+  const skipBundles = statusBarFilter ? systemSkipBundles() : undefined;
+  const parseOpts = skipBundles ? { skipBundles } : undefined;
 
   const visited = new Set<string>();
   const visitedPaths = new Set<string>();
@@ -114,114 +162,175 @@ export async function exploreApp(
     }
     // 动画/内容越界 → 滑动直到完整可见
     for (let i = 0; i < maxSwipePerPage; i++) {
-      const nodes = parseNodes(xml);
+      const nodes = parseNodes(xml, parseOpts);
       const out = detectOutOfScreen(nodes, screen.w, screen.h);
       if (!out) break;
       await swipePage(serial, 'up');
       xml = await uiDump(serial);
       sw++;
     }
-    return { nodes: parseNodes(xml), screen, sw, meta: dumpMeta(xml) };
+    return { nodes: parseNodes(xml, parseOpts), screen, sw, meta: dumpMeta(xml) };
   };
 
+  /**
+   * 路径重放时查找控件：当前屏找不到则向下翻屏重试（目标可能在首屏之下）。
+   * 找到 → 页面停留在命中位置（坐标可直接点击）；未找到 → 滑回原位再返回 undefined。
+   */
+  const findNodeScrollable = async (step: string, maxSwipes = 2): Promise<RawNode | undefined> => {
+    let xml = await uiDump(serial);
+    let node = findKeyword(parseNodes(xml, parseOpts), step);
+    let sw = 0;
+    while (!node && sw < maxSwipes) {
+      await swipePage(serial, 'up');
+      sw++;
+      xml = await uiDump(serial);
+      node = findKeyword(parseNodes(xml, parseOpts), step);
+    }
+    if (!node && sw > 0) {
+      for (let i = 0; i < sw; i++) await swipePage(serial, 'down');
+    }
+    return node;
+  };
+
+  // 状态栏动态阈值：按屏幕高度取比例（高分屏状态栏更高），兜底过滤时钟等系统文本
   const home = await dumpCurrent();
+  const statusBarY = Math.max(60, Math.round(home.screen.h * 0.045));
   visited.add(pageSignature(home.nodes));
   if (home.meta.pagePath) visitedPaths.add(home.meta.pagePath);
   pages.push({
     path: ['首页'],
-    controls: home.nodes.slice(0, controlsPerPage).map((n) => ({ ...n, w: 40, h: 40 })),
+    controls: home.nodes.filter((n) => n.y > statusBarY).slice(0, controlsPerPage).map(toControl),
     screen: home.screen,
     swipes: home.sw,
     note: '首页',
   });
 
+  // 单页控件清单上限（多视口汇总后的存量，供 Agent 看到整页全部按钮/文本）
+  const FULL_CONTROLS_CAP = 60;
+
   // BFS 队列：{ path, depth }；只记录从首页可达的页面
   const queue: Array<{ path: string[]; depth: number }> = [{ path: ['首页'], depth: 0 }];
   let guard = 0;
 
-  while (queue.length > 0 && pages.length < maxPages && guard < 60) {
+  while (queue.length > 0 && pages.length < maxPages && guard < Math.max(60, maxPages * 4)) {
     guard++;
     const cur = queue.shift()!;
-    if (cur.depth >= maxDepth) continue;
-    // 回到当前路径所在页面：杀应用重启后重放点击序列
+    const isLeaf = cur.depth >= maxDepth; // 叶子页只做全量采集，不再点击扩展
     try { await execShell(serial, ['aa', 'force-stop', packageName]); } catch { /* 忽略 */ }
     await execShell(serial, launchArgs(ability));
     await sleep(3000);
-    let xml = await uiDump(serial);
-    let screen = screenSize(xml);
+    // 重放点击序列（目标控件可能在首屏之下，支持翻屏查找）
     for (const step of cur.path.filter((s) => s !== '首页')) {
-      const nodes = parseNodes(xml);
-      const node = findKeyword(nodes, step);
+      const node = await findNodeScrollable(step);
       if (!node) break;
       await tap(serial, node.x, node.y);
       await sleep(1200);
-      xml = await uiDump(serial);
-      screen = screenSize(xml);
     }
 
-    const nodes = parseNodes(xml);
     // 非目标应用页面（桌面/系统）→ 跳过本轮
+    const xml = await uiDump(serial);
     const meta = dumpMeta(xml);
     if (meta.bundleName && meta.bundleName !== packageName) continue;
     const curPagePath = meta.pagePath;
-    // 当前页的可交互控件（有文本/描述），排除返回/导航类
-    const clickable = nodes
-      .filter((n) => n.y > 130)   // 排除系统状态栏（时钟/网速/电量）
-      .filter((n) => (n.text || n.desc).trim())
-      .filter((n) => !/^(返回|back|上一页|关闭|取消)/i.test((n.text || n.desc).trim()))
-      .slice(0, controlsPerPage);
 
-    for (const c of clickable) {
-      if (pages.length >= maxPages) break;
-      const label = (c.text || c.desc).trim().slice(0, 24);
-      const nextPath = [...cur.path, label];
-      // 点击进入子页面
-      await tap(serial, c.x, c.y);
-      await sleep(1500);
-      const sub = await dumpCurrent();
-      const sig = pageSignature(sub.nodes);
-      const pathKey = sub.meta.pagePath || sig;
-      const bundleOk = !sub.meta.bundleName || sub.meta.bundleName === packageName;
-      const entered = !visited.has(sig) && !visitedPaths.has(pathKey) && sub.nodes.length > 0 && bundleOk;
-      console.log(`[explore] ${cur.path.join('→')} 点击「${label}」→ entered=${entered} pagePath=${sub.meta.pagePath} bundle=${sub.meta.bundleName} nodes=${sub.nodes.length}`);
-      if (entered) {
-        visited.add(sig);
-        visitedPaths.add(pathKey);
-        const anim = detectOutOfScreen(sub.nodes, sub.screen.w, sub.screen.h);
-        pages.push({
-          path: nextPath,
-          controls: sub.nodes.slice(0, controlsPerPage).map((n) => ({ ...n, w: 40, h: 40 })),
-          screen: sub.screen,
-          swipes: sub.sw,
-          animation: anim ? { x: anim.x, y: anim.y, w: 40, h: 40 } : undefined,
-          note: anim ? '检测到越界动画/内容，已自动滑动适配' : '页面正常',
-        });
-        queue.push({ path: nextPath, depth: cur.depth + 1 });
-        // 返回上一页（HarmonyOS 边缘返回手势）
-        await keyBack(serial);
+    /**
+     * 视口步进遍历：逐屏「采集控件清单 + 点击新候选」。
+     * 坐标只在当前视口有效，因此点击与采集同步推进：处理完一屏再上滑到下一屏，
+     * 全部结束后滑回顶部。首屏下的回调日志区/按钮因此都能被看到、被点到。
+     */
+    const seenLabels = new Set<string>();
+    const clickedLabels = new Set<string>();
+    const inventory: RawNode[] = [];
+    let clicked = 0;
+    let vp = 0; // 已完成的下翻次数
+
+    const replayToCur = async (): Promise<void> => {
+      try { await execShell(serial, ['aa', 'force-stop', packageName]); } catch { /* 忽略 */ }
+      await execShell(serial, launchArgs(ability));
+      await sleep(2500);
+      for (const step of cur.path.filter((s) => s !== '首页')) {
+        const node = await findNodeScrollable(step);
+        if (!node) break;
+        await tap(serial, node.x, node.y);
         await sleep(1000);
-        xml = await uiDump(serial);
-        screen = screenSize(xml);
-      } else {
-        // 页面未变（点击无导航）→ 直接继续；页面变了但已访问 → 重置回当前路径页
-        if (sub.meta.pagePath !== curPagePath) {
-          try { await execShell(serial, ['aa', 'force-stop', packageName]); } catch { /* 忽略 */ }
-          await execShell(serial, launchArgs(ability));
-          await sleep(2500);
-          xml = await uiDump(serial);
-          screen = screenSize(xml);
-          for (const step of cur.path.filter((s) => s !== '首页')) {
-            const ns = parseNodes(xml);
-            const node = findKeyword(ns, step);
-            if (!node) break;
-            await tap(serial, node.x, node.y);
+      }
+      for (let i = 0; i < vp; i++) { await swipePage(serial, 'up'); await sleep(300); } // 回到当前视口
+    };
+
+    viewportLoop:
+    while (vp <= maxSwipePerPage) {
+      const xmlVp = await uiDump(serial);
+      const scrVp = screenSize(xmlVp);
+      const yMinVp = Math.max(60, Math.round(scrVp.h * 0.045));
+      const nodesVp = parseNodes(xmlVp, parseOpts)
+        .filter((n) => n.y > yMinVp)
+        .filter((n) => (n.text || n.desc).trim())
+        .filter((n) => !/^(返回|back|上一页|关闭|取消)/i.test((n.text || n.desc).trim()));
+      let fresh = 0;
+      for (const n of nodesVp) {
+        const label = (n.text || n.desc).trim().slice(0, 24);
+        if (!seenLabels.has(label)) {
+          seenLabels.add(label);
+          inventory.push(n);
+          fresh++;
+        }
+      }
+      // 点击本视口的新候选（叶子页跳过点击，仅采集）
+      if (!isLeaf) {
+        for (const c of nodesVp) {
+          const label = (c.text || c.desc).trim().slice(0, 24);
+          if (clickedLabels.has(label)) continue;
+          if (clicked >= controlsPerPage || pages.length >= maxPages) break viewportLoop;
+          clickedLabels.add(label);
+          clicked++;
+          const nextPath = [...cur.path, label];
+          await tap(serial, c.x, c.y);
+          await sleep(1500);
+          const sub = await dumpCurrent();
+          const sig = pageSignature(sub.nodes);
+          const pathKey = sub.meta.pagePath || sig;
+          const bundleOk = !sub.meta.bundleName || sub.meta.bundleName === packageName;
+          const entered = !visited.has(sig) && !visitedPaths.has(pathKey) && sub.nodes.length > 0 && bundleOk;
+          console.log(`[explore] ${cur.path.join('→')} 点击「${label}」(视口${vp}) → entered=${entered} pagePath=${sub.meta.pagePath} bundle=${sub.meta.bundleName} nodes=${sub.nodes.length}`);
+          if (entered) {
+            visited.add(sig);
+            visitedPaths.add(pathKey);
+            const anim = detectOutOfScreen(sub.nodes, sub.screen.w, sub.screen.h);
+            pages.push({
+              path: nextPath,
+              controls: sub.nodes.filter((n) => n.y > Math.max(60, Math.round(sub.screen.h * 0.045))).slice(0, FULL_CONTROLS_CAP).map(toControl),
+              screen: sub.screen,
+              swipes: sub.sw,
+              animation: anim ? { x: anim.x, y: anim.y, w: anim.bounds ? Math.max(1, anim.bounds.x2 - anim.bounds.x1) : 40, h: anim.bounds ? Math.max(1, anim.bounds.y2 - anim.bounds.y1) : 40 } : undefined,
+              note: anim ? '检测到越界动画/内容，已自动滑动适配' : '页面正常',
+            });
+            queue.push({ path: nextPath, depth: cur.depth + 1 });
+            // 返回列表页（边缘返回手势），滚动位置保持 → 本视口剩余候选坐标仍有效
+            await keyBack(serial);
             await sleep(1000);
-            xml = await uiDump(serial);
-            screen = screenSize(xml);
+          } else if (sub.meta.pagePath !== curPagePath) {
+            // 页面变了但已访问 → 重启并重放路径回当前页 + 当前视口
+            await replayToCur();
           }
         }
       }
+      if (fresh === 0) break; // 本屏无新内容 → 已到底/不可滚动
+      await swipePage(serial, 'up');
+      vp++;
     }
+    // 滑回顶部，下一轮从已知位置开始
+    for (let i = 0; i < vp; i++) await swipePage(serial, 'down');
+
+    // 完整控件清单回填本页记录（含首屏下内容），Agent / 用例预期据此覆盖全部按钮与回调输出
+    const selfPage = pages.find((p) => p.path.length === cur.path.length && p.path.every((s, i) => s === cur.path[i]));
+    if (selfPage && inventory.length > 0) {
+      selfPage.controls = inventory.slice(0, FULL_CONTROLS_CAP).map(toControl);
+      if (vp > 0) {
+        selfPage.scrolls = vp;
+        selfPage.note += `${selfPage.note ? '；' : ''}滚动探索 ${vp} 屏 · 控件清单含首屏下内容`;
+      }
+    }
+    if (isLeaf) continue;
   }
 
   return {
