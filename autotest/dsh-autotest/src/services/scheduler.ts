@@ -5,10 +5,9 @@ import { executePlan } from './planExecutor.js';
 
 const jobs = new Map<number, cron.ScheduledTask>();
 
-export function startScheduler(): void {
+export async function startScheduler(): Promise<void> {
   const db = getDb();
-  const plans = db.prepare(`SELECT id, name, cron FROM plans WHERE type = 'scheduled' AND status != 'stopped' AND cron IS NOT NULL`).all() as
-    Array<{ id: number; name: string; cron: string }>;
+  const plans = await db.prepare(`SELECT id, name, cron FROM plans WHERE type = 'scheduled' AND status != 'stopped' AND cron IS NOT NULL`).all<{ id: number; name: string; cron: string }>();
   for (const p of plans) {
     try {
       if (!cron.validate(p.cron)) { console.warn(`[autotest] 忽略非法 cron「${p.cron}」：计划 #${p.id}`); continue; }

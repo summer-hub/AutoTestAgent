@@ -1,7 +1,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import XLSX from 'xlsx';
-import { getDb, now, withRead } from '../db/connection.js';
+import { ensureReady, getDb, now, withRead } from '../db/connection.js';
 import { caseTableFor, shardOf, shardStats } from '../db/repository.js';
 import { runTask } from '../services/executor.js';
 import { executePlan } from '../services/planExecutor.js';
@@ -14,7 +14,6 @@ import { deviceInfo, hdcAvailable, listTargets } from '../services/hdc.js';
 import { pullRepo, repoDirFor, scriptsDirFor } from '../services/gitRepo.js';
 import { registerAuthRoutes, requireAuth } from '../auth/index.js';
 import { AuthError, hasPermission } from '../auth/service.js';
-import { ensureAuthSchema } from '../auth/db.js';
 const routes = [];
 // 分析进度（内存态，供前端轮询展示实时过程；完成后 60s 自动清理）
 const analysisProgress = new Map();
@@ -70,6 +69,7 @@ export function makeApiHandler(llm) {
     defineRoutes(llm);
     return async (req, res) => {
         try {
+            await ensureReady();
             const url = new URL(req.url ?? '/', 'http://localhost');
             const path = url.pathname.replace(/^\/api\/autotest/, '') || '/';
             const query = url.searchParams;
@@ -120,8 +120,7 @@ function defineRoutes(llm) {
     if (defineRoutes.done)
         return;
     defineRoutes.done = true;
-    // ---- 认证（auth_* 建在 MySQL） ----
-    void ensureAuthSchema();
+    // ---- 认证（auth_* 建在 MySQL；初始化由 index.ts 在 ensureReady 之后完成） ----
     registerAuthRoutes(route);
     // ---- health ----
     route('GET', '/health', async () => ({ ok: true, service: 'dsh-autotest', time: new Date().toISOString() }), { permission: '@public' });
@@ -139,11 +138,11 @@ function defineRoutes(llm) {
         const q = query.get('q') ?? '';
         const page = Math.max(1, Number(query.get('page')) || 1);
         const pageSize = Math.min(100, Math.max(1, Number(query.get('pageSize')) || 20));
-        return withCache(`libs:${page}:${pageSize}:${q}`, () => withRead((db) => {
+        return withCache(`libs:${page}:${pageSize}:${q}`, () => withRead(async (db) => {
             const like = `%${q}%`;
             const where = q ? `WHERE l.name LIKE @like OR l.description LIKE @like` : '';
-            const total = db.prepare(`SELECT COUNT(*) AS n FROM libraries l ${where}`).get({ like }).n;
-            const rows = db.prepare(`
+            const total = (await db.prepare(`SELECT COUNT(*) AS n FROM libraries l ${where}`).get({ like }))?.n ?? 0;
+            const rows = await db.prepare(`
         SELECT l.*, (SELECT COUNT(*) FROM cases c WHERE c.library_id = l.id) AS case_count
         FROM libraries l ${where} ORDER BY l.id LIMIT @limit OFFSET @offset`).all({ like, limit: pageSize, offset: (page - 1) * pageSize });
             return { items: rows.map(mapLibrary), total, page, pageSize };
@@ -152,7 +151,7 @@ function defineRoutes(llm) {
     route('GET', '/libraries/:id', async ({ params }) => {
         return withCache(`lib:${params.id}`, async () => {
             const db = getDb();
-            const row = db.prepare(`SELECT l.*, (SELECT COUNT(*) FROM cases c WHERE c.library_id = l.id) AS case_count FROM libraries l WHERE l.id = ?`)
+            const row = await db.prepare(`SELECT l.*, (SELECT COUNT(*) FROM cases c WHERE c.library_id = l.id) AS case_count FROM libraries l WHERE l.id = ?`)
                 .get(Number(params.id));
             if (!row)
                 throw Object.assign(new Error('库不存在'), { statusCode: 404 });
@@ -161,7 +160,7 @@ function defineRoutes(llm) {
     }, { permission: 'library:read' });
     // PR 列表（供前端选择 #PR 分析）
     route('GET', '/libraries/:libraryId/prs', async ({ params }) => {
-        const lib = getDb().prepare('SELECT * FROM libraries WHERE id = ?').get(Number(params.libraryId));
+        const lib = await getDb().prepare('SELECT * FROM libraries WHERE id = ?').get(Number(params.libraryId));
         if (!lib)
             throw Object.assign(new Error('三方库不存在'), { statusCode: 404 });
         const repoPath = parseRepoPath(lib.repo_url);
@@ -187,7 +186,7 @@ function defineRoutes(llm) {
     }, { permission: 'library:read' });
     route('GET', '/libraries/stats/sources', async () => {
         const db = getDb();
-        const rows = db.prepare(`SELECT source, COUNT(*) AS n FROM cases GROUP BY source`).all();
+        const rows = await db.prepare(`SELECT source, COUNT(*) AS n FROM cases GROUP BY source`).all();
         return { items: rows, total: rows.reduce((s, r) => s + r.n, 0) };
     }, { permission: 'library:read' });
     // ---- cases ----
@@ -200,7 +199,7 @@ function defineRoutes(llm) {
         const page = Math.max(1, Number(query.get('page')) || 1);
         const pageSize = Math.min(200, Math.max(1, Number(query.get('pageSize')) || 20));
         const shard = shardOf(libraryId);
-        return withCache(`cases:${shard}:${libraryId}:${page}:${pageSize}:${q}:${source}:${status}:${ver}`, () => withRead((db) => {
+        return withCache(`cases:${shard}:${libraryId}:${page}:${pageSize}:${q}:${source}:${status}:${ver}`, () => withRead(async (db) => {
             const conds = ['library_id = @libraryId'];
             const p = { libraryId, limit: pageSize, offset: (page - 1) * pageSize };
             if (q) {
@@ -221,9 +220,9 @@ function defineRoutes(llm) {
             }
             const where = conds.join(' AND ');
             const table = caseTableFor(libraryId);
-            const total = db.prepare(`SELECT COUNT(*) AS n FROM ${table} WHERE ${where}`).get(p).n;
-            const rows = db.prepare(`SELECT * FROM ${table} WHERE ${where} ORDER BY case_no LIMIT @limit OFFSET @offset`).all(p);
-            const lib = db.prepare('SELECT name FROM libraries WHERE id = ?').get(libraryId);
+            const total = (await db.prepare(`SELECT COUNT(*) AS n FROM ${table} WHERE ${where}`).get(p))?.n ?? 0;
+            const rows = await db.prepare(`SELECT * FROM ${table} WHERE ${where} ORDER BY case_no LIMIT @limit OFFSET @offset`).all(p);
+            const lib = await db.prepare('SELECT name FROM libraries WHERE id = ?').get(libraryId);
             return { items: rows.map((r) => mapCase(r, lib?.name)), total, page, pageSize };
         }));
     }, { permission: 'case:read' });
@@ -232,8 +231,8 @@ function defineRoutes(llm) {
         const db = getDb();
         const libraryId = Number(query.get('libraryId')) || null;
         const rows = libraryId
-            ? db.prepare('SELECT * FROM cases WHERE library_id = ? ORDER BY case_no LIMIT 20000').all(libraryId)
-            : db.prepare('SELECT * FROM cases ORDER BY id LIMIT 20000').all();
+            ? await db.prepare('SELECT * FROM cases WHERE library_id = ? ORDER BY case_no LIMIT 20000').all(libraryId)
+            : await db.prepare('SELECT * FROM cases ORDER BY id LIMIT 20000').all();
         const data = rows.map((r) => ({
             用例编号: r.case_no, 用例名称: r.name, 来源: r.source, 前置条件: r.precondition ?? '',
             操作步骤: JSON.parse(r.steps || '[]').join('\n'), 预期结果: r.expected ?? '',
@@ -248,15 +247,15 @@ function defineRoutes(llm) {
     route('GET', '/cases/:id', async ({ params }) => {
         return withCache(`case:${params.id}`, async () => {
             const db = getDb();
-            const row = getCaseOr404(db, Number(params.id));
-            const lib = db.prepare('SELECT name FROM libraries WHERE id = ?').get(row.library_id);
+            const row = await getCaseOr404(db, Number(params.id));
+            const lib = await db.prepare('SELECT name FROM libraries WHERE id = ?').get(row.library_id);
             return mapCase(row, lib?.name);
         });
     }, { permission: 'case:read' });
     route('GET', '/cases/:id/versions', async ({ params }) => {
         const db = getDb();
-        getCaseOr404(db, Number(params.id));
-        const rows = db.prepare('SELECT * FROM case_versions WHERE case_id = ? ORDER BY version DESC').all(Number(params.id));
+        await getCaseOr404(db, Number(params.id));
+        const rows = await db.prepare('SELECT * FROM case_versions WHERE case_id = ? ORDER BY version DESC').all(Number(params.id));
         return rows.map(mapVersion);
     }, { permission: 'case:read' });
     route('POST', '/cases', async ({ body }) => {
@@ -269,20 +268,20 @@ function defineRoutes(llm) {
         void cacheDel('lib');
         void cacheDel('libs');
         const t = now();
-        const created = db.transaction(() => {
+        const created = await db.transaction(async () => {
             const steps = Array.isArray(b.steps) ? b.steps : [];
-            const res = db.prepare(`INSERT INTO cases (library_id, case_no, name, source, precondition, steps, expected, status, script_status, dts_url, current_version, created_at, updated_at)
+            const res = await db.prepare(`INSERT INTO cases (library_id, case_no, name, source, precondition, steps, expected, status, script_status, dts_url, current_version, created_at, updated_at)
         VALUES (?, ?, ?, ?, ?, ?, ?, ?, '未绑定', ?, 1, ?, ?)`).run(b.libraryId, b.caseNo, b.name, b.source ?? '新需求引入', b.precondition ?? '', JSON.stringify(steps), b.expected ?? '', b.status ?? '未执行', b.dtsUrl ?? '', t, t);
             const caseId = Number(res.lastInsertRowid);
-            db.prepare(`INSERT INTO case_versions (case_id, version, snapshot, change_note, author, author_type, created_at)
+            await db.prepare(`INSERT INTO case_versions (case_id, version, snapshot, change_note, author, author_type, created_at)
         VALUES (?, 1, ?, '初始创建', 'AI 用例生成 Agent', 'ai', ?)`).run(caseId, JSON.stringify({
                 id: caseId, libraryId: b.libraryId, caseNo: b.caseNo, name: b.name, source: b.source ?? '新需求引入',
                 precondition: b.precondition ?? '', steps, expected: b.expected ?? '', status: b.status ?? '未执行',
                 scriptStatus: '未绑定', dtsUrl: b.dtsUrl ?? '', currentVersion: 1, createdAt: t, updatedAt: t,
             }), t);
             return caseId;
-        })();
-        return mapCase(db.prepare('SELECT * FROM cases WHERE id = ?').get(created));
+        });
+        return mapCase(await db.prepare('SELECT * FROM cases WHERE id = ?').get(created));
     }, { permission: 'case:write' });
     route('PUT', '/cases/:id', async ({ params, body }) => {
         const id = Number(params.id);
@@ -292,10 +291,10 @@ function defineRoutes(llm) {
         void cacheDel('stats');
         void cacheDel('lib');
         void cacheDel('libs');
-        const row = getCaseOr404(db, id);
+        const row = await getCaseOr404(db, id);
         const t = now();
         const nextVersion = row.current_version + 1;
-        const updated = db.transaction(() => {
+        const updated = await db.transaction(async () => {
             const snapshot = {
                 id, libraryId: row.library_id, caseNo: row.case_no,
                 name: b.name ?? row.name, source: b.source ?? row.source,
@@ -307,11 +306,11 @@ function defineRoutes(llm) {
                 dtsUrl: b.dtsUrl ?? row.dts_url,
                 currentVersion: nextVersion, createdAt: row.created_at, updatedAt: t,
             };
-            db.prepare(`UPDATE cases SET name=?, source=?, precondition=?, steps=?, expected=?, status=?, script_status=?, dts_url=?, current_version=?, updated_at=? WHERE id=?`).run(snapshot.name, snapshot.source, snapshot.precondition, JSON.stringify(snapshot.steps), snapshot.expected, snapshot.status, snapshot.scriptStatus, snapshot.dtsUrl, nextVersion, t, id);
-            db.prepare(`INSERT INTO case_versions (case_id, version, snapshot, change_note, author, author_type, created_at)
+            await db.prepare(`UPDATE cases SET name=?, source=?, precondition=?, steps=?, expected=?, status=?, script_status=?, dts_url=?, current_version=?, updated_at=? WHERE id=?`).run(snapshot.name, snapshot.source, snapshot.precondition, JSON.stringify(snapshot.steps), snapshot.expected, snapshot.status, snapshot.scriptStatus, snapshot.dtsUrl, nextVersion, t, id);
+            await db.prepare(`INSERT INTO case_versions (case_id, version, snapshot, change_note, author, author_type, created_at)
         VALUES (?, ?, ?, ?, ?, ?, ?)`).run(id, nextVersion, JSON.stringify(snapshot), b.changeNote ?? 'AI 自动更新：版本自动递增。', b.author ?? 'AI 用例更新 Agent', b.authorType ?? 'ai', t);
             return snapshot;
-        })();
+        });
         return updated;
     }, { permission: 'case:write' });
     route('DELETE', '/cases/:id', async ({ params }) => {
@@ -321,13 +320,13 @@ function defineRoutes(llm) {
         void cacheDel('stats');
         void cacheDel('lib');
         void cacheDel('libs');
-        const row = getCaseOr404(db, id);
-        db.transaction(() => {
-            db.prepare('DELETE FROM case_versions WHERE case_id = ?').run(id);
-            db.prepare('DELETE FROM executions WHERE case_id = ?').run(id);
-            db.prepare('DELETE FROM analyses WHERE case_id = ?').run(id);
-            db.prepare('DELETE FROM cases WHERE id = ?').run(id);
-        })();
+        const row = await getCaseOr404(db, id);
+        await db.transaction(async () => {
+            await db.prepare('DELETE FROM case_versions WHERE case_id = ?').run(id);
+            await db.prepare('DELETE FROM executions WHERE case_id = ?').run(id);
+            await db.prepare('DELETE FROM analyses WHERE case_id = ?').run(id);
+            await db.prepare('DELETE FROM cases WHERE id = ?').run(id);
+        });
         return { ok: true, deletedCaseNo: row.case_no };
     }, { permission: 'case:delete' });
     route('POST', '/cases/:id/rollback', async ({ params, body }) => {
@@ -340,18 +339,18 @@ function defineRoutes(llm) {
         void cacheDel('stats');
         void cacheDel('lib');
         void cacheDel('libs');
-        const row = getCaseOr404(db, id);
-        const vrow = db.prepare('SELECT * FROM case_versions WHERE case_id = ? AND version = ?').get(id, target);
+        const row = await getCaseOr404(db, id);
+        const vrow = await db.prepare('SELECT * FROM case_versions WHERE case_id = ? AND version = ?').get(id, target);
         if (!vrow)
             throw Object.assign(new Error(`版本 V${target} 不存在`), { statusCode: 404 });
         const snap = JSON.parse(vrow.snapshot);
         const t = now();
         const nextVersion = row.current_version + 1;
-        db.transaction(() => {
-            db.prepare(`UPDATE cases SET name=?, source=?, precondition=?, steps=?, expected=?, status=?, script_status=?, current_version=?, updated_at=? WHERE id=?`).run(snap.name, snap.source, snap.precondition, JSON.stringify(snap.steps), snap.expected, snap.status, snap.scriptStatus, nextVersion, t, id);
-            db.prepare(`INSERT INTO case_versions (case_id, version, snapshot, change_note, author, author_type, created_at)
+        await db.transaction(async () => {
+            await db.prepare(`UPDATE cases SET name=?, source=?, precondition=?, steps=?, expected=?, status=?, script_status=?, current_version=?, updated_at=? WHERE id=?`).run(snap.name, snap.source, snap.precondition, JSON.stringify(snap.steps), snap.expected, snap.status, snap.scriptStatus, nextVersion, t, id);
+            await db.prepare(`INSERT INTO case_versions (case_id, version, snapshot, change_note, author, author_type, created_at)
         VALUES (?, ?, ?, ?, ?, 'human', ?)`).run(id, nextVersion, JSON.stringify({ ...snap, currentVersion: nextVersion, updatedAt: t }), `回滚到 V${target}：内容恢复至该版本快照。`, body.author ?? '测试工程师', t);
-        })();
+        });
         return { id, currentVersion: nextVersion, rolledBackTo: target, updatedAt: t };
     }, { permission: 'case:write' });
     // ---- Excel 导入 / 导出（需求：导入 excel 表格并保存到数据库 / 导出 excel）----
@@ -366,7 +365,7 @@ function defineRoutes(llm) {
         void cacheDel('stats');
         void cacheDel('lib');
         void cacheDel('libs');
-        const lib = db.prepare('SELECT id, name FROM libraries WHERE id = ?').get(libraryId);
+        const lib = await db.prepare('SELECT id, name FROM libraries WHERE id = ?').get(libraryId);
         if (!lib)
             throw Object.assign(new Error('三方库不存在'), { statusCode: 404 });
         const wb = XLSX.read(b.base64, { type: 'base64' });
@@ -378,9 +377,9 @@ function defineRoutes(llm) {
         const errors = [];
         let imported = 0;
         let skipped = 0;
-        const countRow = db.prepare('SELECT COUNT(*) AS n FROM cases WHERE library_id = ?').get(libraryId);
+        const countRow = (await db.prepare('SELECT COUNT(*) AS n FROM cases WHERE library_id = ?').get(libraryId)) ?? { n: 0 };
         let seq = countRow.n;
-        db.transaction(() => {
+        await db.transaction(async () => {
             const insertCase = db.prepare(`INSERT INTO cases (library_id, case_no, name, source, precondition, steps, expected, status, script_status, current_version, created_at, updated_at)
         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?)`);
             const insertVer = db.prepare(`INSERT INTO case_versions (case_id, version, snapshot, change_note, author, author_type, created_at)
@@ -394,9 +393,9 @@ function defineRoutes(llm) {
                 try {
                     const caseNo = norm.caseNo || `C-IMP-${String(++seq).padStart(4, '0')}`;
                     const steps = norm.steps;
-                    const res = insertCase.run(libraryId, caseNo, norm.name, norm.source ?? '新需求引入', norm.precondition ?? '', JSON.stringify(steps), norm.expected ?? '', norm.status ?? '未执行', norm.scriptStatus ?? '未绑定', t, t);
+                    const res = await insertCase.run(libraryId, caseNo, norm.name, norm.source ?? '新需求引入', norm.precondition ?? '', JSON.stringify(steps), norm.expected ?? '', norm.status ?? '未执行', norm.scriptStatus ?? '未绑定', t, t);
                     const caseId = Number(res.lastInsertRowid);
-                    insertVer.run(caseId, JSON.stringify({
+                    await insertVer.run(caseId, JSON.stringify({
                         id: caseId, libraryId, caseNo, name: norm.name, source: norm.source ?? '新需求引入',
                         precondition: norm.precondition ?? '', steps, expected: norm.expected ?? '',
                         status: norm.status ?? '未执行', scriptStatus: norm.scriptStatus ?? '未绑定',
@@ -408,14 +407,14 @@ function defineRoutes(llm) {
                     errors.push(`第 ${raw.indexOf(row) + 2} 行：${e.message}`);
                 }
             }
-        })();
+        });
         return { imported, skipped, errors, libraryId, libraryName: lib.name, fileName: b.fileName ?? null };
     }, { permission: 'case:write' });
     route('GET', '/cases/stats/overview', async () => {
-        return withCache('stats:cases', () => withRead((db) => {
-            const total = db.prepare('SELECT COUNT(*) AS n FROM cases').get().n;
-            const byStatus = db.prepare('SELECT status, COUNT(*) AS n FROM cases GROUP BY status').all();
-            const versioned = db.prepare('SELECT COUNT(*) AS n FROM cases WHERE current_version > 1').get().n;
+        return withCache('stats:cases', () => withRead(async (db) => {
+            const total = (await db.prepare('SELECT COUNT(*) AS n FROM cases').get())?.n ?? 0;
+            const byStatus = await db.prepare('SELECT status, COUNT(*) AS n FROM cases GROUP BY status').all();
+            const versioned = (await db.prepare('SELECT COUNT(*) AS n FROM cases WHERE current_version > 1').get())?.n ?? 0;
             return { total, byStatus, versioned };
         }));
     }, { permission: 'case:read' });
@@ -423,7 +422,7 @@ function defineRoutes(llm) {
     route('GET', '/stats/sharding', async () => withCache('stats:sharding', async () => shardStats()), { permission: 'settings:read' });
     // ---- models ----
     route('GET', '/models', async () => {
-        return getDb().prepare('SELECT * FROM models ORDER BY is_default DESC, id').all().map(mapModel);
+        return (await getDb().prepare('SELECT * FROM models ORDER BY is_default DESC, id').all()).map(mapModel);
     }, { permission: 'settings:read' });
     // DSH 当前实际默认模型（供系统配置页展示，agent.defaultModel 留空时即跟随它）
     route('GET', '/models/dsh-default', async () => {
@@ -435,32 +434,32 @@ function defineRoutes(llm) {
             throw Object.assign(new Error('name / baseUrl / modelId 必填'), { statusCode: 400 });
         const db = getDb();
         const t = now();
-        const res = db.prepare(`INSERT INTO models (name, provider, base_url, model_id, api_key, is_default, created_at, updated_at)
+        const res = await db.prepare(`INSERT INTO models (name, provider, base_url, model_id, api_key, is_default, created_at, updated_at)
       VALUES (?, ?, ?, ?, ?, 0, ?, ?)`).run(b.name, b.provider ?? 'custom', b.baseUrl, b.modelId, b.apiKey ?? '', t, t);
-        return mapModel(db.prepare('SELECT * FROM models WHERE id = ?').get(Number(res.lastInsertRowid)));
+        return mapModel(await db.prepare('SELECT * FROM models WHERE id = ?').get(Number(res.lastInsertRowid)));
     }, { permission: 'settings:write' });
     route('PUT', '/models/:id', async ({ params, body }) => {
         const id = Number(params.id);
         const b = body;
         const db = getDb();
-        const row = getModelOr404(db, id);
+        const row = await getModelOr404(db, id);
         const t = now();
-        db.prepare(`UPDATE models SET name=?, provider=?, base_url=?, model_id=?, api_key=?, is_default=?, updated_at=? WHERE id=?`).run(b.name ?? row.name, b.provider ?? row.provider, b.baseUrl ?? row.base_url, b.modelId ?? row.model_id, b.apiKey ?? row.api_key, b.isDefault === undefined ? row.is_default : (b.isDefault ? 1 : 0), t, id);
+        await db.prepare(`UPDATE models SET name=?, provider=?, base_url=?, model_id=?, api_key=?, is_default=?, updated_at=? WHERE id=?`).run(b.name ?? row.name, b.provider ?? row.provider, b.baseUrl ?? row.base_url, b.modelId ?? row.model_id, b.apiKey ?? row.api_key, b.isDefault === undefined ? row.is_default : (b.isDefault ? 1 : 0), t, id);
         if (b.isDefault)
-            db.prepare(`UPDATE models SET is_default = CASE WHEN id = ? THEN 1 ELSE 0 END`).run(id);
-        return mapModel(db.prepare('SELECT * FROM models WHERE id = ?').get(id));
+            await db.prepare(`UPDATE models SET is_default = CASE WHEN id = ? THEN 1 ELSE 0 END`).run(id);
+        return mapModel(await db.prepare('SELECT * FROM models WHERE id = ?').get(id));
     }, { permission: 'settings:write' });
     route('DELETE', '/models/:id', async ({ params }) => {
         const id = Number(params.id);
         const db = getDb();
-        const row = getModelOr404(db, id);
+        const row = await getModelOr404(db, id);
         if (row.is_default === 1)
             throw Object.assign(new Error('不能删除默认模型'), { statusCode: 400 });
-        db.prepare('DELETE FROM models WHERE id = ?').run(id);
+        await db.prepare('DELETE FROM models WHERE id = ?').run(id);
         return { ok: true };
     }, { permission: 'settings:write' });
     route('POST', '/models/:id/test', async ({ params }) => {
-        const row = getModelOr404(getDb(), Number(params.id));
+        const row = await getModelOr404(getDb(), Number(params.id));
         const cfg = { baseUrl: row.base_url, modelId: row.model_id, apiKey: row.api_key };
         if (!cfg.apiKey)
             return { ok: false, latencyMs: null, message: '未配置 API Key：请在设置中填写后重试' };
@@ -485,7 +484,7 @@ function defineRoutes(llm) {
         }
     }, { permission: 'settings:write' });
     // ---- prompts ----
-    route('GET', '/prompts', async () => withCache('prompts', async () => getDb().prepare('SELECT * FROM prompts ORDER BY builtin DESC, id').all().map(mapPrompt)), { permission: 'settings:read' });
+    route('GET', '/prompts', async () => withCache('prompts', async () => (await getDb().prepare('SELECT * FROM prompts ORDER BY builtin DESC, id').all()).map(mapPrompt)), { permission: 'settings:read' });
     route('POST', '/prompts', async ({ body }) => {
         const b = body;
         if (!b.name || !b.content)
@@ -493,27 +492,27 @@ function defineRoutes(llm) {
         const db = getDb();
         void cacheDel('prompts');
         const t = now();
-        const res = db.prepare(`INSERT INTO prompts (name, role, content, skill, variables, builtin, version, updated_at) VALUES (?, ?, ?, ?, ?, 0, 1, ?)`).run(b.name, b.role ?? '', b.content, b.skill ?? '', JSON.stringify(b.variables ?? []), t);
-        return mapPrompt(db.prepare('SELECT * FROM prompts WHERE id = ?').get(Number(res.lastInsertRowid)));
+        const res = await db.prepare(`INSERT INTO prompts (name, role, content, skill, variables, builtin, version, updated_at) VALUES (?, ?, ?, ?, ?, 0, 1, ?)`).run(b.name, b.role ?? '', b.content, b.skill ?? '', JSON.stringify(b.variables ?? []), t);
+        return mapPrompt(await db.prepare('SELECT * FROM prompts WHERE id = ?').get(Number(res.lastInsertRowid)));
     }, { permission: 'settings:write' });
     route('PUT', '/prompts/:id', async ({ params, body }) => {
         const id = Number(params.id);
         const b = body;
         const db = getDb();
         void cacheDel('prompts');
-        const row = getPromptOr404(db, id);
+        const row = await getPromptOr404(db, id);
         const t = now();
-        db.prepare(`UPDATE prompts SET name=?, role=?, content=?, skill=?, variables=?, version=version+1, updated_at=? WHERE id=?`).run(b.name ?? row.name, b.role ?? row.role, b.content ?? row.content, b.skill ?? row.skill, JSON.stringify(b.variables ?? JSON.parse(row.variables || '[]')), t, id);
-        return mapPrompt(db.prepare('SELECT * FROM prompts WHERE id = ?').get(id));
+        await db.prepare(`UPDATE prompts SET name=?, role=?, content=?, skill=?, variables=?, version=version+1, updated_at=? WHERE id=?`).run(b.name ?? row.name, b.role ?? row.role, b.content ?? row.content, b.skill ?? row.skill, JSON.stringify(b.variables ?? JSON.parse(row.variables || '[]')), t, id);
+        return mapPrompt(await db.prepare('SELECT * FROM prompts WHERE id = ?').get(id));
     }, { permission: 'settings:write' });
     route('DELETE', '/prompts/:id', async ({ params }) => {
         const id = Number(params.id);
         const db = getDb();
-        const row = getPromptOr404(db, id);
+        const row = await getPromptOr404(db, id);
         if (row.builtin === 1)
             throw Object.assign(new Error('内置模板不可删除'), { statusCode: 400 });
         void cacheDel('prompts');
-        db.prepare('DELETE FROM prompts WHERE id = ?').run(id);
+        await db.prepare('DELETE FROM prompts WHERE id = ?').run(id);
         return { ok: true };
     }, { permission: 'settings:write' });
     // ---- tasks ----
@@ -523,26 +522,26 @@ function defineRoutes(llm) {
             throw Object.assign(new Error('type 必填'), { statusCode: 400 });
         const db = getDb();
         const t = now();
-        const taskNo = nextTaskNo();
+        const taskNo = await nextTaskNo();
         // 服务端按 type 归一化标题，防止客户端传错标题（如「更新测试用例」显示成「编写测试用例」）
         const titleByType = {
             pull_repo: '拉取仓库代码', update_repo: '更新仓库代码', write_cases: '编写测试用例',
             update_cases: '更新测试用例', to_script: '用例转自动化脚本',
         };
         const title = b.title ?? titleByType[b.type] ?? b.type;
-        const res = db.prepare(`INSERT INTO tasks (task_no, type, title, library_id, input, status, progress, created_at, updated_at)
+        const res = await db.prepare(`INSERT INTO tasks (task_no, type, title, library_id, input, status, progress, created_at, updated_at)
       VALUES (?, ?, ?, ?, ?, 'pending', 0, ?, ?)`).run(taskNo, b.type, title, b.libraryId ?? null, b.input ?? '', t, t);
         const id = Number(res.lastInsertRowid);
         setImmediate(() => { runTask(id, llm).catch(() => { }); });
-        return mapTask(db.prepare('SELECT * FROM tasks WHERE id = ?').get(id));
+        return mapTask(await db.prepare('SELECT * FROM tasks WHERE id = ?').get(id));
     }, { permission: 'task:read' });
     route('GET', '/tasks', async ({ query }) => {
         const status = query.get('status') ?? '';
         const where = status ? 'WHERE status = @status' : '';
-        return getDb().prepare(`SELECT * FROM tasks ${where} ORDER BY id DESC LIMIT 100`).all(status ? { status } : {}).map(mapTask);
+        return (await getDb().prepare(`SELECT * FROM tasks ${where} ORDER BY id DESC LIMIT 100`).all(status ? { status } : {})).map(mapTask);
     }, { permission: 'task:read' });
     route('GET', '/tasks/:id', async ({ params }) => {
-        const row = getDb().prepare('SELECT * FROM tasks WHERE id = ?').get(Number(params.id));
+        const row = await getDb().prepare('SELECT * FROM tasks WHERE id = ?').get(Number(params.id));
         if (!row)
             throw Object.assign(new Error('任务不存在'), { statusCode: 404 });
         return mapTask(row);
@@ -550,27 +549,27 @@ function defineRoutes(llm) {
     route('POST', '/tasks/:id/retry', async ({ params }) => {
         const id = Number(params.id);
         const db = getDb();
-        const row = db.prepare('SELECT * FROM tasks WHERE id = ?').get(id);
+        const row = await db.prepare('SELECT * FROM tasks WHERE id = ?').get(id);
         if (!row)
             throw Object.assign(new Error('任务不存在'), { statusCode: 404 });
         if (row.status !== 'failed')
             throw Object.assign(new Error('仅失败任务可重试'), { statusCode: 400 });
-        db.prepare(`UPDATE tasks SET status='pending', progress=0, error=NULL, updated_at=? WHERE id=?`).run(now(), id);
+        await db.prepare(`UPDATE tasks SET status='pending', progress=0, error=NULL, updated_at=? WHERE id=?`).run(now(), id);
         setImmediate(() => { runTask(id, llm).catch(() => { }); });
         return { ok: true };
     }, { permission: 'task:manage' });
     route('DELETE', '/tasks/:id', async ({ params }) => {
         const id = Number(params.id);
         const db = getDb();
-        const row = db.prepare('SELECT * FROM tasks WHERE id = ?').get(id);
+        const row = await db.prepare('SELECT * FROM tasks WHERE id = ?').get(id);
         if (!row)
             throw Object.assign(new Error('任务不存在'), { statusCode: 404 });
-        db.prepare('DELETE FROM tasks WHERE id = ?').run(id);
+        await db.prepare('DELETE FROM tasks WHERE id = ?').run(id);
         return { ok: true, deletedTaskNo: row.task_no };
     });
     // ---- 仓库本地目录（拉取仓库代码后查看）----
     route('GET', '/repos', async () => {
-        const rows = getDb().prepare(`SELECT id, name, repo_url, current_version, last_commit, last_synced_at FROM libraries WHERE repo_url != '' ORDER BY name`).all();
+        const rows = await getDb().prepare(`SELECT id, name, repo_url, current_version, last_commit, last_synced_at FROM libraries WHERE repo_url != '' ORDER BY name`).all();
         return rows.map((r) => {
             const dir = repoDirFor(r.name);
             return {
@@ -587,7 +586,7 @@ function defineRoutes(llm) {
     }, { permission: 'library:read' });
     // 自动化脚本目录（to_script 落盘到 workspace/scripts/<lib>）
     route('GET', '/scripts', async () => {
-        const rows = getDb().prepare('SELECT id, name FROM libraries ORDER BY name').all();
+        const rows = await getDb().prepare('SELECT id, name FROM libraries ORDER BY name').all();
         return rows.map((r) => {
             const dir = scriptsDirFor(r.name);
             let fileCount = 0;
@@ -602,7 +601,7 @@ function defineRoutes(llm) {
     }, { permission: 'library:read' });
     route('GET', '/repos/:id/files', async ({ params, query }) => {
         const db = getDb();
-        const lib = db.prepare('SELECT id, name FROM libraries WHERE id = ?').get(Number(params.id));
+        const lib = await db.prepare('SELECT id, name FROM libraries WHERE id = ?').get(Number(params.id));
         if (!lib)
             throw Object.assign(new Error('三方库不存在'), { statusCode: 404 });
         const kind = query.get('root') === 'scripts' ? 'scripts' : 'repos';
@@ -632,7 +631,7 @@ function defineRoutes(llm) {
     }, { permission: 'library:read' });
     route('GET', '/repos/:id/file', async ({ params, query }) => {
         const db = getDb();
-        const lib = db.prepare('SELECT id, name FROM libraries WHERE id = ?').get(Number(params.id));
+        const lib = await db.prepare('SELECT id, name FROM libraries WHERE id = ?').get(Number(params.id));
         if (!lib)
             throw Object.assign(new Error('三方库不存在'), { statusCode: 404 });
         const kind = query.get('root') === 'scripts' ? 'scripts' : 'repos';
@@ -654,7 +653,7 @@ function defineRoutes(llm) {
     // 删除脚本文件（仅允许 scripts 目录下的 .ts，带路径穿越防护）
     route('DELETE', '/repos/:libraryId/file', async ({ params, query }) => {
         const db = getDb();
-        const lib = db.prepare('SELECT id, name FROM libraries WHERE id = ?').get(Number(params.libraryId));
+        const lib = await db.prepare('SELECT id, name FROM libraries WHERE id = ?').get(Number(params.libraryId));
         if (!lib)
             throw Object.assign(new Error('三方库不存在'), { statusCode: 404 });
         const kind = query.get('root') === 'scripts' ? 'scripts' : 'repos';
@@ -673,8 +672,8 @@ function defineRoutes(llm) {
     // ---- plans ----
     route('GET', '/plans', async () => {
         const db = getDb();
-        const rows = db.prepare('SELECT * FROM plans ORDER BY id DESC LIMIT 100').all();
-        const stats = db.prepare(`SELECT plan_id,
+        const rows = await db.prepare('SELECT * FROM plans ORDER BY id DESC LIMIT 100').all();
+        const stats = await db.prepare(`SELECT plan_id,
       SUM(CASE WHEN status='passed' THEN 1 ELSE 0 END) AS passed,
       SUM(CASE WHEN status='failed' THEN 1 ELSE 0 END) AS failed,
       COUNT(*) AS total FROM executions GROUP BY plan_id`).all();
@@ -686,10 +685,10 @@ function defineRoutes(llm) {
             throw Object.assign(new Error('name / type 必填'), { statusCode: 400 });
         const db = getDb();
         const t = now();
-        const planNo = nextPlanNo();
+        const planNo = await nextPlanNo();
         const scope = b.scope ?? { libraryIds: [], caseIds: [] };
         const deviceIds = b.deviceIds ?? [];
-        const res = db.prepare(`INSERT INTO plans (plan_no, name, type, cron, scope, device_ids, status, fail_policy, created_at, updated_at)
+        const res = await db.prepare(`INSERT INTO plans (plan_no, name, type, cron, scope, device_ids, status, fail_policy, created_at, updated_at)
       VALUES (?, ?, ?, ?, ?, ?, 'draft', ?, ?, ?)`).run(planNo, b.name, b.type, b.cron ?? null, JSON.stringify(scope), JSON.stringify(deviceIds), b.failPolicy ?? 'continue', t, t);
         const id = Number(res.lastInsertRowid);
         if (b.type === 'scheduled' && b.cron) {
@@ -697,28 +696,28 @@ function defineRoutes(llm) {
                 registerScheduledPlan(id, b.cron);
             }
             catch (e) {
-                db.prepare('DELETE FROM plans WHERE id = ?').run(id);
+                await db.prepare('DELETE FROM plans WHERE id = ?').run(id);
                 throw e;
             }
         }
         if (b.type === 'immediate') {
-            db.prepare(`UPDATE plans SET status='running', updated_at=? WHERE id=?`).run(t, id);
+            await db.prepare(`UPDATE plans SET status='running', updated_at=? WHERE id=?`).run(t, id);
             setImmediate(() => { executePlan(id).catch(() => { }); });
         }
-        return mapPlan(db.prepare('SELECT * FROM plans WHERE id = ?').get(id));
+        return mapPlan(await db.prepare('SELECT * FROM plans WHERE id = ?').get(id));
     }, { permission: 'plan:create' });
     route('POST', '/plans/:id/run', async ({ params }) => {
         const id = Number(params.id);
         const db = getDb();
-        const row = db.prepare('SELECT * FROM plans WHERE id = ?').get(id);
+        const row = await db.prepare('SELECT * FROM plans WHERE id = ?').get(id);
         if (!row)
             throw Object.assign(new Error('计划不存在'), { statusCode: 404 });
-        db.prepare(`UPDATE plans SET status='running', updated_at=? WHERE id=?`).run(now(), id);
+        await db.prepare(`UPDATE plans SET status='running', updated_at=? WHERE id=?`).run(now(), id);
         setImmediate(() => { executePlan(id).catch(() => { }); });
         return { ok: true };
     }, { permission: 'exec:run' });
     route('DELETE', '/plans/:id', async ({ params }) => {
-        getDb().prepare('DELETE FROM plans WHERE id = ?').run(Number(params.id));
+        await getDb().prepare('DELETE FROM plans WHERE id = ?').run(Number(params.id));
         return { ok: true };
     }, { permission: 'plan:manage' });
     // ---- executions ----
@@ -737,7 +736,7 @@ function defineRoutes(llm) {
             p.status = status;
         }
         const where = conds.length ? `WHERE ${conds.join(' AND ')}` : '';
-        const rows = getDb().prepare(`SELECT e.*, c.case_no, c.name AS case_name, l.name AS library_name, d.serial AS device_serial
+        const rows = await getDb().prepare(`SELECT e.*, c.case_no, c.name AS case_name, l.name AS library_name, d.serial AS device_serial
        FROM executions e
        LEFT JOIN cases c ON c.id = e.case_id
        LEFT JOIN libraries l ON l.id = e.library_id
@@ -746,7 +745,7 @@ function defineRoutes(llm) {
         return rows.map(mapExecution);
     }, { permission: 'exec:read' });
     route('GET', '/executions/:id', async ({ params }) => {
-        const row = getDb().prepare(`SELECT e.*, c.case_no, c.name AS case_name, l.name AS library_name, d.serial AS device_serial
+        const row = await getDb().prepare(`SELECT e.*, c.case_no, c.name AS case_name, l.name AS library_name, d.serial AS device_serial
        FROM executions e
        LEFT JOIN cases c ON c.id = e.case_id
        LEFT JOIN libraries l ON l.id = e.library_id
@@ -762,7 +761,7 @@ function defineRoutes(llm) {
         const question = String(body?.question ?? '').trim();
         if (!question)
             throw Object.assign(new Error('question 必填'), { statusCode: 400 });
-        const row = getDb().prepare(`SELECT e.*, c.case_no, c.name AS case_name, l.name AS library_name
+        const row = await getDb().prepare(`SELECT e.*, c.case_no, c.name AS case_name, l.name AS library_name
        FROM executions e
        JOIN cases c ON c.id = e.case_id
        JOIN libraries l ON l.id = e.library_id
@@ -797,12 +796,12 @@ ${(row.logs ?? '').slice(0, 4000) || '（无）'}
         }
     }, { permission: 'exec:run' });
     // ---- devices ----
-    route('GET', '/devices', async () => withCache('devices', async () => getDb().prepare(`SELECT * FROM devices ORDER BY status = 'online' DESC, id`).all().map(mapDevice)), { permission: 'device:read' });
+    route('GET', '/devices', async () => withCache('devices', async () => (await getDb().prepare(`SELECT * FROM devices ORDER BY status = 'online' DESC, id`).all()).map(mapDevice)), { permission: 'device:read' });
     route('POST', '/devices/scan', async () => {
         const db = getDb();
         void cacheDel('devices');
         const t = now();
-        const count = () => db.prepare('SELECT COUNT(*) AS n FROM devices').get().n;
+        const count = async () => (await db.prepare('SELECT COUNT(*) AS n FROM devices').get())?.n ?? 0;
         // 真实识别：hdc list targets + param get
         const hdcOk = await hdcAvailable();
         if (hdcOk) {
@@ -811,18 +810,18 @@ ${(row.logs ?? '').slice(0, 4000) || '（无）'}
                 const info = await deviceInfo(targets[0]);
                 for (const s of targets) {
                     const d = s === targets[0] ? info : await deviceInfo(s);
-                    db.prepare(`INSERT INTO devices (serial, model, os_version, status, last_seen_at, created_at)
+                    await db.prepare(`INSERT INTO devices (serial, model, os_version, status, last_seen_at, created_at)
             VALUES (?, ?, ?, 'online', ?, ?)
-            ON CONFLICT(serial) DO UPDATE SET model=excluded.model, os_version=excluded.os_version, status='online', last_seen_at=excluded.last_seen_at`)
+            ON DUPLICATE KEY UPDATE model=VALUES(model), os_version=VALUES(os_version), status='online', last_seen_at=VALUES(last_seen_at)`)
                         .run(s, d.model, d.osVersion, t, t);
                 }
                 const marks = targets.map(() => '?').join(',');
-                db.prepare(`UPDATE devices SET status='offline' WHERE status='online' AND serial NOT IN (${marks})`).run(...targets);
-                const row = db.prepare('SELECT * FROM devices WHERE serial = ?').get(targets[0]);
+                await db.prepare(`UPDATE devices SET status='offline' WHERE status='online' AND serial NOT IN (${marks})`).run(...targets);
+                const row = await db.prepare('SELECT * FROM devices WHERE serial = ?').get(targets[0]);
                 return {
                     discovered: true,
                     device: mapDevice(row),
-                    total: count(),
+                    total: await count(),
                     source: 'hdc',
                     note: `hdc 识别到 ${targets.length} 台设备（已保存/更新在线状态）`,
                 };
@@ -835,35 +834,35 @@ ${(row.logs ?? '').slice(0, 4000) || '（无）'}
         const oss = ['HarmonyOS 5.0.1', 'HarmonyOS 4.2', 'OpenHarmony 5.0.2'];
         const model = models[Math.floor(Math.random() * models.length)];
         const os = oss[Math.floor(Math.random() * oss.length)];
-        const res = db.prepare(`INSERT OR IGNORE INTO devices (serial, model, os_version, status, battery, memory_usage, last_seen_at, created_at)
+        const res = await db.prepare(`INSERT IGNORE INTO devices (serial, model, os_version, status, battery, memory_usage, last_seen_at, created_at)
       VALUES (?, ?, ?, 'online', ?, ?, ?, ?)`).run(serial, model, os, 60 + Math.floor(Math.random() * 40), 40 + Math.floor(Math.random() * 40), t, t);
-        const row = db.prepare('SELECT * FROM devices WHERE serial = ?').get(serial);
-        return { discovered: res.changes > 0, device: mapDevice(row), total: count(), source: 'simulate', note };
+        const row = await db.prepare('SELECT * FROM devices WHERE serial = ?').get(serial);
+        return { discovered: res.changes > 0, device: mapDevice(row), total: await count(), source: 'simulate', note };
     }, { permission: 'device:manage' });
     route('PUT', '/devices/:id', async ({ params, body }) => {
         const id = Number(params.id);
         const b = body;
         const db = getDb();
         void cacheDel('devices');
-        const row = db.prepare('SELECT * FROM devices WHERE id = ?').get(id);
+        const row = await db.prepare('SELECT * FROM devices WHERE id = ?').get(id);
         if (!row)
             throw Object.assign(new Error('设备不存在'), { statusCode: 404 });
-        db.prepare(`UPDATE devices SET model=?, os_version=?, status=?, battery=?, memory_usage=?, last_seen_at=? WHERE id=?`).run(b.model ?? row.model, b.osVersion ?? row.os_version, b.status ?? row.status, b.battery ?? row.battery, b.memoryUsage ?? row.memory_usage, now(), id);
-        return mapDevice(db.prepare('SELECT * FROM devices WHERE id = ?').get(id));
+        await db.prepare(`UPDATE devices SET model=?, os_version=?, status=?, battery=?, memory_usage=?, last_seen_at=? WHERE id=?`).run(b.model ?? row.model, b.osVersion ?? row.os_version, b.status ?? row.status, b.battery ?? row.battery, b.memoryUsage ?? row.memory_usage, now(), id);
+        return mapDevice(await db.prepare('SELECT * FROM devices WHERE id = ?').get(id));
     }, { permission: 'device:manage' });
     route('POST', '/devices/:id/connect', async ({ params }) => {
         const id = Number(params.id);
         const db = getDb();
         void cacheDel('devices');
-        const row = db.prepare('SELECT * FROM devices WHERE id = ?').get(id);
+        const row = await db.prepare('SELECT * FROM devices WHERE id = ?').get(id);
         if (!row)
             throw Object.assign(new Error('设备不存在'), { statusCode: 404 });
-        db.prepare(`UPDATE devices SET status='online', last_seen_at=? WHERE id=?`).run(now(), id);
-        return mapDevice(db.prepare('SELECT * FROM devices WHERE id = ?').get(id));
+        await db.prepare(`UPDATE devices SET status='online', last_seen_at=? WHERE id=?`).run(now(), id);
+        return mapDevice(await db.prepare('SELECT * FROM devices WHERE id = ?').get(id));
     }, { permission: 'device:manage' });
     route('DELETE', '/devices/:id', async ({ params }) => {
         void cacheDel('devices');
-        getDb().prepare('DELETE FROM devices WHERE id = ?').run(Number(params.id));
+        await getDb().prepare('DELETE FROM devices WHERE id = ?').run(Number(params.id));
         return { ok: true };
     }, { permission: 'device:manage' });
     // ---- 数据分析 / 归因分析 ----
@@ -887,13 +886,13 @@ ${(row.logs ?? '').slice(0, 4000) || '（无）'}
                 p.libraryId = libraryId;
             }
             const where = conds.length ? `WHERE ${conds.join(' AND ')}` : '';
-            return getDb().prepare(`SELECT * FROM analyses ${where} ORDER BY id DESC LIMIT 100`).all(p).map(mapAnalysis);
+            return (await getDb().prepare(`SELECT * FROM analyses ${where} ORDER BY id DESC LIMIT 100`).all(p)).map(mapAnalysis);
         });
     }, { permission: 'analysis:read' });
     route('POST', '/analyses/pr/:libraryId', async ({ params, body }) => {
         void cacheDel('analyses');
         const db = getDb();
-        const lib = db.prepare('SELECT * FROM libraries WHERE id = ?').get(Number(params.libraryId));
+        const lib = await db.prepare('SELECT * FROM libraries WHERE id = ?').get(Number(params.libraryId));
         if (!lib)
             throw Object.assign(new Error('三方库不存在'), { statusCode: 404 });
         const repoPath = parseRepoPath(lib.repo_url);
@@ -946,7 +945,7 @@ ${(row.logs ?? '').slice(0, 4000) || '（无）'}
     route('POST', '/analyses/case-updates/:libraryId', async ({ params, body }) => {
         void cacheDel('analyses');
         const db = getDb();
-        const lib = db.prepare('SELECT * FROM libraries WHERE id = ?').get(Number(params.libraryId));
+        const lib = await db.prepare('SELECT * FROM libraries WHERE id = ?').get(Number(params.libraryId));
         if (!lib)
             throw Object.assign(new Error('三方库不存在'), { statusCode: 404 });
         const repoPath = parseRepoPath(lib.repo_url);
@@ -1006,7 +1005,7 @@ ${(row.logs ?? '').slice(0, 4000) || '（无）'}
     route('DELETE', '/analyses/round/:round', async ({ params }) => {
         const round = String(params.round);
         const db = getDb();
-        const n = db.prepare('DELETE FROM analyses WHERE round = ?').run(round).changes;
+        const n = (await db.prepare('DELETE FROM analyses WHERE round = ?').run(round)).changes;
         void cacheDel('analyses');
         return { ok: true, deleted: n };
     }, { permission: 'analysis:delete' });
@@ -1014,18 +1013,18 @@ ${(row.logs ?? '').slice(0, 4000) || '（无）'}
     route('DELETE', '/analyses/library/:libraryId', async ({ params }) => {
         const libId = Number(params.libraryId);
         const db = getDb();
-        const n = db.prepare('DELETE FROM analyses WHERE library_id = ?').run(libId).changes;
+        const n = (await db.prepare('DELETE FROM analyses WHERE library_id = ?').run(libId)).changes;
         void cacheDel('analyses');
         return { ok: true, deleted: n };
     }, { permission: 'analysis:delete' });
     route('DELETE', '/analyses/:id', async ({ params }) => {
         const id = Number(params.id);
         const db = getDb();
-        const row = db.prepare('SELECT * FROM analyses WHERE id = ?').get(id);
+        const row = await db.prepare('SELECT * FROM analyses WHERE id = ?').get(id);
         if (!row)
             throw Object.assign(new Error('分析结果不存在'), { statusCode: 404 });
         void cacheDel('analyses');
-        db.prepare('DELETE FROM analyses WHERE id = ?').run(id);
+        await db.prepare('DELETE FROM analyses WHERE id = ?').run(id);
         return { ok: true, deletedKind: row.kind };
     }, { permission: 'analysis:delete' });
     route('POST', '/analyses/attribution', async ({ body }) => {
@@ -1180,31 +1179,31 @@ function mapExecution(row) {
         caseNo: row.case_no, caseName: row.case_name, libraryName: row.library_name, deviceSerial: row.device_serial,
     };
 }
-function getCaseOr404(db, id) {
-    const row = db.prepare('SELECT * FROM cases WHERE id = ?').get(id);
+async function getCaseOr404(db, id) {
+    const row = await db.prepare('SELECT * FROM cases WHERE id = ?').get(id);
     if (!row)
         throw Object.assign(new Error('用例不存在'), { statusCode: 404 });
     return row;
 }
-function getModelOr404(db, id) {
-    const row = db.prepare('SELECT * FROM models WHERE id = ?').get(id);
+async function getModelOr404(db, id) {
+    const row = await db.prepare('SELECT * FROM models WHERE id = ?').get(id);
     if (!row)
         throw Object.assign(new Error('模型不存在'), { statusCode: 404 });
     return row;
 }
-function getPromptOr404(db, id) {
-    const row = db.prepare('SELECT * FROM prompts WHERE id = ?').get(id);
+async function getPromptOr404(db, id) {
+    const row = await db.prepare('SELECT * FROM prompts WHERE id = ?').get(id);
     if (!row)
         throw Object.assign(new Error('模板不存在'), { statusCode: 404 });
     return row;
 }
-function nextTaskNo() {
+async function nextTaskNo() {
     const db = getDb();
-    const row = db.prepare(`SELECT MAX(CAST(SUBSTR(task_no, 3) AS INTEGER)) AS m FROM tasks`).get();
+    const row = (await db.prepare(`SELECT MAX(CAST(SUBSTRING(task_no, 3) AS UNSIGNED)) AS m FROM tasks`).get()) ?? { m: null };
     return `T-${(row.m ?? 2400) + 1}`;
 }
-function nextPlanNo() {
+async function nextPlanNo() {
     const db = getDb();
-    const row = db.prepare(`SELECT MAX(CAST(SUBSTR(plan_no, 3) AS INTEGER)) AS m FROM plans`).get();
+    const row = (await db.prepare(`SELECT MAX(CAST(SUBSTRING(plan_no, 3) AS UNSIGNED)) AS m FROM plans`).get()) ?? { m: null };
     return `P-${(row.m ?? 1000) + 1}`;
 }

@@ -9,7 +9,7 @@ import { executeCaseSteps, hdcAvailable, listTargets } from './hdc.js';
 import { getSetting } from './settings.js';
 import { parseScriptSteps, readBoundScript } from './scriptRunner.js';
 /** 解析计划 scope → 用例 id 列表（空 = 全量） */
-function resolveCaseIds(db, scope) {
+async function resolveCaseIds(db, scope) {
     if (scope.caseIds && scope.caseIds.length > 0) {
         const marks = scope.caseIds.map(() => '?').join(',');
         return db.prepare(`SELECT id, library_id FROM cases WHERE id IN (${marks})`).all(...scope.caseIds);
@@ -67,15 +67,15 @@ ${fails.map((f) => `- 步骤 ${f.seq}「${f.desc}」：${f.log}`).join('\n')}
 }
 export async function executePlan(planId) {
     const db = getDb();
-    const plan = db.prepare('SELECT * FROM plans WHERE id = ?').get(planId);
+    const plan = await db.prepare('SELECT * FROM plans WHERE id = ?').get(planId);
     if (!plan)
         return;
     const t = now();
     const t2 = now();
-    db.prepare(`UPDATE plans SET status='running', updated_at=? WHERE id=?`).run(t, planId);
+    await db.prepare(`UPDATE plans SET status='running', updated_at=? WHERE id=?`).run(t, planId);
     const scope = JSON.parse(plan.scope || '{"libraryIds":[],"caseIds":[]}');
-    const cases = resolveCaseIds(db, scope);
-    const devices = JSON.parse(plan.device_ids || '[]').map((id) => db.prepare('SELECT * FROM devices WHERE id = ?').get(id)).filter(Boolean);
+    const cases = await resolveCaseIds(db, scope);
+    const devices = (await Promise.all(JSON.parse(plan.device_ids || '[]').map(async (id) => await db.prepare('SELECT * FROM devices WHERE id = ?').get(id)))).filter(Boolean);
     const device = devices[0] ?? { id: null, serial: 'SIM-0000', model: '模拟设备' };
     // 限制单次执行规模（演示）：全量计划抽样 60 条，避免 4.5 万条全跑
     const fullSample = getSetting('exec.planSampleFull', 60);
@@ -121,12 +121,12 @@ export async function executePlan(planId) {
         };
     };
     for (const c of sample) {
-        const caseRow = db.prepare(`SELECT c.*, l.name AS library_name FROM cases c JOIN libraries l ON l.id = c.library_id WHERE c.id = ?`).get(c.id);
+        const caseRow = await db.prepare(`SELECT c.*, l.name AS library_name FROM cases c JOIN libraries l ON l.id = c.library_id WHERE c.id = ?`).get(c.id);
         if (!caseRow)
             continue;
         // failPolicy: abort_library — 该库已有失败用例时跳过后续用例
         if (abortedLibs.has(c.library_id)) {
-            insExec.run(planId, c.id, c.library_id, device.id, 'skipped', JSON.stringify([{ seq: 1, desc: '整库失败中止，本用例跳过', status: 'skipped', durationMs: 0 }]), '按失败策略 abort_library：该库已有失败用例，后续用例跳过。', `[${t}] 设备 ${device.serial} · 用例 ${caseRow.case_no} 跳过（整库中止）`, t, now());
+            await insExec.run(planId, c.id, c.library_id, device.id, 'skipped', JSON.stringify([{ seq: 1, desc: '整库失败中止，本用例跳过', status: 'skipped', durationMs: 0 }]), '按失败策略 abort_library：该库已有失败用例，后续用例跳过。', `[${t}] 设备 ${device.serial} · 用例 ${caseRow.case_no} 跳过（整库中止）`, t, now());
             skipped++;
             continue;
         }
@@ -154,8 +154,8 @@ export async function executePlan(planId) {
             failed++;
         else
             passed++;
-        insExec.run(planId, c.id, c.library_id, device.id, result.status, result.stepsJson, result.thinking, result.logs, t, now());
+        await insExec.run(planId, c.id, c.library_id, device.id, result.status, result.stepsJson, result.thinking, result.logs, t, now());
     }
-    db.prepare(`UPDATE plans SET status='done', last_run_at=?, updated_at=? WHERE id=?`).run(t2, t2, planId);
+    await db.prepare(`UPDATE plans SET status='done', last_run_at=?, updated_at=? WHERE id=?`).run(t2, t2, planId);
     console.log(`[plan #${planId}] ${plan.name} 执行完成：${sample.length} 用例，通过 ${passed} / 失败 ${failed} / 跳过 ${skipped}（${useReal ? 'hdc 真机' : '模拟'}）`);
 }

@@ -1,96 +1,160 @@
-// 插件数据目录：autotest/dsh-autotest/data/autotest.db（与独立版 server 数据分离）
-// 可用环境变量 AUTOTEST_DB 覆盖
-import Database from 'better-sqlite3';
+// 业务数据源：MySQL（服务器化，多用户共享）
+//  - 连接池 mysql2/promise；保持 getDb().prepare().get/all/run 调用形态，方法全部异步
+//  - 参数支持位置 ? 与命名 @name（内部转换为 ?）
+//  - settings 走内存缓存（见 services/settings.ts），保证同步读取
+import mysql from 'mysql2/promise';
+import { AsyncLocalStorage } from 'node:async_hooks';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { schemaStatements } from './schema.js';
+let pool = null;
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
-export function dbPath() {
-    if (process.env.AUTOTEST_DB)
-        return process.env.AUTOTEST_DB;
-    const dataDir = path.resolve(__dirname, '..', '..', 'data');
-    fs.mkdirSync(dataDir, { recursive: true });
-    return path.join(dataDir, 'autotest.db');
-}
-let db = null;
-// M7 连接池：主连接负责写（better-sqlite3 单写者），读池 N 个只读连接轮询，
-// 热点读路径通过 withRead 分发，配合 WAL 支持并发读。
-const READ_POOL_SIZE = 4;
-let readPool = null;
-let readCursor = 0;
-export function getDb() {
-    if (!db) {
-        db = new Database(dbPath());
-        db.pragma('journal_mode = WAL');
-        db.pragma('foreign_keys = ON');
-        db.pragma('busy_timeout = 5000');
+/** 连接串引导：环境变量 → data/.mysql-url（迁移脚本写入）→ '' */
+export function defaultUrlProvider() {
+    if (process.env.AUTOTEST_MYSQL_URL)
+        return process.env.AUTOTEST_MYSQL_URL.trim();
+    try {
+        const f = path.resolve(__dirname, '../../data/.mysql-url');
+        if (fs.existsSync(f))
+            return fs.readFileSync(f, 'utf8').trim();
     }
-    return db;
+    catch { /* 忽略 */ }
+    return '';
 }
-export function withRead(fn) {
-    if (!readPool) {
-        readPool = Array.from({ length: READ_POOL_SIZE }, () => new Database(dbPath(), { readonly: true }));
+let urlProvider = defaultUrlProvider;
+let readyPromise = null;
+const txStore = new AsyncLocalStorage();
+/** 注入 MySQL 连接串提供者（index.ts 从 settings 缓存注入）。 */
+export function setDbUrlProvider(fn) {
+    urlProvider = fn;
+}
+export function mysqlPool() {
+    if (!pool) {
+        const url = urlProvider().trim();
+        if (!url)
+            throw new Error('未配置 MySQL 连接（系统配置 db.mysqlUrl 或环境变量 AUTOTEST_MYSQL_URL）');
+        pool = mysql.createPool({
+            uri: url,
+            waitForConnections: true,
+            connectionLimit: 12,
+            charset: 'utf8mb4',
+            timezone: 'Z',
+            dateStrings: true,
+            supportBigNumbers: true,
+            bigNumberStrings: false,
+        });
     }
-    const conn = readPool[readCursor % readPool.length];
-    readCursor++;
-    return fn(conn);
+    return pool;
+}
+/** 统一查询入口：事务上下文内走事务连接，否则走连接池。 */
+async function query(sql, args) {
+    const tx = txStore.getStore();
+    if (tx) {
+        const [rows] = await tx.query(sql, args);
+        return rows;
+    }
+    const [rows] = await mysqlPool().query(sql, args);
+    return rows;
 }
 export function now() {
     return new Date().toISOString().replace('T', ' ').slice(0, 19);
 }
-/** 幂等建表；libraries 为空时自动灌入种子数据（开箱即用） */
-export function ensureSchemaAndSeed() {
-    const db = getDb();
-    db.exec(SCHEMA);
-    // 轻量迁移：旧库补充 last_commit 列（已存在时忽略）
-    try {
-        db.exec(`ALTER TABLE libraries ADD COLUMN last_commit TEXT NOT NULL DEFAULT ''`);
+// ---------- 参数转换（mysql2 不支持 @name 命名参数） ----------
+function normalize(sql, params) {
+    // 单个对象参数 → 命名参数 @name 转换；其余按位置参数
+    if (params.length === 1 && params[0] && typeof params[0] === 'object' && !Array.isArray(params[0])) {
+        const named = params[0];
+        const args = [];
+        const out = sql.replace(/@([A-Za-z0-9_]+)/g, (_, k) => {
+            args.push(named[k]);
+            return '?';
+        });
+        return { sql: out, args };
     }
-    catch {
-        /* 列已存在 */
-    }
-    try {
-        db.exec(`ALTER TABLE cases ADD COLUMN dts_url TEXT NOT NULL DEFAULT ''`);
-    }
-    catch {
-        /* 列已存在 */
-    }
-    try {
-        db.exec(`ALTER TABLE prompts ADD COLUMN skill TEXT NOT NULL DEFAULT ''`);
-    }
-    catch {
-        /* 列已存在 */
-    }
-    try {
-        db.exec(`ALTER TABLE tasks ADD COLUMN trace TEXT NOT NULL DEFAULT '[]'`);
-    }
-    catch {
-        /* 列已存在 */
-    }
-    try {
-        db.exec(`ALTER TABLE analyses ADD COLUMN round TEXT NOT NULL DEFAULT ''`);
-    }
-    catch {
-        /* 列已存在 */
-    }
-    const n = db.prepare('SELECT COUNT(*) AS n FROM libraries').get().n;
-    if (n === 0) {
-        seed(db);
-    }
-    // 修复历史坏设置行：JSON 解析失败时按原始字符串重写为合法 JSON（如 app.workspace 单反斜杠路径）
-    const badSettings = db.prepare('SELECT key, value FROM settings').all();
-    for (const s of badSettings) {
-        try {
-            JSON.parse(s.value);
-        }
-        catch {
-            let raw = String(s.value).trim();
-            if (raw.length >= 2 && raw.startsWith('"') && raw.endsWith('"'))
-                raw = raw.slice(1, -1);
-            db.prepare('UPDATE settings SET value = ?, updated_at = ? WHERE key = ?').run(JSON.stringify(raw), now(), s.key);
-            console.log(`[dsh-autotest] 已修复损坏的设置项 ${s.key} → ${JSON.stringify(raw)}`);
-        }
+    return { sql, args: params };
+}
+export function prepare(sql) {
+    return {
+        async get(...params) {
+            const { sql: s, args } = normalize(sql, params);
+            const rows = await query(s, args);
+            return rows[0];
+        },
+        async all(...params) {
+            const { sql: s, args } = normalize(sql, params);
+            return await query(s, args);
+        },
+        async run(...params) {
+            const { sql: s, args } = normalize(sql, params);
+            const r = await query(s, args);
+            return { changes: r.affectedRows, lastInsertRowid: Number(r.insertId) };
+        },
+    };
+}
+export function getDb() {
+    return { prepare, exec, transaction };
+}
+/** 执行多语句（按分号拆分，供 DDL / 迁移用）。 */
+export async function exec(sql) {
+    const stmts = sql.split(';').map((s) => s.trim()).filter((s) => s && !s.startsWith('--'));
+    for (const s of stmts) {
+        await query(s, []);
     }
 }
-import { SCHEMA } from './schema.js';
-import { seed } from './seed.js';
+/** 事务：从池取连接，BEGIN/COMMIT/ROLLBACK。 */
+export async function transaction(fn) {
+    const conn = await mysqlPool().getConnection();
+    try {
+        await conn.beginTransaction();
+        const r = await txStore.run(conn, () => fn());
+        await conn.commit();
+        return r;
+    }
+    catch (e) {
+        try {
+            await conn.rollback();
+        }
+        catch { /* ignore */ }
+        throw e;
+    }
+    finally {
+        conn.release();
+    }
+}
+/** 读路径（MySQL 连接池天然并发，直接走 facade）。 */
+export async function withRead(fn) {
+    return fn(getDb());
+}
+/** 建表 + settings 加载 + 种子（幂等，首次请求前完成）。 */
+export async function ensureReady() {
+    if (!readyPromise) {
+        readyPromise = (async () => {
+            for (const stmt of schemaStatements()) {
+                try {
+                    await mysqlPool().query(stmt);
+                }
+                catch (e) {
+                    const msg = e.message;
+                    if (/Duplicate key name|already exists/i.test(msg))
+                        continue;
+                    throw e;
+                }
+            }
+            // settings 内存缓存加载（来自 MySQL settings 表）
+            const { loadSettings } = await import('../services/settings.js');
+            await loadSettings();
+            // 种子：libraries 为空时灌入
+            const row = await getDb().prepare('SELECT COUNT(*) AS n FROM libraries').get();
+            if (!row || row.n === 0) {
+                const { seed } = await import('./seed.js');
+                await seed();
+            }
+            console.log('[dsh-autotest] 业务库就绪（MySQL）');
+        })().catch((e) => {
+            readyPromise = null;
+            throw e;
+        });
+    }
+    return readyPromise;
+}

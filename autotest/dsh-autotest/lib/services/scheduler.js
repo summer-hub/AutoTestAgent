@@ -3,9 +3,9 @@ import cron from 'node-cron';
 import { getDb } from '../db/connection.js';
 import { executePlan } from './planExecutor.js';
 const jobs = new Map();
-export function startScheduler() {
+export async function startScheduler() {
     const db = getDb();
-    const plans = db.prepare(`SELECT id, name, cron FROM plans WHERE type = 'scheduled' AND status != 'stopped' AND cron IS NOT NULL`).all();
+    const plans = await db.prepare(`SELECT id, name, cron FROM plans WHERE type = 'scheduled' AND status != 'stopped' AND cron IS NOT NULL`).all();
     for (const p of plans) {
         try {
             if (!cron.validate(p.cron)) {

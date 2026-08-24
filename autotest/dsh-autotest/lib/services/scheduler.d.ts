@@ -1,2 +1,2 @@
-export declare function startScheduler(): void;
+export declare function startScheduler(): Promise<void>;
 export declare function registerScheduledPlan(planId: number, cronExpr: string): void;

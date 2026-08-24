@@ -1,6 +1,7 @@
-// 系统配置服务：settings 表（key-value JSON）+ 默认值；业务参数全部从这里读取。
-// 前端「系统配置」页读写这些键，改完即生效（读取时实时取最新值）。
-import { getDb, now } from '../db/connection.js';
+// 系统配置服务：settings 表（MySQL，key-value JSON）+ 默认值
+//  - 启动时 loadSettings() 全量加载进内存缓存，业务读取保持同步
+//  - setSetting 同步更新内存 + 异步写库
+import { mysqlPool, now } from '../db/connection.js';
 export const SETTING_DEFAULTS = {
     'app.workspace': 'D:\\autotest\\workspace',
     'agent.defaultModel': '',
@@ -18,49 +19,62 @@ export const SETTING_DEFAULTS = {
     'device.appAbilities': '{}',
     'exec.scriptMode': 'script',
     // ---- 多用户 / 服务器化 ----
-    'db.mysqlUrl': '', // MySQL 连接串（认证数据源；业务库迁移后统一）
-    'auth.jwtSecret': '', // JWT 签名密钥（首次启动自动生成并持久化）
-    'auth.bootstrapPassword': '', // 首启 admin 密码（留空则随机生成并打印到日志）
-    'auth.inviteOnly': true, // 注册必须凭邀请码
-    'auth.accessTtlSec': 3600, // access token 有效期（秒）
-    'auth.refreshTtlDays': 7, // refresh token 有效期（天）
+    'db.mysqlUrl': '',
+    'auth.jwtSecret': '',
+    'auth.bootstrapPassword': '',
+    'auth.inviteOnly': true,
+    'auth.accessTtlSec': 3600,
+    'auth.refreshTtlDays': 7,
 };
-/** 读取配置（未设置/解析失败回默认值）。 */
-export function getSetting(key, fallback) {
-    const row = getDb().prepare('SELECT value FROM settings WHERE key = ?').get(key);
-    if (!row)
-        return fallback ?? SETTING_DEFAULTS[key];
+let cache = null;
+function parseValue(raw, fallback, key) {
     try {
-        const parsed = JSON.parse(row.value);
-        return parsed;
+        return JSON.parse(raw);
     }
     catch {
-        // 历史坏数据（如单反斜杠路径写入后 JSON 解析失败）：按原始字符串读取，避免静默回退默认值
-        let raw = String(row.value).trim();
-        if (raw.length >= 2 && raw.startsWith('"') && raw.endsWith('"'))
-            raw = raw.slice(1, -1);
-        return raw;
+        // 历史坏数据（如单反斜杠路径写入后 JSON 解析失败）：按原始字符串读取
+        let v = raw.trim();
+        if (v.length >= 2 && v.startsWith('"') && v.endsWith('"'))
+            v = v.slice(1, -1);
+        return v;
     }
+}
+/** 读取配置（未设置/解析失败回默认值）。 */
+export function getSetting(key, fallback) {
+    const entry = cache?.get(key);
+    if (entry)
+        return parseValue(entry.value, fallback, key);
+    return fallback ?? SETTING_DEFAULTS[key];
 }
 /** 批量读取配置（返回全部已知键）。 */
 export function getAllSettings() {
-    const rows = getDb().prepare('SELECT key, value, updated_at FROM settings').all();
-    const map = new Map(rows.map((r) => [r.key, r]));
     return Object.keys(SETTING_DEFAULTS).map((key) => {
-        const row = map.get(key);
-        if (!row)
+        const entry = cache?.get(key);
+        if (!entry)
             return { key, value: SETTING_DEFAULTS[key], updatedAt: null };
-        let value = SETTING_DEFAULTS[key];
-        try {
-            value = JSON.parse(row.value);
-        }
-        catch { /* 保留默认 */ }
-        return { key, value, updatedAt: row.updated_at };
+        return { key, value: parseValue(entry.value, SETTING_DEFAULTS[key]), updatedAt: entry.updatedAt };
     });
 }
-/** 写入配置（JSON 序列化存储）。 */
+/** 启动时全量加载（ensureReady 调用）。 */
+export async function loadSettings() {
+    try {
+        const [rows] = await mysqlPool().query('SELECT `key`, value, updated_at FROM settings');
+        cache = new Map(rows.map((r) => [r.key, { value: r.value, updatedAt: r.updated_at }]));
+    }
+    catch (e) {
+        console.warn('[dsh-autotest] settings 加载失败，使用默认值：', e.message);
+        cache = new Map();
+    }
+}
+/** 写入配置：同步更新内存，异步写库。 */
 export function setSetting(key, value) {
-    getDb().prepare(`INSERT INTO settings (key, value, updated_at) VALUES (?, ?, ?)
-    ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at`)
-        .run(key, JSON.stringify(value), now());
+    const json = JSON.stringify(value);
+    if (cache) {
+        cache.set(key, { value: json, updatedAt: now() });
+    }
+    else {
+        cache = new Map([[key, { value: json, updatedAt: now() }]]);
+    }
+    void mysqlPool().query(`INSERT INTO settings (\`key\`, value, updated_at) VALUES (?, ?, ?)
+     ON DUPLICATE KEY UPDATE value = VALUES(value), updated_at = VALUES(updated_at)`, [key, json, now()]).catch((e) => console.warn('[dsh-autotest] 设置写入失败：', e.message));
 }

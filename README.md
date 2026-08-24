@@ -56,7 +56,7 @@ dsh plugin --profile web install
 
 ```powershell
 # 1. 声明依赖：编辑 ~/.dsh/profiles/web/package.json 的 dependencies 加：
-#    "dsh-autotest": "https://github.com/summer-hub/AutoTestAgent/releases/download/v0.1.30/dsh-autotest-0.1.30.tgz"
+#    "dsh-autotest": "https://github.com/summer-hub/AutoTestAgent/releases/download/v0.1.31/dsh-autotest-0.1.31.tgz"
 #    然后必须执行安装（光写不装等于没写）：
 cd $env:USERPROFILE\.dsh\profiles\web
 pnpm install
@@ -81,7 +81,7 @@ Invoke-RestMethod http://localhost:3080/api/autotest/health
 - `health` 通了但侧边栏看不到 → GUI 缓存问题：强制刷新 / 清浏览器缓存，让 DSH Web 重新加载 client 插件。
 - 之前装过旧 tarball → pnpm 会缓存旧包，需 `pnpm update dsh-autotest` 或删掉 `node_modules/dsh-autotest` 重装（旧包缺 `cordis.patch.yml`，装了也起不来）。
 
-也可以把 tgz 下载到本地后用 `"dsh-autotest": "file:./dsh-autotest-0.1.30.tgz"` 或 `pnpm add ./dsh-autotest-0.1.30.tgz`，离线环境更稳；第 2~5 步不变。
+也可以把 tgz 下载到本地后用 `"dsh-autotest": "file:./dsh-autotest-0.1.31.tgz"` 或 `pnpm add ./dsh-autotest-0.1.31.tgz`，离线环境更稳；第 2~5 步不变。
 
 安装成功后：
 
@@ -98,7 +98,7 @@ Invoke-RestMethod http://localhost:3080/api/autotest/health
 
 ### 多用户（阶段 0：认证 + 权限）
 
-认证数据放在服务器 MySQL（`auth_*` 表），业务数据当前仍在 SQLite（迁移 MySQL 为下一阶段）；Redis 作缓存。
+认证与业务数据都已放在服务器 MySQL（`auth_*` 表 + `libraries/cases/tasks/...` 业务表）；Redis 作缓存。
 
 ```powershell
 # 1. 系统配置里填好（或直接改 ~/.dsh/profiles/web/node_modules/dsh-autotest/data/autotest.db 的 settings 表）：
@@ -117,6 +117,20 @@ Invoke-RestMethod http://localhost:3080/api/autotest/health
 ```
 
 角色权限：`admin`（全量+用户/审计）、`manager`（管理业务+设备，不可管用户）、`engineer`（写用例/跑任务/执行）、`viewer`（只读）。所有业务 API 均需登录；未带 token 返回 401，越权返回 403。
+
+### 业务库迁移到 MySQL（阶段 1）
+
+SQLite → MySQL 一次性迁移（保留原 id，行数校验，可重复执行）：
+
+```powershell
+# 前置：MySQL 已建库 autotest；settings 表里 db.mysqlUrl 已配置（或环境变量 AUTOTEST_MYSQL_URL）
+cd $env:USERPROFILE\.dsh\profiles\web\node_modules\dsh-autotest
+npx tsx scripts/migrate-sqlite-to-mysql.ts
+# 成功后日志显示 11 张表行数全部 ✓，并写入 data/.mysql-url 连接引导文件
+# 重启 DSH 即从 MySQL 读写（旧 SQLite 文件保留为备份）
+```
+
+迁移后所有业务表（三方库/用例/版本/任务/计划/执行/设备/Prompt/模型/分析/配置）都在 MySQL，多机共享时只需共享 MySQL 数据。
 
 ## 快速上手
 
@@ -151,5 +165,5 @@ git tag v0.2.0 && git push origin v0.2.0   # GitHub Actions 自动构建 Release
 
 ```jsonc
 // ~/.dsh/profiles/web/package.json
-"dsh-autotest": "https://github.com/summer-hub/AutoTestAgent/releases/download/v0.1.30/dsh-autotest-0.1.30.tgz"
+"dsh-autotest": "https://github.com/summer-hub/AutoTestAgent/releases/download/v0.1.31/dsh-autotest-0.1.31.tgz"
 ```

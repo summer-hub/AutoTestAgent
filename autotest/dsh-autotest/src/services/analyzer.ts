@@ -187,7 +187,7 @@ export interface LibraryRow {
   description: string;
 }
 
-function saveAnalysis(row: {
+async function saveAnalysis(row: {
   kind: string;
   granularity: string;
   libraryId: number | null;
@@ -195,8 +195,8 @@ function saveAnalysis(row: {
   title: string;
   content: unknown;
   round: string;
-}): void {
-  getDb().prepare(`INSERT INTO analyses (kind, granularity, library_id, case_id, title, content, round, created_at)
+}): Promise<void> {
+  await getDb().prepare(`INSERT INTO analyses (kind, granularity, library_id, case_id, title, content, round, created_at)
     VALUES (?, ?, ?, ?, ?, ?, ?, ?)`).run(
     row.kind, row.granularity, row.libraryId, row.caseId, row.title, JSON.stringify(row.content), row.round, now(),
   );
@@ -297,7 +297,7 @@ ${prContext(prs)}`;
     for (const item of items) {
       const pr = prs.find((x) => x.number === Number(item.prNumber));
       if (pr) item.webUrl = pr.web_url;
-      saveAnalysis({
+      await saveAnalysis({
         kind: 'pr_analysis', granularity: 'single', libraryId: library.id, caseId: null, round,
         title: `PR #${item.prNumber} · 数据分析`, content: item,
       });
@@ -308,7 +308,7 @@ ${prContext(prs)}`;
     onStage?.('LLM 不可用，规则分析降级中…');
     const items = ruleBasedPrAnalysis(prs);
     for (const item of items) {
-      saveAnalysis({
+      await saveAnalysis({
         kind: 'pr_analysis', granularity: 'single', libraryId: library.id, caseId: null, round,
         title: `PR #${item.prNumber} · 数据分析（规则降级）`, content: item,
       });
@@ -326,8 +326,8 @@ export async function analyzeCaseUpdates(
   round = '',
 ): Promise<AnalyzeResult> {
   const db = getDb();
-  const samples = db.prepare('SELECT case_no, name, expected FROM cases WHERE library_id = ? ORDER BY id LIMIT 15')
-    .all(library.id) as Array<{ case_no: string; name: string; expected: string }>;
+  const samples = await db.prepare('SELECT case_no, name, expected FROM cases WHERE library_id = ? ORDER BY id LIMIT 15')
+    .all<{ case_no: string; name: string; expected: string }>(library.id);
   if (prs.length === 0 || samples.length === 0) {
     return { analyzed: 0, prs: prs.length, source: 'fallback', message: '没有 PR 或用例可供分析' };
   }
@@ -351,7 +351,7 @@ ${samples.map((c) => `- ${c.case_no} ${c.name}：${(c.expected || '').slice(0, 1
     const parsed = extractJson<Array<Record<string, unknown>>>(text);
     const items = Array.isArray(parsed) ? parsed.slice(0, 20) : [];
     for (const item of items) {
-      saveAnalysis({
+      await saveAnalysis({
         kind: 'case_update_analysis', granularity: 'single', libraryId: library.id, caseId: null, round,
         title: `用例更新建议 · ${String(item.caseNo ?? '新增')}`, content: item,
       });
@@ -367,7 +367,7 @@ ${samples.map((c) => `- ${c.case_no} ${c.name}：${(c.expected || '').slice(0, 1
       newExpected: '',
     }));
     for (const item of items) {
-      saveAnalysis({
+      await saveAnalysis({
         kind: 'case_update_analysis', granularity: 'single', libraryId: library.id, caseId: null, round,
         title: `用例更新建议 · PR #${prs[items.indexOf(item)].number}（规则降级）`, content: item,
       });
@@ -402,14 +402,14 @@ export async function analyzeAttribution(llm: LlmCall, opts: AttributionOptions)
   if (opts.caseId) { conds.push('e.case_id = @caseId'); p.caseId = opts.caseId; }
   if (opts.libraryId) { conds.push('e.library_id = @libraryId'); p.libraryId = opts.libraryId; }
   const where = conds.join(' AND ');
-  const rows = db.prepare(
+  const rows = await db.prepare(
     `SELECT e.id, e.case_id, c.case_no, c.name AS case_name, e.library_id, l.name AS library_name,
             e.thinking, e.logs, e.status, e.started_at
      FROM executions e
      LEFT JOIN cases c ON c.id = e.case_id
      LEFT JOIN libraries l ON l.id = e.library_id
      WHERE ${where} ORDER BY e.id DESC LIMIT @limit`,
-  ).all(p) as FailedExecRow[];
+  ).all<FailedExecRow>(p);
   if (rows.length === 0) {
     return { analyzed: 0, prs: 0, source: 'fallback', message: '没有匹配的失败执行记录，先执行计划产生失败用例' };
   }
@@ -435,7 +435,7 @@ ${rows.map((r) => `- [${r.started_at ?? ''}] ${r.library_name ?? '?'}/${r.case_n
       temperature: getSetting('exec.llmTemperature', 0.4), timeoutMs: getSetting('exec.llmTimeoutMs', 180000),
     });
     const parsed = extractJson<Record<string, unknown>>(text);
-    saveAnalysis({
+    await saveAnalysis({
       kind: 'attribution', granularity: opts.granularity, libraryId: opts.libraryId ?? null,
       caseId: opts.caseId ?? null, title, round: '', content: parsed,
     });
@@ -450,7 +450,7 @@ ${rows.map((r) => `- [${r.started_at ?? ''}] ${r.library_name ?? '?'}/${r.case_n
       if (causes.length === 0) causes.push('执行环境或用例步骤与设备状态不匹配');
       return { caseNo: r.case_no, library: r.library_name, causes, thinking: t.slice(0, 200) };
     });
-    saveAnalysis({
+    await saveAnalysis({
       kind: 'attribution', granularity: opts.granularity, libraryId: opts.libraryId ?? null,
       caseId: opts.caseId ?? null, round: '', title: `${title}（规则降级）`,
       content: {

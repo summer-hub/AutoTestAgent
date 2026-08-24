@@ -8,5 +8,7 @@ export declare function getAllSettings(): Array<{
     value: SettingValue;
     updatedAt: string | null;
 }>;
-/** 写入配置（JSON 序列化存储）。 */
+/** 启动时全量加载（ensureReady 调用）。 */
+export declare function loadSettings(): Promise<void>;
+/** 写入配置：同步更新内存，异步写库。 */
 export declare function setSetting(key: string, value: SettingValue): void;

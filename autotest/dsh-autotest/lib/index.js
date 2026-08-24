@@ -1,7 +1,7 @@
 import crypto from 'node:crypto';
 import fs from 'node:fs';
 import { fileURLToPath } from 'node:url';
-import { ensureSchemaAndSeed, getDb } from './db/connection.js';
+import { defaultUrlProvider, ensureReady, getDb, setDbUrlProvider } from './db/connection.js';
 import { makeLlm } from './services/llmHarness.js';
 import { makeApiHandler } from './api/http.js';
 import { startScheduler } from './services/scheduler.js';
@@ -13,28 +13,31 @@ import { getSetting } from './services/settings.js';
 export const name = 'dsh-autotest';
 export const inject = ['webServer', 'llm'];
 export function apply(ctx) {
-    // 1. 业务库初始化（幂等 + 首次自动种子）
-    try {
-        ensureSchemaAndSeed();
-        // 启动对账：本地没有克隆目录的库，同步状态一律清空（迁移/拷贝旧库后不再显示过期记录）
-        const db = getDb();
-        const libs = db.prepare('SELECT id, name FROM libraries').all();
-        for (const lib of libs) {
-            if (!fs.existsSync(`${repoDirFor(lib.name)}/.git`)) {
-                db.prepare(`UPDATE libraries SET last_commit = '', last_synced_at = NULL WHERE id = ? AND (last_commit != '' OR last_synced_at IS NOT NULL)`).run(lib.id);
-            }
-        }
-        console.log('[dsh-autotest] 业务库就绪');
-    }
-    catch (e) {
-        console.error('[dsh-autotest] 业务库初始化失败：', e.message);
-    }
-    // 1b. 认证库初始化（MySQL）：建表 + 角色权限种子 + 首启创建 admin
-    ensureAuthSchema()
-        .then(async () => {
+    // 1. 初始化引导（异步）：MySQL 连接串 → 业务表 + settings → 对账 → auth 表 + admin
+    void (async () => {
         try {
-            const db = await authPool();
-            const [rows] = await db.query('SELECT COUNT(*) AS n FROM auth_users');
+            setDbUrlProvider(() => String(getSetting('db.mysqlUrl', '') || '').trim() || defaultUrlProvider());
+            await ensureReady();
+            // 启动对账：本地没有克隆目录的库，同步状态一律清空（迁移/拷贝旧库后不再显示过期记录）
+            const db = getDb();
+            const libs = await db.prepare('SELECT id, name FROM libraries').all();
+            for (const lib of libs) {
+                if (!fs.existsSync(`${repoDirFor(lib.name)}/.git`)) {
+                    await db.prepare(`UPDATE libraries SET last_commit = '', last_synced_at = NULL WHERE id = ? AND (last_commit != '' OR last_synced_at IS NOT NULL)`).run(lib.id);
+                }
+            }
+            console.log('[dsh-autotest] 业务库对账完成');
+            // 定时执行计划调度（依赖业务表，须在初始化后注册）
+            try {
+                await startScheduler();
+            }
+            catch (e) {
+                console.error('[dsh-autotest] 调度器启动失败：', e.message);
+            }
+            // 认证库初始化（MySQL）：建表 + 角色权限种子 + 首启创建 admin
+            await ensureAuthSchema();
+            const db2 = await authPool();
+            const [rows] = await db2.query('SELECT COUNT(*) AS n FROM auth_users');
             if (rows[0].n === 0) {
                 const pw = String(getSetting('auth.bootstrapPassword', '') || '').trim()
                     || crypto.randomBytes(6).toString('base64url');
@@ -46,12 +49,9 @@ export function apply(ctx) {
             }
         }
         catch (e) {
-            console.error('[dsh-autotest] 初始管理员创建失败：', e.message);
+            console.error('[dsh-autotest] 初始化失败：', e.message);
         }
-    })
-        .catch((e) => {
-        console.error('[dsh-autotest] 认证库初始化失败：', e.message);
-    });
+    })();
     // 2. LLM 调用（复用 DSH 模型配置）
     const llm = makeLlm(ctx);
     // 3. 业务 API（挂在 DSH Web 服务器的 /api/autotest 前缀下；插件卸载时自动注销）
@@ -83,11 +83,4 @@ export function apply(ctx) {
             console.log('[dsh-autotest] 插件已卸载');
         };
     });
-    // 4. 定时执行计划调度
-    try {
-        startScheduler();
-    }
-    catch (e) {
-        console.error('[dsh-autotest] 调度器启动失败：', e.message);
-    }
 }

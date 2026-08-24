@@ -35,7 +35,7 @@ export declare function repoDirFor(name: string): string;
 /** 自动化脚本落盘目录（工作区 scripts/<name>）。 */
 export declare function scriptsDirFor(name: string): string;
 /** 按仓库地址解析三方库：已存在（repo_url 匹配）则复用，否则自动创建。 */
-export declare function ensureLibraryByRepoUrl(url: string): RepoLib;
+export declare function ensureLibraryByRepoUrl(url: string): Promise<RepoLib>;
 /** 拉取仓库：目录不存在则 clone，否则 pull；返回提交、分支、变更文件与版本。 */
 export declare function pullRepo(lib: RepoLib): Promise<RepoResult>;
 /** 更新仓库 = 拉取 + 变更文件明细。 */

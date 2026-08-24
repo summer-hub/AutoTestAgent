@@ -136,20 +136,20 @@ function deriveName(url: string): string {
 }
 
 /** 按仓库地址解析三方库：已存在（repo_url 匹配）则复用，否则自动创建。 */
-export function ensureLibraryByRepoUrl(url: string): RepoLib {
+export async function ensureLibraryByRepoUrl(url: string): Promise<RepoLib> {
   const db = getDb();
   const t = now();
   const trimmed = url.trim();
-  const existing = db.prepare('SELECT * FROM libraries WHERE repo_url = ?').get(trimmed) as RepoLib | undefined;
+  const existing = await db.prepare('SELECT * FROM libraries WHERE repo_url = ?').get<RepoLib>(trimmed);
   if (existing) return existing;
   let name = deriveName(trimmed);
   let n = 1;
-  while (db.prepare('SELECT id FROM libraries WHERE name = ?').get(name)) {
+  while (await db.prepare('SELECT id FROM libraries WHERE name = ?').get(name)) {
     name = `${deriveName(trimmed)}-${++n}`;
   }
-  db.prepare(`INSERT INTO libraries (name, repo_url, description, current_version, status, created_at, updated_at)
+  const res = await db.prepare(`INSERT INTO libraries (name, repo_url, description, current_version, status, created_at, updated_at)
     VALUES (?, ?, '由任务创建（拉取仓库代码）', 'v0.0.0', 'active', ?, ?)`).run(name, trimmed, t, t);
-  return db.prepare('SELECT * FROM libraries WHERE id = last_insert_rowid()').get() as RepoLib;
+  return (await db.prepare('SELECT * FROM libraries WHERE id = ?').get<RepoLib>(Number(res.lastInsertRowid))) as RepoLib;
 }
 
 async function describeVersion(dir: string, fallback: string): Promise<string> {
@@ -166,10 +166,10 @@ async function describeVersion(dir: string, fallback: string): Promise<string> {
   }
 }
 
-function saveSync(libId: number, commit: string, version: string): void {
+async function saveSync(libId: number, commit: string, version: string): Promise<void> {
   const db = getDb();
   const t = now();
-  db.prepare(`UPDATE libraries SET current_version = ?, last_commit = ?, last_synced_at = ?, updated_at = ? WHERE id = ?`)
+  await db.prepare(`UPDATE libraries SET current_version = ?, last_commit = ?, last_synced_at = ?, updated_at = ? WHERE id = ?`)
     .run(version, commit, t, t, libId);
 }
 
@@ -209,7 +209,7 @@ export async function pullRepo(lib: RepoLib): Promise<RepoResult> {
   }
 
   const version = await describeVersion(dir, lib.current_version);
-  saveSync(lib.id, commit, version);
+  await saveSync(lib.id, commit, version);
   const changedCount = changedFiles.length;
   const summary = action === 'clone'
     ? `已克隆 ${lib.name}（${branch} @ ${commit.slice(0, 8)}），当前版本 ${version}，最近提交含 ${changedCount} 个变更文件。`

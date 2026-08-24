@@ -20,16 +20,16 @@ interface CaseRow {
 interface DeviceRow { id: number; serial: string; model: string; }
 
 /** 解析计划 scope → 用例 id 列表（空 = 全量） */
-function resolveCaseIds(db: ReturnType<typeof getDb>, scope: { libraryIds: number[]; caseIds: number[] }): Array<{ id: number; library_id: number }> {
+async function resolveCaseIds(db: ReturnType<typeof getDb>, scope: { libraryIds: number[]; caseIds: number[] }): Promise<Array<{ id: number; library_id: number }>> {
   if (scope.caseIds && scope.caseIds.length > 0) {
     const marks = scope.caseIds.map(() => '?').join(',');
-    return db.prepare(`SELECT id, library_id FROM cases WHERE id IN (${marks})`).all(...scope.caseIds) as Array<{ id: number; library_id: number }>;
+    return db.prepare(`SELECT id, library_id FROM cases WHERE id IN (${marks})`).all<{ id: number; library_id: number }>(...scope.caseIds);
   }
   if (scope.libraryIds && scope.libraryIds.length > 0) {
     const marks = scope.libraryIds.map(() => '?').join(',');
-    return db.prepare(`SELECT id, library_id FROM cases WHERE library_id IN (${marks})`).all(...scope.libraryIds) as Array<{ id: number; library_id: number }>;
+    return db.prepare(`SELECT id, library_id FROM cases WHERE library_id IN (${marks})`).all<{ id: number; library_id: number }>(...scope.libraryIds);
   }
-  return db.prepare('SELECT id, library_id FROM cases').all() as Array<{ id: number; library_id: number }>;
+  return db.prepare('SELECT id, library_id FROM cases').all<{ id: number; library_id: number }>();
 }
 
 const UI_VERBS = ['打开', '点击', '滑动', '长按', '输入', '等待', '验证', '切换', '滚动', '选择'];
@@ -81,18 +81,20 @@ ${fails.map((f) => `- 步骤 ${f.seq}「${f.desc}」：${f.log}`).join('\n')}
 
 export async function executePlan(planId: number): Promise<void> {
   const db = getDb();
-  const plan = db.prepare('SELECT * FROM plans WHERE id = ?').get(planId) as PlanRow | undefined;
+  const plan = await db.prepare('SELECT * FROM plans WHERE id = ?').get<PlanRow>(planId);
   if (!plan) return;
   const t = now();
   const t2 = now();
 
-  db.prepare(`UPDATE plans SET status='running', updated_at=? WHERE id=?`).run(t, planId);
+  await db.prepare(`UPDATE plans SET status='running', updated_at=? WHERE id=?`).run(t, planId);
 
   const scope = JSON.parse(plan.scope || '{"libraryIds":[],"caseIds":[]}') as { libraryIds: number[]; caseIds: number[] };
-  const cases = resolveCaseIds(db, scope);
-  const devices = (JSON.parse(plan.device_ids || '[]') as number[]).map((id) =>
-    db.prepare('SELECT * FROM devices WHERE id = ?').get(id) as DeviceRow | undefined,
-  ).filter(Boolean) as DeviceRow[];
+  const cases = await resolveCaseIds(db, scope);
+  const devices = (await Promise.all(
+    (JSON.parse(plan.device_ids || '[]') as number[]).map(async (id) =>
+      await db.prepare('SELECT * FROM devices WHERE id = ?').get<DeviceRow>(id),
+    ),
+  )).filter(Boolean) as DeviceRow[];
   const device: { id: number | null; serial: string; model: string } =
     devices[0] ?? { id: null, serial: 'SIM-0000', model: '模拟设备' };
 
@@ -145,14 +147,14 @@ export async function executePlan(planId: number): Promise<void> {
   };
 
   for (const c of sample) {
-    const caseRow = db.prepare(
+    const caseRow = await db.prepare(
       `SELECT c.*, l.name AS library_name FROM cases c JOIN libraries l ON l.id = c.library_id WHERE c.id = ?`,
-    ).get(c.id) as CaseRow | undefined;
+    ).get<CaseRow>(c.id);
     if (!caseRow) continue;
 
     // failPolicy: abort_library — 该库已有失败用例时跳过后续用例
     if (abortedLibs.has(c.library_id)) {
-      insExec.run(
+      await insExec.run(
         planId, c.id, c.library_id, device.id, 'skipped',
         JSON.stringify([{ seq: 1, desc: '整库失败中止，本用例跳过', status: 'skipped', durationMs: 0 }]),
         '按失败策略 abort_library：该库已有失败用例，后续用例跳过。',
@@ -184,9 +186,9 @@ export async function executePlan(planId: number): Promise<void> {
 
     if (result.status === 'failed' && failPolicy === 'abort_library') abortedLibs.add(c.library_id);
     if (result.status === 'failed') failed++; else passed++;
-    insExec.run(planId, c.id, c.library_id, device.id, result.status, result.stepsJson, result.thinking, result.logs, t, now());
+    await insExec.run(planId, c.id, c.library_id, device.id, result.status, result.stepsJson, result.thinking, result.logs, t, now());
   }
 
-  db.prepare(`UPDATE plans SET status='done', last_run_at=?, updated_at=? WHERE id=?`).run(t2, t2, planId);
+  await db.prepare(`UPDATE plans SET status='done', last_run_at=?, updated_at=? WHERE id=?`).run(t2, t2, planId);
   console.log(`[plan #${planId}] ${plan.name} 执行完成：${sample.length} 用例，通过 ${passed} / 失败 ${failed} / 跳过 ${skipped}（${useReal ? 'hdc 真机' : '模拟'}）`);
 }
