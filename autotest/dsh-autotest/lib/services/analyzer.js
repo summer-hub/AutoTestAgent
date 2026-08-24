@@ -7,6 +7,23 @@ import { getDb, now } from '../db/connection.js';
 import { getSetting } from './settings.js';
 import { extractJson } from './llmHarness.js';
 const GITCODE_API = 'https://gitcode.com/api/v5';
+/** fetch 封装：瞬时网络错误自动重试，失败时透出真实原因（e.cause）。 */
+async function fetchWithRetry(url, timeoutMs, retries = 2) {
+    let lastErr = null;
+    for (let attempt = 0; attempt <= retries; attempt++) {
+        try {
+            return await fetch(url, { signal: AbortSignal.timeout(timeoutMs) });
+        }
+        catch (e) {
+            lastErr = e;
+            if (attempt < retries)
+                await new Promise((r) => setTimeout(r, 800 * (attempt + 1)));
+        }
+    }
+    const err = lastErr;
+    const cause = err?.cause instanceof Error ? `：${err.cause.message}` : err?.cause ? `：${String(err.cause)}` : '';
+    throw new Error(`网络请求失败${cause}（${err?.message ?? '未知错误'}）`);
+}
 /** 从仓库 URL 提取 GitCode owner/repo；非 GitCode 地址返回 null。 */
 export function parseRepoPath(repoUrl) {
     if (!repoUrl)
@@ -16,9 +33,7 @@ export function parseRepoPath(repoUrl) {
 }
 /** 拉取仓库 PR 列表 + 每个 PR 的变更文件（并发拉取文件，失败不影响主体）。 */
 export async function fetchPrs(repoPath, limit = 8, timeoutMs = 25000) {
-    const listRes = await fetch(`${GITCODE_API}/repos/${repoPath}/pulls?state=all&per_page=${limit}&page=1`, {
-        signal: AbortSignal.timeout(timeoutMs),
-    });
+    const listRes = await fetchWithRetry(`${GITCODE_API}/repos/${repoPath}/pulls?state=all&per_page=${limit}&page=1`, timeoutMs);
     if (!listRes.ok) {
         throw new Error(`拉取 PR 列表失败：GitCode HTTP ${listRes.status}（repo: ${repoPath}）`);
     }
@@ -60,9 +75,7 @@ function mapPr(pr) {
 }
 /** 拉取单个 PR（含变更文件），供「选择 #PR 分析」使用。 */
 export async function fetchPr(repoPath, prNumber, timeoutMs = 25000) {
-    const res = await fetch(`${GITCODE_API}/repos/${repoPath}/pulls/${prNumber}`, {
-        signal: AbortSignal.timeout(timeoutMs),
-    });
+    const res = await fetchWithRetry(`${GITCODE_API}/repos/${repoPath}/pulls/${prNumber}`, timeoutMs);
     if (!res.ok) {
         throw new Error(`拉取 PR #${prNumber} 失败：GitCode HTTP ${res.status}`);
     }
