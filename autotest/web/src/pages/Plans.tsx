@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from 'react';
-import type { Library, Plan } from 'shared';
+import type { Library, Plan, TestCase } from 'shared';
 import { api } from '../api';
 
 const TYPE_OPTIONS: Array<{ v: string; icon: string; label: string; desc: string }> = [
@@ -19,6 +19,12 @@ export default function PlansPage() {
   const [error, setError] = useState('');
   const [modal, setModal] = useState(false);
   const [form, setForm] = useState({ name: '', type: 'immediate', cron: '0 2 * * *', libraryId: 0, deviceIds: [1] as number[], failPolicy: 'continue' });
+  // 跨库用例多选
+  const [selCases, setSelCases] = useState<Map<number, { caseNo: string; name: string; libraryName: string }>>(new Map());
+  const [pickerOpen, setPickerOpen] = useState(false);
+  const [pickerLib, setPickerLib] = useState(0);
+  const [pickerCases, setPickerCases] = useState<TestCase[]>([]);
+  const [pickerLoading, setPickerLoading] = useState(false);
 
   const load = useCallback(() => {
     api.plans().then(setPlans).catch((e) => setError(String((e as Error).message)));
@@ -32,7 +38,11 @@ export default function PlansPage() {
   const create = async () => {
     setError('');
     try {
-      const scope = form.type === 'full' ? { libraryIds: [], caseIds: [] } : { libraryIds: form.libraryId ? [form.libraryId] : [], caseIds: [] };
+      const scope = form.type === 'full'
+        ? { libraryIds: [], caseIds: [] }
+        : selCases.size > 0
+          ? { libraryIds: [], caseIds: [...selCases.keys()] }
+          : { libraryIds: form.libraryId ? [form.libraryId] : [], caseIds: [] };
       await api.createPlan({
         name: form.name || '未命名计划',
         type: form.type as 'immediate' | 'scheduled' | 'single' | 'batch' | 'full',
@@ -42,8 +52,33 @@ export default function PlansPage() {
         failPolicy: form.failPolicy as Plan['failPolicy'],
       });
       setModal(false);
+      setSelCases(new Map());
       load();
     } catch (e) { setError((e as Error).message); }
+  };
+
+  const openPicker = () => {
+    setPickerOpen(true);
+    const first = libs[0]?.id ?? 0;
+    setPickerLib(first);
+    if (first) loadPickerCases(first);
+  };
+
+  const loadPickerCases = (libraryId: number) => {
+    setPickerLoading(true);
+    api.cases(libraryId, { page: 1, pageSize: 200 })
+      .then((r) => { setPickerCases(r.items); })
+      .catch((e) => setError(String((e as Error).message)))
+      .finally(() => setPickerLoading(false));
+  };
+
+  const toggleCase = (c: TestCase, libName: string) => {
+    setSelCases((prev) => {
+      const next = new Map(prev);
+      if (next.has(c.id)) next.delete(c.id);
+      else next.set(c.id, { caseNo: c.caseNo, name: c.name, libraryName: libName });
+      return next;
+    });
   };
 
   const runNow = async (id: number) => {
@@ -138,6 +173,26 @@ export default function PlansPage() {
                   </select>
                 </div>
               )}
+              {form.type !== 'full' && (
+                <div className="s-field" style={{ marginBottom: 12, alignItems: 'flex-start' }}>
+                  <div className="fl"><div className="ft">指定用例（可跨库多选）</div></div>
+                  <div style={{ flex: 1 }}>
+                    <button className="btn sm" onClick={openPicker}>☑ 选择用例{selCases.size > 0 ? `（已选 ${selCases.size} 条）` : ''}</button>
+                    {selCases.size > 0 && (
+                      <div style={{ marginTop: 8, display: 'flex', flexDirection: 'column', gap: 4, maxHeight: 140, overflowY: 'auto' }}>
+                        {[...selCases.entries()].map(([id, c]) => (
+                          <div key={id} style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 12, border: '1px solid var(--border)', borderRadius: 7, padding: '4px 8px' }}>
+                            <span className="muted" style={{ flexShrink: 0 }}>{c.libraryName}</span>
+                            <span className="mono" style={{ color: 'var(--accent2)', flexShrink: 0 }}>{c.caseNo}</span>
+                            <span style={{ flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{c.name}</span>
+                            <span className="link" style={{ color: 'var(--red)' }} onClick={() => setSelCases((prev) => { const n = new Map(prev); n.delete(id); return n; })}>移除</span>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                </div>
+              )}
               <div className="s-field" style={{ marginBottom: 12 }}>
                 <div className="fl"><div className="ft">失败处理</div></div>
                 <select className="select" style={{ flex: 1 }} value={form.failPolicy} onChange={(e) => setForm({ ...form, failPolicy: e.target.value })}>
@@ -150,6 +205,55 @@ export default function PlansPage() {
                 <button className="btn" onClick={() => setModal(false)}>取消</button>
                 <button className="btn primary" onClick={create}>创建计划</button>
               </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {pickerOpen && (
+        <div className="drawer-mask show" onClick={(e) => { if (e.target === e.currentTarget) setPickerOpen(false); }}>
+          <div className="drawer" style={{ width: 680 }}>
+            <div className="drawer-h">
+              <span style={{ fontWeight: 600, fontSize: 14.5 }}>选择用例（可跨库多选，勾选后加入执行范围）</span>
+              <span className="x" onClick={() => setPickerOpen(false)}>✕</span>
+            </div>
+            <div className="drawer-b">
+              <div style={{ display: 'flex', gap: 10, marginBottom: 10, alignItems: 'center' }}>
+                <select
+                  className="select"
+                  style={{ width: 260 }}
+                  value={pickerLib}
+                  onChange={(e) => { const id = Number(e.target.value); setPickerLib(id); loadPickerCases(id); }}
+                >
+                  {libs.map((l) => <option key={l.id} value={l.id}>{l.name}（{l.caseCount} 用例）</option>)}
+                </select>
+                <span className="muted" style={{ fontSize: 12 }}>已选 {selCases.size} 条</span>
+                <div style={{ flex: 1 }} />
+                <button className="btn primary sm" onClick={() => setPickerOpen(false)}>完成</button>
+              </div>
+              {pickerLoading ? (
+                <div className="loading">加载用例…</div>
+              ) : (
+                <div style={{ display: 'flex', flexDirection: 'column', gap: 4, maxHeight: 380, overflowY: 'auto' }}>
+                  {pickerCases.map((c) => {
+                    const libName = libs.find((l) => l.id === c.libraryId)?.name ?? '';
+                    const checked = selCases.has(c.id);
+                    return (
+                      <div
+                        key={c.id}
+                        onClick={() => toggleCase(c, libName)}
+                        style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '8px 10px', borderRadius: 8, border: `1px solid ${checked ? 'var(--accent)' : 'var(--border)'}`, background: checked ? 'var(--accent-dim)' : 'transparent', cursor: 'pointer', fontSize: 12.5 }}
+                      >
+                        <span style={{ width: 18, textAlign: 'center', color: checked ? 'var(--accent2)' : 'var(--text3)' }}>{checked ? '✓' : ''}</span>
+                        <span className="mono" style={{ color: 'var(--accent2)', width: 90, flexShrink: 0 }}>{c.caseNo}</span>
+                        <span style={{ flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{c.name}</span>
+                        <span className={`tag ${c.source === '真机遍历' ? 'green' : 'plain'}`}>{c.source}</span>
+                      </div>
+                    );
+                  })}
+                  {pickerCases.length === 0 && <div className="muted" style={{ fontSize: 12.5, padding: 12 }}>该库暂无用例</div>}
+                </div>
+              )}
             </div>
           </div>
         </div>

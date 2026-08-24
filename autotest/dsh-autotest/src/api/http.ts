@@ -18,9 +18,11 @@ import { getAllSettings, getSetting, setSetting, type SettingValue } from '../se
 import { cacheDel, cacheGet, cacheSet } from '../services/cache.js';
 import { readDshDefaultModel } from '../services/llmHarness.js';
 import { deviceInfo, hdcAvailable, listTargets } from '../services/hdc.js';
-import { pullRepo, repoDirFor, scriptsDirFor, type RepoLib } from '../services/gitRepo.js';
+import { pullRepo, refreshPackageInfo, repoDirFor, scriptsDirFor, type RepoLib } from '../services/gitRepo.js';
 import { registerAuthRoutes, requireAuth, type HandlerArgs, type RouteFn } from '../auth/index.js';
 import { AuthError, hasPermission } from '../auth/service.js';
+import { exploreApp, ensureDeviceOnline, saveExploreReport } from '../services/uiExplorer.js';
+import { writeHypiumProject } from '../services/hypiumGen.js';
 
 // ---------- mini router ----------
 type Handler = (args: HandlerArgs) => Promise<unknown>;
@@ -1131,12 +1133,116 @@ ${(row.logs ?? '').slice(0, 4000) || '（无）'}
       caseId: b.caseId ? Number(b.caseId) : null,
     });
   }, { permission: 'analysis:run', llm: true });
+
+  // ---- 真机 UI 遍历：启动 demo → 遍历页面 → 生成用例 + Hypium 脚本 ----
+  route('POST', '/explore', async ({ body }) => {
+    const b = body as { libraryId?: number; deviceId?: number; launchAbility?: string };
+    const libraryId = Number(b.libraryId);
+    if (!libraryId) throw Object.assign(new Error('libraryId 必填'), { statusCode: 400 });
+    const db = getDb();
+    const lib = await db.prepare('SELECT * FROM libraries WHERE id = ?').get<Record<string, any>>(libraryId);
+    if (!lib) throw Object.assign(new Error('三方库不存在'), { statusCode: 404 });
+    // 设备：指定 deviceId 或第一个在线设备
+    let serial = '';
+    if (b.deviceId) {
+      const dev = await db.prepare('SELECT serial FROM devices WHERE id = ?').get<{ serial: string }>(Number(b.deviceId));
+      serial = dev?.serial ?? '';
+    }
+    if (!serial) {
+      const online = await db.prepare(`SELECT serial FROM devices WHERE status = 'online' ORDER BY id LIMIT 1`).get<{ serial: string }>();
+      serial = online?.serial ?? '';
+    }
+    if (!serial) throw Object.assign(new Error('没有可用设备，请先在设备管理页连接真机'), { statusCode: 400 });
+    if (!(await ensureDeviceOnline(serial))) throw Object.assign(new Error(`设备 ${serial} 不在线`), { statusCode: 400 });
+    // 启动入口：body.launchAbility > 库的 package_name/main_ability（自动解析入库）> device.appAbilities[库名] > 库名
+    let launchAbility = String(b.launchAbility ?? '').trim();
+    if (!launchAbility) {
+      const pkg = String(lib.package_name ?? '');
+      const ability = String(lib.main_ability ?? '');
+      if (pkg) launchAbility = ability && !ability.includes('.') ? `${pkg}/${ability}` : pkg;
+    }
+    if (!launchAbility) {
+      try {
+        const map = JSON.parse(String(getSetting('device.appAbilities', '{}') || '{}')) as Record<string, string>;
+        launchAbility = map[String(lib.name)] ?? '';
+      } catch { /* 忽略 */ }
+    }
+    if (!launchAbility) launchAbility = String(lib.name);
+
+    const runId = `explore-${Date.now()}-${Math.floor(Math.random() * 10000)}`;
+    setProgress(runId, { stage: `准备遍历 ${lib.name}（${serial}）…` });
+    setImmediate(async () => {
+      try {
+        // 目标 bundle 用于页面归属过滤：库包名 > launchAbility 的 bundle 段 > 库名
+        const bundle = String(lib.package_name ?? '').split('/')[0]
+          || launchAbility.split('/')[0]
+          || String(lib.name);
+        const result = await exploreApp(serial, bundle, { launchAbility });
+        // 解析并回填包名（拉取后自动入库，首次遍历兜底）
+        await refreshPackageInfo({ id: libraryId, name: String(lib.name) });
+        setProgress(runId, { stage: `遍历完成：${result.pages.length} 个页面，正在生成用例…` });
+        // 生成用例（每个页面一条，来源：真机遍历）
+        const t = now();
+        const countRow = (await db.prepare('SELECT COUNT(*) AS n FROM cases WHERE library_id = ?').get<{ n: number }>(libraryId)) ?? { n: 0 };
+        let seq = countRow.n;
+        const pkg = String(lib.package_name ?? '').split('/')[0] || launchAbility.split('/')[0] || String(lib.name);
+        let created = 0;
+        await db.transaction(async () => {
+          for (const page of result.pages) {
+            const pageName = (page.path[page.path.length - 1] ?? '首页').slice(0, 40);
+            const caseNo = `C-EX-${String(++seq).padStart(3, '0')}`;
+            const steps: string[] = ['打开应用并等待首页加载'];
+            for (const s of page.path) {
+              if (s === '首页') continue;
+              steps.push(`点击「${s}」`);
+            }
+            if (page.swipes > 0) steps.push(`向上滑动 ${page.swipes} 次查看完整内容`);
+            steps.push('验证页面内容完整显示');
+            const controls = page.controls.filter((c) => (c.text || c.desc).trim()).slice(0, 5)
+              .map((c) => `「${(c.text || c.desc).trim().slice(0, 20)}」`);
+            const expected = controls.length > 0
+              ? `页面应显示控件：${controls.join('、')}；${page.animation ? '动画区域完整可见（已自动滑动适配）' : '页面内容正常展示'}`
+              : '页面正常打开且内容完整显示';
+            const res = await db.prepare(`INSERT INTO cases (library_id, case_no, name, source, precondition, steps, expected, status, script_status, current_version, created_at, updated_at)
+              VALUES (?, ?, ?, '真机遍历', '设备已连接，应用可启动', ?, ?, '待确认', '未绑定', 1, ?, ?)`).run(
+              libraryId, caseNo, `遍历-${pageName}`, JSON.stringify(steps), expected, t, t,
+            );
+            const caseId = Number(res.lastInsertRowid);
+            await db.prepare(`INSERT INTO case_versions (case_id, version, snapshot, change_note, author, author_type, created_at)
+              VALUES (?, 1, ?, '真机遍历自动生成', '真机遍历引擎', 'tool', ?)`).run(caseId, JSON.stringify({
+              id: caseId, libraryId, caseNo, name: `遍历-${pageName}`, source: '真机遍历',
+              precondition: '设备已连接，应用可启动', steps, expected, status: '待确认',
+              scriptStatus: '未绑定', currentVersion: 1, createdAt: t, updatedAt: t,
+            }), t);
+            created++;
+          }
+        });
+        // 生成 Hypium 工程
+        const project = writeHypiumProject({ name: String(lib.name), packageName: pkg }, result.pages, serial);
+        saveExploreReport(String(lib.name), result);
+        setProgress(runId, {
+          stage: `完成：${created} 条用例已入库；Hypium 脚本已生成 → ${project.dir}`,
+          done: true,
+        });
+      } catch (e) {
+        setProgress(runId, { stage: '遍历失败', done: true, error: (e as Error).message });
+      }
+    });
+    return { runId };
+  }, { permission: 'case:write' });
+
+  route('GET', '/explore/progress/:runId', async ({ params }) => {
+    const p = analysisProgress.get(String(params.runId));
+    if (!p) throw Object.assign(new Error('进度不存在或已过期'), { statusCode: 404 });
+    return p;
+  }, { permission: 'case:read' });
 }
 
 // ---------- mappers / helpers ----------
 function mapLibrary(row: Record<string, unknown>) {
   return {
     id: row.id, name: row.name, repoUrl: row.repo_url, description: row.description,
+    packageName: row.package_name ?? '', mainAbility: row.main_ability ?? '',
     currentVersion: row.current_version, status: row.status, lastSyncedAt: row.last_synced_at,
     caseCount: row.case_count ?? 0, createdAt: row.created_at, updatedAt: row.updated_at,
   };

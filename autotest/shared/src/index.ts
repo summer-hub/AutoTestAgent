@@ -18,6 +18,8 @@ export interface Library {
   name: string;              // 库名，如 axios-ohos
   repoUrl: string;
   description: string;
+  packageName: string;       // 从仓库 app.json5 解析的 bundleName（真机启动/遍历用）
+  mainAbility: string;       // 主 Ability
   currentVersion: string;    // 三方库当前版本，如 v1.13.0
   status: 'active' | 'archived';
   lastSyncedAt: string | null;

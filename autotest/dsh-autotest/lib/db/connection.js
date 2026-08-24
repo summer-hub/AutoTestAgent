@@ -141,6 +141,19 @@ export async function ensureReady() {
                     throw e;
                 }
             }
+            // 轻量迁移：旧库补充包名/主 Ability 列
+            for (const [table, col, ddl] of [
+                ['libraries', 'package_name', "ALTER TABLE libraries ADD COLUMN package_name VARCHAR(128) NOT NULL DEFAULT ''"],
+                ['libraries', 'main_ability', "ALTER TABLE libraries ADD COLUMN main_ability VARCHAR(255) NOT NULL DEFAULT ''"],
+            ]) {
+                try {
+                    await mysqlPool().query(ddl);
+                }
+                catch (e) {
+                    if (!/Duplicate column/i.test(e.message))
+                        throw e;
+                }
+            }
             // settings 内存缓存加载（来自 MySQL settings 表）
             const { loadSettings } = await import('../services/settings.js');
             await loadSettings();

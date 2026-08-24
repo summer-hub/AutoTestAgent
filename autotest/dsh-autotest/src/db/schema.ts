@@ -15,6 +15,8 @@ CREATE TABLE IF NOT EXISTS libraries (
   description MEDIUMTEXT NOT NULL,
   current_version VARCHAR(64) NOT NULL DEFAULT 'v0.0.0',
   last_commit VARCHAR(64) NOT NULL DEFAULT '',
+  package_name VARCHAR(128) NOT NULL DEFAULT '',
+  main_ability VARCHAR(255) NOT NULL DEFAULT '',
   status VARCHAR(16) NOT NULL DEFAULT 'active',
   last_synced_at VARCHAR(32) NULL,
   created_at VARCHAR(32) NOT NULL,

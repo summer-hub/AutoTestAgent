@@ -84,7 +84,7 @@ async function detectDumpMode(serial) {
     }
     return dumpMode;
 }
-async function uiDump(serial) {
+export async function uiDump(serial) {
     const mode = await detectDumpMode(serial);
     if (mode === 'harmony') {
         await runHdc(['-t', serial, 'shell', 'uitest', 'dumpLayout', '-p', DUMP_PATH], 20000);
@@ -95,7 +95,26 @@ async function uiDump(serial) {
     const { stdout } = await runHdc(['-t', serial, 'shell', 'cat', DUMP_PATH], 20000);
     return stdout;
 }
-function parseNodes(dump) {
+/** 从 dump XML/JSON 解析当前页面归属（bundleName / pagePath），用于过滤非目标应用页面。 */
+export function dumpMeta(xml) {
+    const t = xml.trim();
+    if (t.startsWith('{')) {
+        try {
+            const j = JSON.parse(t);
+            const root = j.attributes ?? {};
+            const first = j.children?.[0]?.attributes ?? {};
+            return {
+                bundleName: String(root.bundleName ?? first.bundleName ?? ''),
+                pagePath: String(first.pagePath ?? root.pagePath ?? ''),
+            };
+        }
+        catch {
+            return { bundleName: '', pagePath: '' };
+        }
+    }
+    return { bundleName: '', pagePath: '' };
+}
+export function parseNodes(dump) {
     const nodes = [];
     const text = dump.trim();
     // HarmonyOS：uitest dumpLayout 输出 JSON 树
@@ -145,11 +164,11 @@ function parseNodes(dump) {
     }
     return nodes;
 }
-function findKeyword(nodes, keyword) {
+export function findKeyword(nodes, keyword) {
     const k = keyword.toLowerCase();
     return nodes.find((n) => n.text.toLowerCase().includes(k) || n.desc.toLowerCase().includes(k));
 }
-function screenSize(xml) {
+export function screenSize(xml) {
     const m = xml.match(/bounds["=:]*\s*\[(\d+),(\d+)\]\[(\d+),(\d+)\]/);
     if (!m)
         return { w: 720, h: 1280 };
@@ -157,7 +176,7 @@ function screenSize(xml) {
     const h = Number(m[4]);
     return w > 0 && h > 0 ? { w, h } : { w: 720, h: 1280 };
 }
-async function tap(serial, x, y) {
+export async function tap(serial, x, y) {
     const mode = await detectDumpMode(serial);
     return mode === 'harmony'
         ? execShell(serial, ['uinput', '-T', '-c', String(x), String(y)])
@@ -184,11 +203,11 @@ async function longPress(serial, x, y) {
     }
     return execShell(serial, ['input', 'swipe', String(x), String(y), String(x), String(y), '900']);
 }
-async function keyBack(serial) {
+export async function keyBack(serial) {
     const mode = await detectDumpMode(serial);
     if (mode === 'harmony') {
-        await execShell(serial, ['uinput', '-K', '-d', '4']);
-        return execShell(serial, ['uinput', '-K', '-u', '4']);
+        // HarmonyOS 返回手势：屏幕左缘向右滑（uinput keycode 在此设备上无效）
+        return execShell(serial, ['uinput', '-T', '-m', '30', '1350', '420', '1350', '300']);
     }
     return execShell(serial, ['input', 'keyevent', '4']);
 }
@@ -236,9 +255,20 @@ function pickKeyword(desc) {
         .slice(0, 12)
         .trim();
 }
-async function execShell(serial, shellArgs) {
+export async function execShell(serial, shellArgs) {
     const { stdout, stderr } = await runHdc(['-t', serial, 'shell', ...shellArgs], 15000);
     return (stdout + '\n' + stderr).trim() || 'ok';
+}
+/** aa start 参数：支持 bundle/ability、bundle、ability 三种写法。 */
+export function launchArgs(launch) {
+    const s = launch.trim();
+    if (s.includes('/')) {
+        const [b, a] = s.split('/');
+        return ['aa', 'start', '-b', b.trim(), '-a', a.trim()];
+    }
+    if (s.includes('.'))
+        return ['aa', 'start', '-b', s];
+    return ['aa', 'start', '-a', s];
 }
 async function runStep(serial, desc) {
     const t0 = Date.now();
@@ -330,12 +360,12 @@ async function runStep(serial, desc) {
             if (/^(打开|启动)/.test(d)) {
                 const ability = appAbility(kw);
                 if (ability) {
-                    const out = await execShell(serial, ['aa', 'start', '-a', ability]);
-                    return pass(`aa start -a ${ability}：${out}`);
+                    const out = await execShell(serial, launchArgs(ability));
+                    return pass(`aa start ${ability}：${out}`);
                 }
                 try {
-                    const out = await execShell(serial, ['aa', 'start', '-a', kw]);
-                    return pass(`aa start -a ${kw}：${out}`);
+                    const out = await execShell(serial, launchArgs(kw));
+                    return pass(`aa start ${kw}：${out}`);
                 }
                 catch (e) {
                     return fail(`界面未找到「${kw}」且 aa start 失败：${e.message}`);

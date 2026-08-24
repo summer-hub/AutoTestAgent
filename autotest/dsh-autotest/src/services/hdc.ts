@@ -108,7 +108,7 @@ async function detectDumpMode(serial: string): Promise<DumpMode> {
   return dumpMode;
 }
 
-async function uiDump(serial: string): Promise<string> {
+export async function uiDump(serial: string): Promise<string> {
   const mode = await detectDumpMode(serial);
   if (mode === 'harmony') {
     await runHdc(['-t', serial, 'shell', 'uitest', 'dumpLayout', '-p', DUMP_PATH], 20000);
@@ -126,7 +126,31 @@ interface UiNode {
   y: number;
 }
 
-function parseNodes(dump: string): UiNode[] {
+export interface DumpMeta {
+  bundleName: string;
+  pagePath: string;
+}
+
+/** 从 dump XML/JSON 解析当前页面归属（bundleName / pagePath），用于过滤非目标应用页面。 */
+export function dumpMeta(xml: string): DumpMeta {
+  const t = xml.trim();
+  if (t.startsWith('{')) {
+    try {
+      const j = JSON.parse(t) as { attributes?: Record<string, string>; children?: Array<{ attributes?: Record<string, string> }> };
+      const root = j.attributes ?? {};
+      const first = j.children?.[0]?.attributes ?? {};
+      return {
+        bundleName: String(root.bundleName ?? first.bundleName ?? ''),
+        pagePath: String(first.pagePath ?? root.pagePath ?? ''),
+      };
+    } catch {
+      return { bundleName: '', pagePath: '' };
+    }
+  }
+  return { bundleName: '', pagePath: '' };
+}
+
+export function parseNodes(dump: string): UiNode[] {
   const nodes: UiNode[] = [];
   const text = dump.trim();
   // HarmonyOS：uitest dumpLayout 输出 JSON 树
@@ -173,12 +197,12 @@ function parseNodes(dump: string): UiNode[] {
   return nodes;
 }
 
-function findKeyword(nodes: UiNode[], keyword: string): UiNode | undefined {
+export function findKeyword(nodes: UiNode[], keyword: string): UiNode | undefined {
   const k = keyword.toLowerCase();
   return nodes.find((n) => n.text.toLowerCase().includes(k) || n.desc.toLowerCase().includes(k));
 }
 
-function screenSize(xml: string): { w: number; h: number } {
+export function screenSize(xml: string): { w: number; h: number } {
   const m = xml.match(/bounds["=:]*\s*\[(\d+),(\d+)\]\[(\d+),(\d+)\]/);
   if (!m) return { w: 720, h: 1280 };
   const w = Number(m[3]);
@@ -186,7 +210,7 @@ function screenSize(xml: string): { w: number; h: number } {
   return w > 0 && h > 0 ? { w, h } : { w: 720, h: 1280 };
 }
 
-async function tap(serial: string, x: number, y: number): Promise<string> {
+export async function tap(serial: string, x: number, y: number): Promise<string> {
   const mode = await detectDumpMode(serial);
   return mode === 'harmony'
     ? execShell(serial, ['uinput', '-T', '-c', String(x), String(y)])
@@ -217,11 +241,11 @@ async function longPress(serial: string, x: number, y: number): Promise<string> 
   return execShell(serial, ['input', 'swipe', String(x), String(y), String(x), String(y), '900']);
 }
 
-async function keyBack(serial: string): Promise<string> {
+export async function keyBack(serial: string): Promise<string> {
   const mode = await detectDumpMode(serial);
   if (mode === 'harmony') {
-    await execShell(serial, ['uinput', '-K', '-d', '4']);
-    return execShell(serial, ['uinput', '-K', '-u', '4']);
+    // HarmonyOS 返回手势：屏幕左缘向右滑（uinput keycode 在此设备上无效）
+    return execShell(serial, ['uinput', '-T', '-m', '30', '1350', '420', '1350', '300']);
   }
   return execShell(serial, ['input', 'keyevent', '4']);
 }
@@ -270,9 +294,20 @@ function pickKeyword(desc: string): string {
     .trim();
 }
 
-async function execShell(serial: string, shellArgs: string[]): Promise<string> {
+export async function execShell(serial: string, shellArgs: string[]): Promise<string> {
   const { stdout, stderr } = await runHdc(['-t', serial, 'shell', ...shellArgs], 15000);
   return (stdout + '\n' + stderr).trim() || 'ok';
+}
+
+/** aa start 参数：支持 bundle/ability、bundle、ability 三种写法。 */
+export function launchArgs(launch: string): string[] {
+  const s = launch.trim();
+  if (s.includes('/')) {
+    const [b, a] = s.split('/');
+    return ['aa', 'start', '-b', b.trim(), '-a', a.trim()];
+  }
+  if (s.includes('.')) return ['aa', 'start', '-b', s];
+  return ['aa', 'start', '-a', s];
 }
 
 async function runStep(serial: string, desc: string): Promise<{ ok: boolean; log: string; durationMs: number }> {
@@ -359,12 +394,12 @@ async function runStep(serial: string, desc: string): Promise<{ ok: boolean; log
       if (/^(打开|启动)/.test(d)) {
         const ability = appAbility(kw);
         if (ability) {
-          const out = await execShell(serial, ['aa', 'start', '-a', ability]);
-          return pass(`aa start -a ${ability}：${out}`);
+          const out = await execShell(serial, launchArgs(ability));
+          return pass(`aa start ${ability}：${out}`);
         }
         try {
-          const out = await execShell(serial, ['aa', 'start', '-a', kw]);
-          return pass(`aa start -a ${kw}：${out}`);
+          const out = await execShell(serial, launchArgs(kw));
+          return pass(`aa start ${kw}：${out}`);
         } catch (e) {
           return fail(`界面未找到「${kw}」且 aa start 失败：${(e as Error).message}`);
         }

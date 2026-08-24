@@ -74,9 +74,9 @@ export function inspectRepo(lib: { name: string }): RepoInspect {
     if (!fs.existsSync(file)) continue;
     try {
       const txt = fs.readFileSync(file, 'utf8');
-      const bn = txt.match(/bundleName\s*[:=]\s*["']([^"']+)/);
+      const bn = txt.match(/["']?bundleName["']?\s*[:=]\s*["']([^"']+)/);
       if (bn) result.bundleName = bn[1];
-      const ab = txt.match(/(?:mainAbility|abilityName)\s*[:=]\s*["']([^"']+)/);
+      const ab = txt.match(/(?:["']?mainAbility["']?|["']?abilityName["']?|["']?mainElement["']?)\s*[:=]\s*["']([^"']+)/);
       if (ab) result.abilityName = ab[1];
       if (result.bundleName && result.abilityName) break;
     } catch { /* 忽略不可读文件 */ }
@@ -173,6 +173,22 @@ async function saveSync(libId: number, commit: string, version: string): Promise
     .run(version, commit, t, t, libId);
 }
 
+/** 解析仓库包名/主 Ability（app.json5 / module.json5）并回填 libraries 表。 */
+export async function refreshPackageInfo(lib: { id: number; name: string }): Promise<{ packageName: string; mainAbility: string }> {
+  const insp = inspectRepo(lib);
+  const packageName = insp.bundleName;
+  const mainAbility = insp.abilityName;
+  if (packageName) {
+    try {
+      await getDb().prepare(`UPDATE libraries SET package_name = ?, main_ability = ?, updated_at = ? WHERE id = ?`)
+        .run(packageName, mainAbility, now(), lib.id);
+    } catch (e) {
+      console.warn(`[autotest] 回填包名失败（${lib.name}）：`, (e as Error).message);
+    }
+  }
+  return { packageName, mainAbility };
+}
+
 /** 拉取仓库：目录不存在则 clone，否则 pull；返回提交、分支、变更文件与版本。 */
 export async function pullRepo(lib: RepoLib): Promise<RepoResult> {
   if (!lib.repo_url) {
@@ -210,6 +226,8 @@ export async function pullRepo(lib: RepoLib): Promise<RepoResult> {
 
   const version = await describeVersion(dir, lib.current_version);
   await saveSync(lib.id, commit, version);
+  // 拉取后解析包名/主 Ability 入库（供真机启动/遍历/首页展示）
+  await refreshPackageInfo(lib);
   const changedCount = changedFiles.length;
   const summary = action === 'clone'
     ? `已克隆 ${lib.name}（${branch} @ ${commit.slice(0, 8)}），当前版本 ${version}，最近提交含 ${changedCount} 个变更文件。`

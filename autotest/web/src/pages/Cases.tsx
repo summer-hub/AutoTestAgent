@@ -2,7 +2,7 @@ import { useCallback, useEffect, useRef, useState, type CSSProperties } from 're
 import type { CaseVersion, Library, Page, TestCase } from 'shared';
 import { api } from '../api';
 
-const SOURCE_COLORS: Record<string, string> = { 老库存量: 'gray', 新需求引入: 'blue', 问题单跟踪: 'amber', 'AI 生成': 'purple' };
+const SOURCE_COLORS: Record<string, string> = { 老库存量: 'gray', 新需求引入: 'blue', 问题单跟踪: 'amber', 'AI 生成': 'purple', 真机遍历: 'green' };
 const STATUS_COLORS: Record<string, string> = { 通过: 'green', 失败: 'red', 待确认: 'gray', 未执行: 'gray' };
 
 export default function CasesPage() {
@@ -24,6 +24,40 @@ export default function CasesPage() {
   const [detail, setDetail] = useState<TestCase | null>(null);
   const [caseForm, setCaseForm] = useState<null | { mode: 'create' } | { mode: 'edit'; case: TestCase }>(null);
   const [savingCase, setSavingCase] = useState(false);
+  // 真机遍历
+  const [exploreOpen, setExploreOpen] = useState(false);
+  const [exploreStage, setExploreStage] = useState('');
+  const [exploreDone, setExploreDone] = useState(false);
+  const [exploreErr, setExploreErr] = useState('');
+
+  const startExplore = async () => {
+    if (curLib === null) return;
+    setExploreOpen(true);
+    setExploreStage('启动遍历…');
+    setExploreDone(false);
+    setExploreErr('');
+    try {
+      const r = await api.explore(curLib);
+      const poll = async () => {
+        try {
+          const p = await api.exploreProgress(r.runId);
+          setExploreStage(p.stage);
+          if (p.error) setExploreErr(p.error);
+          if (p.done) {
+            setExploreDone(true);
+            loadCases(curLib, 1);
+          } else {
+            setTimeout(() => void poll(), 2000);
+          }
+        } catch (e) {
+          setExploreErr(String((e as Error).message));
+        }
+      };
+      setTimeout(() => void poll(), 2000);
+    } catch (e) {
+      setExploreErr(String((e as Error).message));
+    }
+  };
 
   const loadCases = useCallback((libraryId: number, page: number) => {
     api.cases(libraryId, { page, pageSize: 50, source: source || undefined, q: caseQ || undefined })
@@ -207,6 +241,7 @@ export default function CasesPage() {
               <option>老库存量</option>
               <option>问题单跟踪</option>
               <option>AI 生成</option>
+              <option>真机遍历</option>
             </select>
             <input
               ref={fileRef}
@@ -218,6 +253,7 @@ export default function CasesPage() {
             <button className="btn sm" disabled={curLib === null} onClick={onExport}>⬇ 导出 Excel</button>
             <button className="btn sm" disabled={curLib === null} onClick={() => fileRef.current?.click()}>⬆ 导入 Excel</button>
             <button className="btn sm primary" disabled={curLib === null} onClick={() => setCaseForm({ mode: 'create' })}>＋ 新增用例</button>
+            <button className="btn sm" disabled={curLib === null} onClick={() => void startExplore()} title="连接真机：启动 demo 遍历页面，自动生成用例与 Hypium 脚本">📡 真机遍历</button>
             {importMsg && <span className="muted" style={{ fontSize: 11.5 }}>{importMsg}</span>}
             <span className="muted" style={{ fontSize: 11.5, marginLeft: 'auto' }}>
               版本按单条用例迭代 · 更新自动递增 · 可单独回滚
@@ -453,6 +489,30 @@ export default function CasesPage() {
           onClose={() => setCaseForm(null)}
           onSave={(f) => void saveCaseForm(f)}
         />
+      )}
+
+      {exploreOpen && (
+        <div className="s-overlay show">
+          <div className="s-mask" onClick={() => { if (exploreDone) setExploreOpen(false); }} />
+          <div style={{ position: 'relative', zIndex: 1, width: 520, maxWidth: 'calc(100vw - 40px)', background: 'var(--panel)', border: '1px solid var(--border2)', borderRadius: 16, padding: '26px 24px', boxShadow: '0 24px 80px rgba(0,0,0,.55)' }}>
+            <div style={{ fontSize: 15, fontWeight: 700, marginBottom: 12 }}>📡 真机 UI 遍历</div>
+            {!exploreDone && !exploreErr && (
+              <div style={{ display: 'flex', alignItems: 'center', gap: 14, marginBottom: 12 }}>
+                <div className="ana-spinner" />
+                <div className="muted" style={{ fontSize: 13 }}>{exploreStage || '正在连接设备…'}</div>
+              </div>
+            )}
+            {exploreErr && <div className="error" style={{ marginBottom: 10 }}>⚠️ {exploreErr}</div>}
+            {exploreDone && !exploreErr && (
+              <div className="ok" style={{ marginBottom: 12, lineHeight: 1.7 }}>✓ {exploreStage}</div>
+            )}
+            <div className="muted" style={{ fontSize: 12, lineHeight: 1.7, marginBottom: 16 }}>
+              遍历流程：启动 demo → 逐步获取每页 Layout → 识别按钮/控件 → 遇到越界动画自动滑动到完整可见 →
+              自动生成用例（来源：真机遍历）并生成 Hypium 自动化脚本（参考 HypiumProjectTemplate 模板）。
+            </div>
+            <button className="btn" disabled={!exploreDone && !exploreErr} onClick={() => setExploreOpen(false)}>关闭</button>
+          </div>
+        </div>
       )}
     </>
   );

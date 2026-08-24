@@ -229,6 +229,14 @@ export const api = {
     }
     return res.blob();
   },
+  // 真机 UI 遍历
+  explore: (libraryId: number, deviceId?: number, launchAbility?: string) =>
+    req<{ runId: string }>(`${API_BASE}/explore`, {
+      method: 'POST',
+      body: JSON.stringify({ libraryId, deviceId, launchAbility }),
+    }),
+  exploreProgress: (runId: string) =>
+    req<{ stage: string; done: boolean; error?: string }>(`${API_BASE}/explore/progress/${runId}`),
   deleteAnalysis: (id: number) => req<{ ok: boolean }>(`${API_BASE}/analyses/${id}`, { method: 'DELETE' }),
   deleteAnalysisRound: (round: string) => req<{ ok: boolean; deleted: number }>(`${API_BASE}/analyses/round/${encodeURIComponent(round)}`, { method: 'DELETE' }),
   deleteLibraryAnalyses: (libraryId: number) => req<{ ok: boolean; deleted: number }>(`${API_BASE}/analyses/library/${libraryId}`, { method: 'DELETE' }),

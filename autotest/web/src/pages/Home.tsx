@@ -78,10 +78,11 @@ export default function HomePage() {
             <div className="loading">加载中…</div>
           ) : (
             <table>
-              <tr><th>库名</th><th>当前版本</th><th>用例数</th><th>最近同步</th></tr>
+              <tr><th>库名</th><th>包名（bundleName）</th><th>当前版本</th><th>用例数</th><th>最近同步</th></tr>
               {libs.items.map((l) => (
                 <tr key={l.id}>
                   <td className="link">{l.name}</td>
+                  <td className="mono" style={{ fontSize: 11.5 }}>{l.packageName || '—'}</td>
                   <td className="mono">{l.currentVersion}</td>
                   <td>{l.caseCount ?? 0}</td>
                   <td className="muted">{l.lastSyncedAt ?? '—'}</td>

@@ -36,6 +36,14 @@ export declare function repoDirFor(name: string): string;
 export declare function scriptsDirFor(name: string): string;
 /** 按仓库地址解析三方库：已存在（repo_url 匹配）则复用，否则自动创建。 */
 export declare function ensureLibraryByRepoUrl(url: string): Promise<RepoLib>;
+/** 解析仓库包名/主 Ability（app.json5 / module.json5）并回填 libraries 表。 */
+export declare function refreshPackageInfo(lib: {
+    id: number;
+    name: string;
+}): Promise<{
+    packageName: string;
+    mainAbility: string;
+}>;
 /** 拉取仓库：目录不存在则 clone，否则 pull；返回提交、分支、变更文件与版本。 */
 export declare function pullRepo(lib: RepoLib): Promise<RepoResult>;
 /** 更新仓库 = 拉取 + 变更文件明细。 */
