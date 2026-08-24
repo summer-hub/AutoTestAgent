@@ -6,6 +6,8 @@
 import { getDb, now } from '../db/connection.js';
 import { getSetting } from './settings.js';
 import { extractJson } from './llmHarness.js';
+import { execFileSync } from 'node:child_process';
+import fs from 'node:fs';
 const GITCODE_API = 'https://gitcode.com/api/v5';
 /** fetch 封装：瞬时网络错误自动重试，失败时透出真实原因（e.cause）。 */
 async function fetchWithRetry(url, timeoutMs, retries = 2) {
@@ -97,6 +99,64 @@ export async function fetchPr(repoPath, prNumber, timeoutMs = 25000) {
         pr.files = [];
     }
     return pr;
+}
+function gitIn(dir, args) {
+    return execFileSync('git', args, { cwd: dir, encoding: 'utf8', timeout: 60000, windowsHide: true }).trim();
+}
+/**
+ * GitCode API 不可用时的降级方案：在本地已拉取的仓库目录下用 git 命令，
+ * 把最近提交当作「PR」数据（number = 提交序号 1..N，title = 提交标题，state = merged，
+ * files = 该提交变更的文件），供分析流程继续使用。
+ */
+export function fetchPrsFromGit(dir, opts = {}) {
+    if (!fs.existsSync(dir) || !fs.existsSync(`${dir}/.git`))
+        return [];
+    const limit = opts.limit ?? 8;
+    const need = Math.max(limit, ...(opts.numbers ?? []));
+    let log = '';
+    try {
+        // --no-merges：只取真实变更提交，编号与文件列表更干净
+        log = gitIn(dir, ['log', '--no-merges', '--format=%H%x09%s%x09%ad', '--date=short', '-n', String(need)]);
+    }
+    catch {
+        return [];
+    }
+    const commitList = log.split(/\r?\n/).filter(Boolean).map((line, i) => {
+        const [hash, subject, date] = line.split('\t');
+        return { hash, subject: subject ?? '', date: date ?? '', index: i + 1 };
+    });
+    const selected = opts.numbers && opts.numbers.length > 0
+        ? commitList.filter((c) => opts.numbers.includes(c.index))
+        : commitList.slice(0, limit);
+    const prs = [];
+    for (const c of selected) {
+        let files = [];
+        try {
+            files = gitIn(dir, ['show', '--name-status', '--format=', c.hash])
+                .split(/\r?\n/)
+                .filter(Boolean)
+                .map((line) => {
+                const parts = line.split(/\s+/);
+                return { filename: parts[parts.length - 1] ?? '', additions: 0, deletions: 0 };
+            });
+        }
+        catch {
+            files = [];
+        }
+        prs.push({
+            number: c.index,
+            title: c.subject,
+            state: 'merged',
+            body: '',
+            created_at: c.date,
+            merged_at: c.date,
+            added_lines: 0,
+            removed_lines: 0,
+            web_url: '',
+            files,
+        });
+    }
+    return prs;
 }
 function saveAnalysis(row) {
     getDb().prepare(`INSERT INTO analyses (kind, granularity, library_id, case_id, title, content, created_at)

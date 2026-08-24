@@ -22,6 +22,15 @@ export declare function parseRepoPath(repoUrl: string | null | undefined): strin
 export declare function fetchPrs(repoPath: string, limit?: number, timeoutMs?: number): Promise<GitCodePr[]>;
 /** 拉取单个 PR（含变更文件），供「选择 #PR 分析」使用。 */
 export declare function fetchPr(repoPath: string, prNumber: number, timeoutMs?: number): Promise<GitCodePr>;
+/**
+ * GitCode API 不可用时的降级方案：在本地已拉取的仓库目录下用 git 命令，
+ * 把最近提交当作「PR」数据（number = 提交序号 1..N，title = 提交标题，state = merged，
+ * files = 该提交变更的文件），供分析流程继续使用。
+ */
+export declare function fetchPrsFromGit(dir: string, opts?: {
+    limit?: number;
+    numbers?: number[];
+}): GitCodePr[];
 export interface LibraryRow {
     id: number;
     name: string;

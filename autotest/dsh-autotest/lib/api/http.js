@@ -6,12 +6,12 @@ import { caseTableFor, shardOf, shardStats } from '../db/repository.js';
 import { runTask } from '../services/executor.js';
 import { executePlan } from '../services/planExecutor.js';
 import { registerScheduledPlan } from '../services/scheduler.js';
-import { analyzeAttribution, analyzeCaseUpdates, analyzePrChanges, fetchPr, fetchPrs, parseRepoPath, } from '../services/analyzer.js';
+import { analyzeAttribution, analyzeCaseUpdates, analyzePrChanges, fetchPr, fetchPrs, fetchPrsFromGit, parseRepoPath, } from '../services/analyzer.js';
 import { getAllSettings, getSetting, setSetting } from '../services/settings.js';
 import { cacheDel, cacheGet, cacheSet } from '../services/cache.js';
 import { readDshDefaultModel } from '../services/llmHarness.js';
 import { deviceInfo, hdcAvailable, listTargets } from '../services/hdc.js';
-import { repoDirFor, scriptsDirFor } from '../services/gitRepo.js';
+import { pullRepo, repoDirFor, scriptsDirFor } from '../services/gitRepo.js';
 const routes = [];
 // 分析进度（内存态，供前端轮询展示实时过程；完成后 60s 自动清理）
 const analysisProgress = new Map();
@@ -150,14 +150,24 @@ function defineRoutes(llm) {
         if (!lib)
             throw Object.assign(new Error('三方库不存在'), { statusCode: 404 });
         const repoPath = parseRepoPath(lib.repo_url);
-        if (!repoPath)
-            return { items: [], error: '未配置 GitCode 仓库地址，无法拉取 PR' };
         try {
-            const prs = await fetchPrs(repoPath, 8);
+            const prs = repoPath ? await fetchPrs(repoPath, 8) : [];
+            if (repoPath && prs.length === 0) {
+                const dir = repoDirFor(lib.name);
+                const gitPrs = fs.existsSync(`${dir}/.git`) ? fetchPrsFromGit(dir, { limit: 8 }) : [];
+                return { items: gitPrs.map((p) => ({ number: p.number, title: p.title, state: p.state, createdAt: p.created_at })), source: 'git' };
+            }
             return { items: prs.map((p) => ({ number: p.number, title: p.title, state: p.state, createdAt: p.created_at })) };
         }
         catch (e) {
-            return { items: [], error: e.message };
+            // API 失败降级：本地 git 仓库提交
+            const dir = repoDirFor(lib.name);
+            const gitPrs = fs.existsSync(`${dir}/.git`) ? fetchPrsFromGit(dir, { limit: 8 }) : [];
+            return {
+                items: gitPrs.map((p) => ({ number: p.number, title: p.title, state: p.state, createdAt: p.created_at })),
+                source: 'git',
+                error: gitPrs.length > 0 ? undefined : e.message,
+            };
         }
     });
     route('GET', '/libraries/stats/sources', async () => {
@@ -872,8 +882,6 @@ ${(row.logs ?? '').slice(0, 4000) || '（无）'}
         if (!lib)
             throw Object.assign(new Error('三方库不存在'), { statusCode: 404 });
         const repoPath = parseRepoPath(lib.repo_url);
-        if (!repoPath)
-            throw Object.assign(new Error(`库「${lib.name}」未配置 GitCode 仓库地址（repo_url），无法拉取 PR`), { statusCode: 400 });
         const b = body;
         const prNumber = Number(b.prNumber) || null;
         const prNumbers = Array.isArray(b.prNumbers)
@@ -884,9 +892,31 @@ ${(row.logs ?? '').slice(0, 4000) || '（无）'}
         setProgress(runId, { stage: target.length > 0 ? `拉取 ${target.length} 条 PR…` : '拉取 PR 列表…' });
         setImmediate(async () => {
             try {
-                const prs = target.length > 0
-                    ? await Promise.all(target.map((n) => fetchPr(repoPath, n)))
-                    : await fetchPrs(repoPath);
+                let prs = null;
+                if (repoPath) {
+                    try {
+                        prs = target.length > 0
+                            ? await Promise.all(target.map((n) => fetchPr(repoPath, n)))
+                            : await fetchPrs(repoPath);
+                    }
+                    catch (e) {
+                        setProgress(runId, { stage: `GitCode API 失败（${e.message.slice(0, 60)}），改用本地 git 仓库降级…` });
+                    }
+                }
+                else {
+                    setProgress(runId, { stage: '非 GitCode 仓库，直接使用本地 git 仓库分析…' });
+                }
+                if (!prs) {
+                    const dir = repoDirFor(lib.name);
+                    if (!fs.existsSync(`${dir}/.git`)) {
+                        if (!lib.repo_url)
+                            throw new Error(`库「${lib.name}」未配置 repo_url，无法拉取到本地`);
+                        await pullRepo(lib);
+                    }
+                    prs = fetchPrsFromGit(dir, { limit: 8, numbers: target.length > 0 ? target : undefined });
+                    if (prs.length === 0)
+                        throw new Error('本地仓库无可用提交');
+                }
                 setProgress(runId, { stage: `已获取 ${prs.length} 条 PR` });
                 const r = await analyzePrChanges(llm, lib, prs, (s) => setProgress(runId, { stage: s }));
                 setProgress(runId, { stage: r.message, done: true });
@@ -904,8 +934,6 @@ ${(row.logs ?? '').slice(0, 4000) || '（无）'}
         if (!lib)
             throw Object.assign(new Error('三方库不存在'), { statusCode: 404 });
         const repoPath = parseRepoPath(lib.repo_url);
-        if (!repoPath)
-            throw Object.assign(new Error(`库「${lib.name}」未配置 GitCode 仓库地址（repo_url），无法拉取 PR`), { statusCode: 400 });
         const b = body;
         const prNumber = Number(b.prNumber) || null;
         const prNumbers = Array.isArray(b.prNumbers)
@@ -916,9 +944,31 @@ ${(row.logs ?? '').slice(0, 4000) || '（无）'}
         setProgress(runId, { stage: target.length > 0 ? `拉取 ${target.length} 条 PR…` : '拉取 PR 列表…' });
         setImmediate(async () => {
             try {
-                const prs = target.length > 0
-                    ? await Promise.all(target.map((n) => fetchPr(repoPath, n)))
-                    : await fetchPrs(repoPath, 6);
+                let prs = null;
+                if (repoPath) {
+                    try {
+                        prs = target.length > 0
+                            ? await Promise.all(target.map((n) => fetchPr(repoPath, n)))
+                            : await fetchPrs(repoPath, 6);
+                    }
+                    catch (e) {
+                        setProgress(runId, { stage: `GitCode API 失败（${e.message.slice(0, 60)}），改用本地 git 仓库降级…` });
+                    }
+                }
+                else {
+                    setProgress(runId, { stage: '非 GitCode 仓库，直接使用本地 git 仓库分析…' });
+                }
+                if (!prs) {
+                    const dir = repoDirFor(lib.name);
+                    if (!fs.existsSync(`${dir}/.git`)) {
+                        if (!lib.repo_url)
+                            throw new Error(`库「${lib.name}」未配置 repo_url，无法拉取到本地`);
+                        await pullRepo(lib);
+                    }
+                    prs = fetchPrsFromGit(dir, { limit: 6, numbers: target.length > 0 ? target : undefined });
+                    if (prs.length === 0)
+                        throw new Error('本地仓库无可用提交');
+                }
                 setProgress(runId, { stage: `已获取 ${prs.length} 条 PR` });
                 const r = await analyzeCaseUpdates(llm, lib, prs, (s) => setProgress(runId, { stage: s }));
                 setProgress(runId, { stage: r.message, done: true });

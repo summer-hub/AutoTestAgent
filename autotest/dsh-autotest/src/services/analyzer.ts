@@ -7,6 +7,8 @@ import { getDb, now } from '../db/connection.js';
 import { getSetting } from './settings.js';
 import type { LlmCall } from './llmHarness.js';
 import { extractJson } from './llmHarness.js';
+import { execFileSync } from 'node:child_process';
+import fs from 'node:fs';
 
 const GITCODE_API = 'https://gitcode.com/api/v5';
 
@@ -118,6 +120,63 @@ export async function fetchPr(repoPath: string, prNumber: number, timeoutMs = 25
     pr.files = [];
   }
   return pr;
+}
+
+function gitIn(dir: string, args: string[]): string {
+  return execFileSync('git', args, { cwd: dir, encoding: 'utf8', timeout: 60000, windowsHide: true }).trim();
+}
+
+/**
+ * GitCode API 不可用时的降级方案：在本地已拉取的仓库目录下用 git 命令，
+ * 把最近提交当作「PR」数据（number = 提交序号 1..N，title = 提交标题，state = merged，
+ * files = 该提交变更的文件），供分析流程继续使用。
+ */
+export function fetchPrsFromGit(dir: string, opts: { limit?: number; numbers?: number[] } = {}): GitCodePr[] {
+  if (!fs.existsSync(dir) || !fs.existsSync(`${dir}/.git`)) return [];
+  const limit = opts.limit ?? 8;
+  const need = Math.max(limit, ...(opts.numbers ?? []));
+  let log = '';
+  try {
+    // --no-merges：只取真实变更提交，编号与文件列表更干净
+    log = gitIn(dir, ['log', '--no-merges', '--format=%H%x09%s%x09%ad', '--date=short', '-n', String(need)]);
+  } catch {
+    return [];
+  }
+  const commitList = log.split(/\r?\n/).filter(Boolean).map((line, i) => {
+    const [hash, subject, date] = line.split('\t');
+    return { hash, subject: subject ?? '', date: date ?? '', index: i + 1 };
+  });
+  const selected = opts.numbers && opts.numbers.length > 0
+    ? commitList.filter((c) => opts.numbers!.includes(c.index))
+    : commitList.slice(0, limit);
+  const prs: GitCodePr[] = [];
+  for (const c of selected) {
+    let files: PrFile[] = [];
+    try {
+      files = gitIn(dir, ['show', '--name-status', '--format=', c.hash])
+        .split(/\r?\n/)
+        .filter(Boolean)
+        .map((line) => {
+          const parts = line.split(/\s+/);
+          return { filename: parts[parts.length - 1] ?? '', additions: 0, deletions: 0 };
+        });
+    } catch {
+      files = [];
+    }
+    prs.push({
+      number: c.index,
+      title: c.subject,
+      state: 'merged',
+      body: '',
+      created_at: c.date,
+      merged_at: c.date,
+      added_lines: 0,
+      removed_lines: 0,
+      web_url: '',
+      files,
+    });
+  }
+  return prs;
 }
 
 export interface LibraryRow {
