@@ -8,25 +8,36 @@ export function makeLlm(ctx) {
         if (!providers || providers.length === 0) {
             throw new Error('DSH 未注册任何模型提供方（如 dsh-llm-deepseek），请检查 profile 配置');
         }
-        const provider = providers[0].id;
-        let models = [];
-        try {
-            const list = await ctx.llm.listModels(provider);
-            models = (list ?? []).map((m) => m.id);
+        // 遍历所有 provider 的所有模型（包含 DSH 设置 → 模型 里添加的自定义模型 / 自定义 provider）
+        const pairs = [];
+        for (const p of providers) {
+            try {
+                const list = await ctx.llm.listModels(p.id);
+                for (const m of list ?? [])
+                    pairs.push({ provider: p.id, model: String(m.id) });
+            }
+            catch {
+                /* 单个 provider 不可用（如未配置 Key）不阻塞其他 provider */
+            }
         }
-        catch {
-            /* 部分适配器不实现 listModels，走默认模型 */
-        }
-        if (models.length === 0) {
+        const seen = new Set();
+        const unique = pairs.filter((x) => {
+            const k = `${x.provider}:${x.model}`;
+            if (seen.has(k))
+                return false;
+            seen.add(k);
+            return true;
+        });
+        if (unique.length === 0) {
             throw new Error('未配置可用模型：请在 DSH 设置（设置 → 模型）中配置模型后重试');
         }
-        // 系统配置「默认模型」优先：命中则排到最前，未命中保持原顺序回退
+        // 系统配置「默认模型」优先：命中（跨 provider 匹配）则排到最前，未命中保持原顺序回退
         const defaultModel = String(getSetting('agent.defaultModel', '') || '').trim();
-        const ordered = defaultModel && models.includes(defaultModel)
-            ? [defaultModel, ...models.filter((m) => m !== defaultModel)]
-            : models;
+        const ordered = defaultModel
+            ? [...unique.filter((x) => x.model === defaultModel), ...unique.filter((x) => x.model !== defaultModel)]
+            : unique;
         let lastErr = new Error('LLM 返回为空');
-        for (const model of ordered) {
+        for (const { provider, model } of ordered) {
             for (let attempt = 0; attempt < 2; attempt++) {
                 try {
                     console.log(`[dsh-autotest] llm call: provider=${provider} model=${model} attempt=${attempt + 1}`);
