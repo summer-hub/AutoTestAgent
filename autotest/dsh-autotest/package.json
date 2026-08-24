@@ -1,7 +1,7 @@
 {
   "name": "dsh-autotest",
   "description": "鸿蒙三方库 AutoTest 平台 — DeepSeek Harness 服务端插件（用例库/任务/执行计划/设备，复用 ctx.llm 与 ctx.webServer）",
-  "version": "0.1.34",
+  "version": "0.1.35",
   "private": true,
   "type": "module",
   "main": "lib/index.js",

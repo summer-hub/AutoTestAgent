@@ -195,7 +195,11 @@ async function keyBack(serial) {
 /** 失败诊断截图：设备截图 → recv 到本地 workspace/screenshots。 */
 async function captureScreen(serial, localPath) {
     const mode = await detectDumpMode(serial);
-    const remote = '/data/local/tmp/autotest_screen.png';
+    // HarmonyOS snapshot_display 只接受 .jpeg 后缀；Android screencap 输出 png
+    const remote = mode === 'harmony'
+        ? '/data/local/tmp/autotest_screen.jpeg'
+        : '/data/local/tmp/autotest_screen.png';
+    const ext = mode === 'harmony' ? '.jpeg' : '.png';
     try {
         if (mode === 'harmony') {
             await runHdc(['-t', serial, 'shell', 'snapshot_display', '-f', remote], 15000);
@@ -203,8 +207,9 @@ async function captureScreen(serial, localPath) {
         else {
             await runHdc(['-t', serial, 'shell', 'screencap', '-p', remote], 15000);
         }
-        await runHdc(['-t', serial, 'file', 'recv', remote, localPath], 20000);
-        return fs.existsSync(localPath) ? localPath : `截图文件未生成：${localPath}`;
+        const recvPath = localPath.replace(/\.png$/, ext);
+        await runHdc(['-t', serial, 'file', 'recv', remote, recvPath], 20000);
+        return fs.existsSync(recvPath) ? recvPath : `截图文件未生成：${recvPath}`;
     }
     catch (e) {
         return `截图失败：${e.message}`;
