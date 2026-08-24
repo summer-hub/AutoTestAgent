@@ -30,7 +30,10 @@ export function getSetting<T>(key: string, fallback?: T): T {
     const parsed = JSON.parse(row.value);
     return parsed as T;
   } catch {
-    return fallback ?? (SETTING_DEFAULTS[key] as T);
+    // 历史坏数据（如单反斜杠路径写入后 JSON 解析失败）：按原始字符串读取，避免静默回退默认值
+    let raw = String(row.value).trim();
+    if (raw.length >= 2 && raw.startsWith('"') && raw.endsWith('"')) raw = raw.slice(1, -1);
+    return (raw as unknown) as T;
   }
 }
 

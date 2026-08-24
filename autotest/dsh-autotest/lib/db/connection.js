@@ -77,6 +77,20 @@ export function ensureSchemaAndSeed() {
     if (n === 0) {
         seed(db);
     }
+    // 修复历史坏设置行：JSON 解析失败时按原始字符串重写为合法 JSON（如 app.workspace 单反斜杠路径）
+    const badSettings = db.prepare('SELECT key, value FROM settings').all();
+    for (const s of badSettings) {
+        try {
+            JSON.parse(s.value);
+        }
+        catch {
+            let raw = String(s.value).trim();
+            if (raw.length >= 2 && raw.startsWith('"') && raw.endsWith('"'))
+                raw = raw.slice(1, -1);
+            db.prepare('UPDATE settings SET value = ?, updated_at = ? WHERE key = ?').run(JSON.stringify(raw), now(), s.key);
+            console.log(`[dsh-autotest] 已修复损坏的设置项 ${s.key} → ${JSON.stringify(raw)}`);
+        }
+    }
 }
 import { SCHEMA } from './schema.js';
 import { seed } from './seed.js';

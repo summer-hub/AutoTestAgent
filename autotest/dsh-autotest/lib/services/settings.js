@@ -28,7 +28,11 @@ export function getSetting(key, fallback) {
         return parsed;
     }
     catch {
-        return fallback ?? SETTING_DEFAULTS[key];
+        // 历史坏数据（如单反斜杠路径写入后 JSON 解析失败）：按原始字符串读取，避免静默回退默认值
+        let raw = String(row.value).trim();
+        if (raw.length >= 2 && raw.startsWith('"') && raw.endsWith('"'))
+            raw = raw.slice(1, -1);
+        return raw;
     }
 }
 /** 批量读取配置（返回全部已知键）。 */
