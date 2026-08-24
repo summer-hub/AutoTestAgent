@@ -116,6 +116,22 @@ CREATE INDEX idx_executions_plan ON executions(plan_id);
 CREATE INDEX idx_executions_case ON executions(case_id);
 CREATE INDEX idx_executions_status ON executions(status);
 
+-- 执行归档（旧记录按月归档，主表保持小；由 scheduler 每日触发）
+CREATE TABLE IF NOT EXISTS executions_archive (
+  id BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+  plan_id BIGINT UNSIGNED NULL,
+  case_id BIGINT UNSIGNED NOT NULL,
+  library_id BIGINT UNSIGNED NOT NULL,
+  device_id BIGINT UNSIGNED NULL,
+  status VARCHAR(16) NOT NULL DEFAULT 'pending',
+  steps MEDIUMTEXT NOT NULL,
+  thinking MEDIUMTEXT NULL,
+  logs MEDIUMTEXT NULL,
+  started_at VARCHAR(32) NULL,
+  finished_at VARCHAR(32) NULL
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+CREATE INDEX idx_exa_started ON executions_archive(started_at);
+
 -- 设备（单/多设备、识别、历史设备）
 CREATE TABLE IF NOT EXISTS devices (
   id BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,

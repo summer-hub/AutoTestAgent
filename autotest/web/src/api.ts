@@ -87,7 +87,7 @@ export const api = {
   createKey: (name: string, scopes: string[]) =>
     req<{ ok: boolean; key: string; row: Record<string, unknown> }>(`${API_BASE}/auth/keys`, { method: 'POST', body: JSON.stringify({ name, scopes }) }),
   revokeKey: (id: number) => req<{ ok: boolean }>(`${API_BASE}/auth/keys/${id}`, { method: 'DELETE' }),
-  audit: (limit = 50) => req<{ ok: boolean; rows: Array<Record<string, unknown>> }>(`${API_BASE}/auth/audit?limit=${limit}`),
+  audit: (limit = 50, action = '') => req<{ ok: boolean; rows: Array<Record<string, unknown>> }>(`${API_BASE}/auth/audit?limit=${limit}${action ? `&action=${encodeURIComponent(action)}` : ''}`),
 
   // 三方库
   libraries: (params: { page?: number; pageSize?: number; q?: string } = {}) => {

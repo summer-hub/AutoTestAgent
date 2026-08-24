@@ -291,10 +291,12 @@ export async function revokeApiKey(id, userId) {
     await db.query('UPDATE auth_api_keys SET status = \'revoked\' WHERE id = ?', [id]);
 }
 // ---------- 审计查询 ----------
-export async function listAudit(limit, offset) {
+export async function listAudit(limit, offset, action = '') {
     const db = await authPool();
+    const where = action ? 'WHERE a.action = ?' : '';
+    const args = action ? [action, limit, offset] : [limit, offset];
     const [rows] = await db.query(`SELECT a.id, a.user_id, u.username, a.action, a.target, a.detail, a.ip, a.created_at
      FROM auth_audit_logs a LEFT JOIN auth_users u ON u.id = a.user_id
-     ORDER BY a.id DESC LIMIT ? OFFSET ?`, [limit, offset]);
+     ${where} ORDER BY a.id DESC LIMIT ? OFFSET ?`, args);
     return rows;
 }

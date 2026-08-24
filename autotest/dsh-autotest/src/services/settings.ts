@@ -9,6 +9,7 @@ export const SETTING_DEFAULTS: Record<string, unknown> = {
   'agent.maxCasesPerTask': 20,
   'exec.llmTemperature': 0.4,
   'exec.llmTimeoutMs': 180000,
+  'exec.llmRatePerMin': 10,        // 每用户每分钟 LLM 调用上限（任务/分析/追问）
   'exec.planSampleFull': 60,
   'exec.planSampleBatch': 30,
   'exec.planSampleSingle': 200,

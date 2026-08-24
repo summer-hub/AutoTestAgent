@@ -163,6 +163,7 @@ export function registerAuthRoutes(route: RouteFn): void {
   route('GET', '/auth/audit', async ({ query }) => {
     const limit = Math.min(200, Math.max(1, Number(query.get('limit')) || 50));
     const offset = Math.max(0, Number(query.get('offset')) || 0);
-    return { ok: true, rows: await listAudit(limit, offset) };
+    const action = String(query.get('action') ?? '').slice(0, 64);
+    return { ok: true, rows: await listAudit(limit, offset, action) };
   }, { permission: 'audit:read' });
 }

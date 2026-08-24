@@ -50,4 +50,4 @@ export declare function createApiKey(userId: number, name: string, scopes: strin
     row: Record<string, unknown>;
 }>;
 export declare function revokeApiKey(id: number, userId: number): Promise<void>;
-export declare function listAudit(limit: number, offset: number): Promise<Array<Record<string, unknown>>>;
+export declare function listAudit(limit: number, offset: number, action?: string): Promise<Array<Record<string, unknown>>>;

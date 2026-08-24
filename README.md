@@ -56,7 +56,7 @@ dsh plugin --profile web install
 
 ```powershell
 # 1. 声明依赖：编辑 ~/.dsh/profiles/web/package.json 的 dependencies 加：
-#    "dsh-autotest": "https://github.com/summer-hub/AutoTestAgent/releases/download/v0.1.31/dsh-autotest-0.1.31.tgz"
+#    "dsh-autotest": "https://github.com/summer-hub/AutoTestAgent/releases/download/v0.1.32/dsh-autotest-0.1.32.tgz"
 #    然后必须执行安装（光写不装等于没写）：
 cd $env:USERPROFILE\.dsh\profiles\web
 pnpm install
@@ -81,7 +81,7 @@ Invoke-RestMethod http://localhost:3080/api/autotest/health
 - `health` 通了但侧边栏看不到 → GUI 缓存问题：强制刷新 / 清浏览器缓存，让 DSH Web 重新加载 client 插件。
 - 之前装过旧 tarball → pnpm 会缓存旧包，需 `pnpm update dsh-autotest` 或删掉 `node_modules/dsh-autotest` 重装（旧包缺 `cordis.patch.yml`，装了也起不来）。
 
-也可以把 tgz 下载到本地后用 `"dsh-autotest": "file:./dsh-autotest-0.1.31.tgz"` 或 `pnpm add ./dsh-autotest-0.1.31.tgz`，离线环境更稳；第 2~5 步不变。
+也可以把 tgz 下载到本地后用 `"dsh-autotest": "file:./dsh-autotest-0.1.32.tgz"` 或 `pnpm add ./dsh-autotest-0.1.32.tgz`，离线环境更稳；第 2~5 步不变。
 
 安装成功后：
 
@@ -132,6 +132,24 @@ npx tsx scripts/migrate-sqlite-to-mysql.ts
 
 迁移后所有业务表（三方库/用例/版本/任务/计划/执行/设备/Prompt/模型/分析/配置）都在 MySQL，多机共享时只需共享 MySQL 数据。
 
+### 一键部署（阶段 2：Docker Compose 数据服务）
+
+```bash
+# 服务器（Windows/macOS/Linux 通用）：在 docs/deploy 下
+cp .env.example .env          # 改 MYSQL_ROOT_PASSWORD
+docker compose up -d          # 启动 MySQL 8 + Redis 7（只监听 127.0.0.1）
+```
+
+之后宿主机直接 `dsh --profile web` 启动插件，首次连接引导读 `data/.mysql-url`（迁移脚本自动写入）。防火墙只开放 DSH Web 端口（3080），3306/6379 不对外。
+
+### 加固能力（阶段 2）
+
+- **LLM 限流**：每用户每分钟调用上限（系统配置 `exec.llmRatePerMin`，默认 10），防刷模型额度，超限返回 429。
+- **keyset 深分页**：三方库/任务/执行/分析列表支持 `cursor` 参数（上一页最后 id），返回 `nextCursor`，深翻页不衰减。
+- **执行记录归档**：每日凌晨自动把 6 个月前的执行记录移入 `executions_archive` 表，主表保持小。
+- **统计预聚合**：每分钟预热首页统计/分片缓存，覆盖率卡片不实时 COUNT。
+- **审计筛选**：用户管理页审计日志可按操作类型筛选。
+
 ## 快速上手
 
 1. 打开 DSH Web，左侧边栏进入「AutoTest 平台」
@@ -165,5 +183,5 @@ git tag v0.2.0 && git push origin v0.2.0   # GitHub Actions 自动构建 Release
 
 ```jsonc
 // ~/.dsh/profiles/web/package.json
-"dsh-autotest": "https://github.com/summer-hub/AutoTestAgent/releases/download/v0.1.31/dsh-autotest-0.1.31.tgz"
+"dsh-autotest": "https://github.com/summer-hub/AutoTestAgent/releases/download/v0.1.32/dsh-autotest-0.1.32.tgz"
 ```

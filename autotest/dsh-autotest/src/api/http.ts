@@ -24,7 +24,7 @@ import { AuthError, hasPermission } from '../auth/service.js';
 
 // ---------- mini router ----------
 type Handler = (args: HandlerArgs) => Promise<unknown>;
-interface Route { method: string; keys: string[]; regex: RegExp; handler: Handler; permission?: string; }
+interface Route { method: string; keys: string[]; regex: RegExp; handler: Handler; permission?: string; llm?: boolean; }
 
 const routes: Route[] = [];
 
@@ -43,9 +43,22 @@ function compile(pattern: string): { regex: RegExp; keys: string[] } {
   return { regex, keys };
 }
 
-function route(method: string, pattern: string, handler: Handler, opts?: { permission?: string }): void {
+function route(method: string, pattern: string, handler: Handler, opts?: { permission?: string; llm?: boolean }): void {
   const { regex, keys } = compile(pattern);
-  routes.push({ method, keys, regex, handler, permission: opts?.permission });
+  routes.push({ method, keys, regex, handler, permission: opts?.permission, llm: opts?.llm });
+}
+
+// ---------- LLM 限流（每用户滑动窗口，防刷模型额度） ----------
+const llmCalls = new Map<number, number[]>();
+function checkLlmRate(userId: number): void {
+  const max = Math.max(1, Number(getSetting('exec.llmRatePerMin', 10)) || 10);
+  const nowMs = Date.now();
+  const arr = (llmCalls.get(userId) ?? []).filter((t) => nowMs - t < 60_000);
+  if (arr.length >= max) {
+    throw new AuthError(`LLM 调用过于频繁（${max} 次/分钟），请稍后再试`, 429);
+  }
+  arr.push(nowMs);
+  llmCalls.set(userId, arr);
 }
 
 /** 读缓存 → 未命中执行并回填。 */
@@ -106,6 +119,7 @@ export function makeApiHandler(llm: LlmCall): (req: IncomingMessage, res: Server
           throw new AuthError(`无权限：需要 ${perm}`, 403);
         }
       }
+      if (matched.llm && auth) checkLlmRate(auth.id);
       const data = await matched.handler({ params, query, body, auth, req });
       if (Buffer.isBuffer(data)) {
         res.writeHead(200, {
@@ -149,14 +163,20 @@ function defineRoutes(llm: LlmCall): void {
     const q = query.get('q') ?? '';
     const page = Math.max(1, Number(query.get('page')) || 1);
     const pageSize = Math.min(100, Math.max(1, Number(query.get('pageSize')) || 20));
-    return withCache(`libs:${page}:${pageSize}:${q}`, () => withRead(async (db) => {
+    const cursor = Number(query.get('cursor')) || 0;
+    return withCache(`libs:${page}:${pageSize}:${q}:${cursor}`, () => withRead(async (db) => {
       const like = `%${q}%`;
-      const where = q ? `WHERE l.name LIKE @like OR l.description LIKE @like` : '';
-      const total = (await db.prepare(`SELECT COUNT(*) AS n FROM libraries l ${where}`).get<{ n: number }>({ like }))?.n ?? 0;
+      const conds: string[] = [];
+      if (q) conds.push('(l.name LIKE @like OR l.description LIKE @like)');
+      if (cursor) conds.push('l.id < @cursor');
+      const where = conds.length ? `WHERE ${conds.join(' AND ')}` : '';
+      const order = cursor ? 'l.id DESC' : 'l.id';
+      const total = (await db.prepare(`SELECT COUNT(*) AS n FROM libraries l ${where}`).get<{ n: number }>({ like, cursor }))?.n ?? 0;
       const rows = await db.prepare(`
         SELECT l.*, (SELECT COUNT(*) FROM cases c WHERE c.library_id = l.id) AS case_count
-        FROM libraries l ${where} ORDER BY l.id LIMIT @limit OFFSET @offset`).all<Record<string, unknown>>({ like, limit: pageSize, offset: (page - 1) * pageSize });
-      return { items: rows.map(mapLibrary), total, page, pageSize };
+        FROM libraries l ${where} ORDER BY ${order} LIMIT @limit OFFSET @offset`).all<Record<string, unknown>>({ like, cursor, limit: pageSize, offset: (page - 1) * pageSize });
+      const nextCursor = rows.length > 0 ? Number((rows[rows.length - 1] as Record<string, unknown>).id) : null;
+      return { items: rows.map(mapLibrary), total, page, pageSize, nextCursor };
     }));
   }, { permission: 'library:read' });
 
@@ -547,19 +567,27 @@ function defineRoutes(llm: LlmCall): void {
       update_cases: '更新测试用例', to_script: '用例转自动化脚本',
     };
     const title = b.title ?? titleByType[b.type] ?? b.type;
-    const res = await db.prepare(`INSERT INTO tasks (task_no, type, title, library_id, input, status, progress, created_at, updated_at)
-      VALUES (?, ?, ?, ?, ?, 'pending', 0, ?, ?)`).run(
+    const res = await db.prepare(`INSERT INTO tasks (task_no, type, title, library_id, input, trace, status, progress, created_at, updated_at)
+      VALUES (?, ?, ?, ?, ?, '[]', 'pending', 0, ?, ?)`).run(
       taskNo, b.type, title, b.libraryId ?? null, b.input ?? '', t, t,
     );
     const id = Number(res.lastInsertRowid);
     setImmediate(() => { runTask(id, llm).catch(() => {}); });
     return mapTask(await db.prepare('SELECT * FROM tasks WHERE id = ?').get<Record<string, unknown>>(id) as Record<string, unknown>);
-  }, { permission: 'task:read' });
+  }, { permission: 'task:create', llm: true });
 
   route('GET', '/tasks', async ({ query }) => {
     const status = query.get('status') ?? '';
-    const where = status ? 'WHERE status = @status' : '';
-    return (await getDb().prepare(`SELECT * FROM tasks ${where} ORDER BY id DESC LIMIT 100`).all<Record<string, unknown>>(status ? { status } : {})).map(mapTask);
+    const cursor = Number(query.get('cursor')) || 0;
+    const conds: string[] = [];
+    const p: Record<string, unknown> = { cursor };
+    if (status) { conds.push('status = @status'); p.status = status; }
+    if (cursor) conds.push('id < @cursor');
+    const where = conds.length ? `WHERE ${conds.join(' AND ')}` : '';
+    const rows = await getDb().prepare(`SELECT * FROM tasks ${where} ORDER BY id DESC LIMIT 100`).all<Record<string, unknown>>(p);
+    const items = rows.map(mapTask);
+    (items as unknown as { nextCursor?: number | null }).nextCursor = rows.length > 0 ? Number((rows[rows.length - 1] as Record<string, unknown>).id) : null;
+    return items;
   }, { permission: 'task:read' });
 
   route('GET', '/tasks/:id', async ({ params }) => {
@@ -740,10 +768,12 @@ function defineRoutes(llm: LlmCall): void {
     const planId = Number(query.get('planId')) || null;
     const status = query.get('status') ?? '';
     const limit = Math.min(200, Number(query.get('limit')) || 50);
+    const cursor = Number(query.get('cursor')) || 0;
     const conds: string[] = [];
-    const p: Record<string, unknown> = { limit };
+    const p: Record<string, unknown> = { limit, cursor };
     if (planId) { conds.push('e.plan_id = @planId'); p.planId = planId; }
     if (status) { conds.push('e.status = @status'); p.status = status; }
+    if (cursor) conds.push('e.id < @cursor');
     const where = conds.length ? `WHERE ${conds.join(' AND ')}` : '';
     const rows = await getDb().prepare(
       `SELECT e.*, c.case_no, c.name AS case_name, l.name AS library_name, d.serial AS device_serial
@@ -752,7 +782,9 @@ function defineRoutes(llm: LlmCall): void {
        LEFT JOIN libraries l ON l.id = e.library_id
        LEFT JOIN devices d ON d.id = e.device_id
        ${where} ORDER BY e.id DESC LIMIT @limit`).all<Record<string, unknown>>(p);
-    return rows.map(mapExecution);
+    const items = rows.map(mapExecution);
+    (items as unknown as { nextCursor?: number | null }).nextCursor = rows.length > 0 ? Number((rows[rows.length - 1] as Record<string, unknown>).id) : null;
+    return items;
   }, { permission: 'exec:read' });
 
   route('GET', '/executions/:id', async ({ params }) => {
@@ -805,7 +837,7 @@ ${(row.logs ?? '').slice(0, 4000) || '（无）'}
         : '该步骤按用例前置条件执行，日志无异常，界面状态与预期一致，因此判定通过。（LLM 暂不可用，以下为规则推断）';
       return { answer };
     }
-  }, { permission: 'exec:run' });
+  }, { permission: 'exec:run', llm: true });
 
   // ---- devices ----
   route('GET', '/devices', async () =>
@@ -894,14 +926,19 @@ ${(row.logs ?? '').slice(0, 4000) || '（无）'}
     const kind = query.get('kind') ?? '';
     const granularity = query.get('granularity') ?? '';
     const libraryId = Number(query.get('libraryId')) || null;
-    return withCache(`analyses:${kind}:${libraryId}:${granularity}`, async () => {
+    const cursor = Number(query.get('cursor')) || 0;
+    return withCache(`analyses:${kind}:${libraryId}:${granularity}:${cursor}`, async () => {
       const conds: string[] = [];
-      const p: Record<string, unknown> = {};
+      const p: Record<string, unknown> = { cursor };
       if (kind) { conds.push('kind = @kind'); p.kind = kind; }
       if (granularity) { conds.push('granularity = @granularity'); p.granularity = granularity; }
       if (libraryId) { conds.push('library_id = @libraryId'); p.libraryId = libraryId; }
+      if (cursor) conds.push('id < @cursor');
       const where = conds.length ? `WHERE ${conds.join(' AND ')}` : '';
-      return (await getDb().prepare(`SELECT * FROM analyses ${where} ORDER BY id DESC LIMIT 100`).all<Record<string, unknown>>(p)).map(mapAnalysis);
+      const rows = await getDb().prepare(`SELECT * FROM analyses ${where} ORDER BY id DESC LIMIT 100`).all<Record<string, unknown>>(p);
+      const items = rows.map(mapAnalysis);
+      (items as unknown as { nextCursor?: number | null }).nextCursor = rows.length > 0 ? Number((rows[rows.length - 1] as Record<string, unknown>).id) : null;
+      return items;
     });
   }, { permission: 'analysis:read' });
 
@@ -951,7 +988,7 @@ ${(row.logs ?? '').slice(0, 4000) || '（无）'}
       }
     });
     return { runId };
-  }, { permission: 'analysis:run' });
+  }, { permission: 'analysis:run', llm: true });
 
   route('POST', '/analyses/case-updates/:libraryId', async ({ params, body }) => {
     void cacheDel('analyses');
@@ -999,7 +1036,7 @@ ${(row.logs ?? '').slice(0, 4000) || '（无）'}
       }
     });
     return { runId };
-  }, { permission: 'analysis:run' });
+  }, { permission: 'analysis:run', llm: true });
 
   route('GET', '/analyses/progress/:runId', async ({ params }) => {
     const p = analysisProgress.get(String(params.runId));
@@ -1047,7 +1084,7 @@ ${(row.logs ?? '').slice(0, 4000) || '（无）'}
       libraryId: b.libraryId ? Number(b.libraryId) : null,
       caseId: b.caseId ? Number(b.caseId) : null,
     });
-  }, { permission: 'analysis:run' });
+  }, { permission: 'analysis:run', llm: true });
 }
 
 // ---------- mappers / helpers ----------

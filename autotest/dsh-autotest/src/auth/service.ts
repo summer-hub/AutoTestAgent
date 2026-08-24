@@ -361,13 +361,15 @@ export async function revokeApiKey(id: number, userId: number): Promise<void> {
 }
 
 // ---------- 审计查询 ----------
-export async function listAudit(limit: number, offset: number): Promise<Array<Record<string, unknown>>> {
+export async function listAudit(limit: number, offset: number, action = ''): Promise<Array<Record<string, unknown>>> {
   const db = await authPool();
+  const where = action ? 'WHERE a.action = ?' : '';
+  const args = action ? [action, limit, offset] : [limit, offset];
   const [rows] = await db.query(
     `SELECT a.id, a.user_id, u.username, a.action, a.target, a.detail, a.ip, a.created_at
      FROM auth_audit_logs a LEFT JOIN auth_users u ON u.id = a.user_id
-     ORDER BY a.id DESC LIMIT ? OFFSET ?`,
-    [limit, offset],
+     ${where} ORDER BY a.id DESC LIMIT ? OFFSET ?`,
+    args,
   ) as [Array<Record<string, unknown>>, unknown];
   return rows;
 }

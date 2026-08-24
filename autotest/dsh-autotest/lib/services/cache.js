@@ -54,8 +54,8 @@ export async function cacheGet(key) {
     lru.set(key, e);
     return e.value;
 }
-export async function cacheSet(key, value) {
-    const ttl = ttlMs();
+export async function cacheSet(key, value, ttlOverrideMs) {
+    const ttl = ttlOverrideMs ?? ttlMs();
     const r = await redis();
     if (r) {
         try {

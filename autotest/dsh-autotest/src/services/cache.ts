@@ -52,8 +52,8 @@ export async function cacheGet<T>(key: string): Promise<T | undefined> {
   return e.value as T;
 }
 
-export async function cacheSet(key: string, value: unknown): Promise<void> {
-  const ttl = ttlMs();
+export async function cacheSet(key: string, value: unknown, ttlOverrideMs?: number): Promise<void> {
+  const ttl = ttlOverrideMs ?? ttlMs();
   const r = await redis();
   if (r) {
     try { await r.set(`autotest:${key}`, JSON.stringify(value), 'PX', ttl); } catch { /* Redis 失败不阻塞 */ }

@@ -13,6 +13,7 @@ export default function UsersPage({ me }: { me: AuthUser | null }) {
   const [invites, setInvites] = useState<Array<Record<string, unknown>>>([]);
   const [keys, setKeys] = useState<Array<Record<string, unknown>>>([]);
   const [audit, setAudit] = useState<Array<Record<string, unknown>>>([]);
+  const [auditAction, setAuditAction] = useState('');
   const [err, setErr] = useState('');
   const [msg, setMsg] = useState('');
   const [newUser, setNewUser] = useState({ username: '', password: '', role: 'viewer' });
@@ -26,7 +27,7 @@ export default function UsersPage({ me }: { me: AuthUser | null }) {
     try {
       const [u, i, k, a] = await Promise.all([
         api.users(), api.invites(), api.keys(),
-        canAudit ? api.audit(50) : Promise.resolve({ ok: true, rows: [] as Array<Record<string, unknown>> }),
+        canAudit ? api.audit(50, auditAction) : Promise.resolve({ ok: true, rows: [] as Array<Record<string, unknown>> }),
       ]);
       setUsers(u.users as UserRow[]);
       setInvites(i.invites);
@@ -35,7 +36,7 @@ export default function UsersPage({ me }: { me: AuthUser | null }) {
     } catch (e) {
       setErr(String((e as Error).message));
     }
-  }, [canAudit]);
+  }, [canAudit, auditAction]);
 
   useEffect(() => { void load(); }, [load]);
 
@@ -214,7 +215,15 @@ export default function UsersPage({ me }: { me: AuthUser | null }) {
       {/* 审计 */}
       {canAudit && (
         <div className="card" style={{ padding: 14 }}>
-          <div className="card-h" style={{ marginBottom: 8 }}><span className="t">审计日志（最近 {audit.length} 条）</span></div>
+          <div className="card-h" style={{ marginBottom: 8 }}>
+            <span className="t">审计日志（最近 {audit.length} 条）</span>
+            <select className="select" style={{ marginLeft: 'auto', width: 200 }} value={auditAction} onChange={(e) => setAuditAction(e.target.value)}>
+              <option value="">全部操作</option>
+              {['login', 'login.failed', 'logout', 'register', 'password.change', 'user.create', 'user.role', 'user.status', 'user.delete', 'user.reset-password', 'invite.create', 'invite.revoke', 'apikey.create', 'apikey.revoke', 'refresh'].map((a) => (
+                <option key={a} value={a}>{a}</option>
+              ))}
+            </select>
+          </div>
           <div style={{ display: 'flex', flexDirection: 'column', gap: 4, maxHeight: 260, overflowY: 'auto', fontSize: 12.5 }}>
             {audit.map((a) => (
               <div key={Number(a.id)} style={{ display: 'flex', gap: 10, borderBottom: '1px solid var(--border)', padding: '5px 2px' }}>
