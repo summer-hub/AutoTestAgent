@@ -83,6 +83,18 @@ export default function App() {
 
   const canManageUsers = !!(me?.permissions ?? []).includes('user:manage');
 
+  // hash 路由监听（必须位于任何条件 return 之前 —— Hooks 规则）
+  useEffect(() => {
+    const onHash = () => {
+      const h = location.hash.replace(/^#\/?/, '') as PageKey | 'settings';
+      if (h === 'settings') { setSettingsOpen(true); return; }
+      if (h in TITLES) setPage(h);
+    };
+    if (location.hash.replace(/^#\/?/, '') === 'settings') setSettingsOpen(true);
+    window.addEventListener('hashchange', onHash);
+    return () => window.removeEventListener('hashchange', onHash);
+  }, []);
+
   // 挂载后：token 校验 / 记住账号静默登录
   useEffect(() => {
     let cancelled = false;
@@ -139,17 +151,6 @@ export default function App() {
       </ErrorBoundary>
     );
   }
-
-  useEffect(() => {
-    const onHash = () => {
-      const h = location.hash.replace(/^#\/?/, '') as PageKey | 'settings';
-      if (h === 'settings') { setSettingsOpen(true); return; }
-      if (h in TITLES) setPage(h);
-    };
-    if (location.hash.replace(/^#\/?/, '') === 'settings') setSettingsOpen(true);
-    window.addEventListener('hashchange', onHash);
-    return () => window.removeEventListener('hashchange', onHash);
-  }, []);
 
   const renderPage = () => (
     <ErrorBoundary resetKey={page}>

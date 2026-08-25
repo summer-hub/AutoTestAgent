@@ -3,6 +3,7 @@ import { createRoot } from 'react-dom/client';
 import App from './App';
 import './styles.css';
 import { applyHostTheme } from './theme';
+import { ErrorBoundary } from './components/ErrorBoundary';
 
 // iframe 嵌入 DSH 时同步宿主主题（同源读 parent --dsw-* 变量）；独立运行自动跳过。
 applyHostTheme();
@@ -13,6 +14,8 @@ if (import.meta.env.VITE_EMBED === '1') {
 
 createRoot(document.getElementById('root')!).render(
   <StrictMode>
-    <App />
+    <ErrorBoundary>
+      <App />
+    </ErrorBoundary>
   </StrictMode>,
 );
