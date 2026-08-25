@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { api, authState, type AuthUser } from './api';
+import { api, authState, rememberState, type AuthUser } from './api';
 import HomePage from './pages/Home';
 import CasesPage from './pages/Cases';
 import TasksPage from './pages/Tasks';
@@ -14,6 +14,7 @@ import ScriptsPage from './pages/Scripts';
 import LoginPage from './pages/Login';
 import UsersPage from './pages/Users';
 import SettingsModal from './components/SettingsModal';
+import { ErrorBoundary } from './components/ErrorBoundary';
 
 export type PageKey = 'home' | 'tasks' | 'cases' | 'scripts' | 'plans' | 'analysis' | 'attribution' | 'debug' | 'devices' | 'prompts' | 'settings' | 'users' | 'login';
 
@@ -68,23 +69,48 @@ const parseHash = (): PageKey => {
 
 export default function App() {
   const [page, setPage] = useState<PageKey>(() => {
-    return authState.has() ? parseHash() : 'login';
+    return authState.has() ? parseHash() : 'home';
   });
   const [me, setMe] = useState<AuthUser | null>(null);
   const [settingsOpen, setSettingsOpen] = useState(false);
+  // 启动流程：有 token 直接校验；无 token 但记住了账号 → 静默自动登录
+  const [booting, setBooting] = useState(true);
 
   const goto = (p: PageKey) => {
     setPage(p);
     try { location.hash = p; } catch { /* noop */ }
   };
 
-  // 挂载后拉取当前用户；token 失效时 api 内部会清理并跳登录
+  const canManageUsers = !!(me?.permissions ?? []).includes('user:manage');
+
+  // 挂载后：token 校验 / 记住账号静默登录
   useEffect(() => {
-    if (!authState.has()) return;
-    api.me()
-      .then((r) => { setMe(r.user); if (page === 'login') goto('home'); })
-      .catch(() => { /* 401 已由 api 处理 */ });
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+    let cancelled = false;
+    (async () => {
+      try {
+        if (authState.has()) {
+          const r = await api.me();
+          if (!cancelled) { setMe(r.user); }
+          return;
+        }
+        const remembered = rememberState.get();
+        if (remembered) {
+          try {
+            const r = await api.login(remembered.username, remembered.password);
+            authState.token = r.token;
+            authState.refresh = r.refreshToken;
+            if (!cancelled) { setMe(r.user); setPage(parseHash()); }
+            return;
+          } catch {
+            rememberState.clear(); // 凭据失效，清除并回到登录页
+          }
+        }
+        if (!cancelled) setPage('login');
+      } finally {
+        if (!cancelled) setBooting(false);
+      }
+    })();
+    return () => { cancelled = true; };
   }, []);
 
   const doLogout = async () => {
@@ -96,8 +122,22 @@ export default function App() {
 
   const roleLabel = (r: string) => ({ admin: '管理员', manager: '组长', engineer: '测试工程师', viewer: '只读访客' }[r] ?? r);
 
+  if (booting) {
+    return (
+      <div style={{ minHeight: '100vh', display: 'flex', alignItems: 'center', justifyContent: 'center', flexDirection: 'column', gap: 14 }}>
+        <div className="brand-logo" style={{ width: 46, height: 46, fontSize: 22 }}>A</div>
+        <div className="muted" style={{ fontSize: 12.5 }}>正在进入 AutoTest 平台…</div>
+        <div className="ana-spinner" />
+      </div>
+    );
+  }
+
   if (!authState.has()) {
-    return <LoginPage onLogin={(u) => { setMe(u); goto('home'); }} />;
+    return (
+      <ErrorBoundary resetKey="login">
+        <LoginPage onLogin={(u) => { setMe(u); goto('home'); }} />
+      </ErrorBoundary>
+    );
   }
 
   useEffect(() => {
@@ -112,7 +152,7 @@ export default function App() {
   }, []);
 
   const renderPage = () => (
-    <>
+    <ErrorBoundary resetKey={page}>
       {page === 'home' && <HomePage />}
       {page === 'tasks' && <TasksPage />}
       {page === 'cases' && <CasesPage me={me} />}
@@ -125,7 +165,7 @@ export default function App() {
       {page === 'prompts' && <PromptsPage />}
       {page === 'settings' && <SettingsPage />}
       {page === 'users' && <UsersPage me={me} />}
-    </>
+    </ErrorBoundary>
   );
 
   if (EMBED) {
@@ -139,7 +179,7 @@ export default function App() {
           </div>
           <nav className="embed-nav">
             {NAV.map((g) =>
-              g.items.filter((it) => it.key !== 'users' || me?.roles.includes('admin')).map((it) => (
+              g.items.filter((it) => it.key !== 'users' || canManageUsers).map((it) => (
                 <button
                   key={it.key}
                   type="button"
@@ -153,9 +193,12 @@ export default function App() {
             )}
           </nav>
           <div className="tb-spacer" />
-          <span className="tb-pill" style={{ cursor: 'pointer' }} onClick={doLogout} title="退出登录">
-            👤 {me?.username ?? '...'} · {me?.roles.map(roleLabel).join('/')} · 退出
-          </span>
+          {canManageUsers && (
+            <span className="tb-pill" style={{ cursor: 'pointer' }} title="用户管理 / 邀请码" onClick={() => goto('users')}>
+              👤 {me?.username ?? '...'} · {me?.roles.map(roleLabel).join('/')}
+            </span>
+          )}
+          <span className="tb-pill" style={{ cursor: 'pointer' }} onClick={doLogout} title="退出登录">退出</span>
           <div className="tb-pill">
             <span className="dot green" /> 后端在线
           </div>
@@ -188,7 +231,7 @@ export default function App() {
               ))}
             </div>
           ))}
-          {me?.roles.includes('admin') && (
+          {canManageUsers && (
             <div className={`nav-item ${page === 'users' ? 'active' : ''}`} onClick={() => goto('users')}>
               <span className="ico">👥</span>用户管理
             </div>

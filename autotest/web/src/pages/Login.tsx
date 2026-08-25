@@ -2,7 +2,7 @@
 //  - 左侧品牌区：产品定位 + 能力亮点（CRM 常见的 split-panel 结构）
 //  - 右侧表单区：居中排版，登录 / 注册切换
 import { useState } from 'react';
-import { api, authState, type AuthUser } from '../api';
+import { api, authState, rememberState, type AuthUser } from '../api';
 
 const FEATURES: Array<{ icon: string; title: string; desc: string }> = [
   { icon: '🤖', title: 'AI 用例生成', desc: 'PR 变更分析 · 自动编写与更新测试用例' },
@@ -13,8 +13,9 @@ const FEATURES: Array<{ icon: string; title: string; desc: string }> = [
 
 export default function LoginPage({ onLogin }: { onLogin: (u: AuthUser) => void }) {
   const [tab, setTab] = useState<'login' | 'register'>('login');
-  const [username, setUsername] = useState('');
-  const [password, setPassword] = useState('');
+  const [username, setUsername] = useState(() => rememberState.get()?.username ?? '');
+  const [password, setPassword] = useState(() => rememberState.get()?.password ?? '');
+  const [remember, setRemember] = useState(() => !!rememberState.get());
   const [invite, setInvite] = useState('');
   const [msg, setMsg] = useState('');
   const [err, setErr] = useState('');
@@ -28,6 +29,10 @@ export default function LoginPage({ onLogin }: { onLogin: (u: AuthUser) => void 
         : await api.register(invite, username, password);
       authState.token = r.token;
       authState.refresh = r.refreshToken;
+      if (tab === 'login') {
+        if (remember) rememberState.set(username.trim(), password);
+        else rememberState.clear();
+      }
       setMsg(tab === 'login' ? '登录成功' : '注册成功，已自动登录');
       onLogin(r.user);
     } catch (e) {
@@ -158,6 +163,11 @@ export default function LoginPage({ onLogin }: { onLogin: (u: AuthUser) => void 
               />
             </label>
           </div>
+
+          <label style={{ display: 'flex', alignItems: 'center', gap: 7, fontSize: 12, color: 'var(--text2)', cursor: 'pointer', userSelect: 'none' }}>
+            <input type="checkbox" checked={remember} onChange={(e) => setRemember(e.target.checked)} style={{ accentColor: 'var(--accent)' }} />
+            记住账号并自动登录（7 天内免登录，过期后自动用保存的账号重新登录）
+          </label>
 
           {err && <div className="error" style={{ margin: '12px 0 0' }}>⚠️ {err}</div>}
           {msg && <div className="ok" style={{ margin: '12px 0 0' }}>✓ {msg}</div>}

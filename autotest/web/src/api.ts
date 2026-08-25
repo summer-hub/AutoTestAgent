@@ -24,25 +24,64 @@ export const authState = {
   has(): boolean { return !!this.token; },
 };
 
-async function req<T>(url: string, init?: RequestInit): Promise<T> {
-  const headers: Record<string, string> = { 'Content-Type': 'application/json' };
-  if (authState.token) headers.Authorization = `Bearer ${authState.token}`;
-  const res = await fetch(url, { headers, ...init });
-  if (res.status === 401 && authState.refresh && !url.includes('/auth/')) {
-    // 自动续期一次
+// 记住账号（自动登录）：localStorage 存 base64(user/password)，仅用户勾选时启用
+export const rememberState = {
+  get(): { username: string; password: string } | null {
+    try {
+      const raw = localStorage.getItem('autotest_remember');
+      if (!raw) return null;
+      const j = JSON.parse(raw) as { u?: string; p?: string };
+      if (!j.u || !j.p) return null;
+      return { username: decodeURIComponent(escape(atob(j.u))), password: decodeURIComponent(escape(atob(j.p))) };
+    } catch { return null; }
+  },
+  set(username: string, password: string): void {
+    try {
+      localStorage.setItem('autotest_remember', JSON.stringify({
+        u: btoa(unescape(encodeURIComponent(username))),
+        p: btoa(unescape(encodeURIComponent(password))),
+      }));
+    } catch { /* 存储不可用时忽略 */ }
+  },
+  clear(): void {
+    localStorage.removeItem('autotest_remember');
+  },
+};
+
+// 单飞刷新：并发 401 共享同一次 refresh 调用，防止 refreshToken 旋转导致的误登出风暴
+let refreshingPromise: Promise<boolean> | null = null;
+
+function tryRefresh(): Promise<boolean> {
+  if (!authState.refresh) return Promise.resolve(false);
+  refreshingPromise ??= (async () => {
     try {
       const r = await fetch(`${API_BASE}/auth/refresh`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ refreshToken: authState.refresh }),
       });
-      if (r.ok) {
-        const d = (await r.json()) as { token: string; refreshToken: string };
-        authState.token = d.token;
-        authState.refresh = d.refreshToken;
-        return req<T>(url, init);
-      }
-    } catch { /* 续期失败走登出 */ }
+      if (!r.ok) return false;
+      const d = (await r.json()) as { token: string; refreshToken: string };
+      authState.token = d.token;
+      authState.refresh = d.refreshToken;
+      return true;
+    } catch {
+      return false;
+    } finally {
+      setTimeout(() => { refreshingPromise = null; }, 0);
+    }
+  })();
+  return refreshingPromise;
+}
+
+async function req<T>(url: string, init?: RequestInit): Promise<T> {
+  const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+  if (authState.token) headers.Authorization = `Bearer ${authState.token}`;
+  const res = await fetch(url, { headers, ...init });
+  if (res.status === 401 && authState.refresh && !url.includes('/auth/')) {
+    // 自动续期一次（并发请求共享同一次刷新结果）
+    const ok = await tryRefresh();
+    if (ok) return req<T>(url, init);
     authState.clear();
     try { location.hash = 'login'; } catch { /* noop */ }
   }

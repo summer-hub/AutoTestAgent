@@ -33,8 +33,8 @@ export const SETTING_DEFAULTS = {
     'auth.jwtSecret': '',
     'auth.bootstrapPassword': '',
     'auth.inviteOnly': true,
-    'auth.accessTtlSec': 3600,
-    'auth.refreshTtlDays': 7,
+    'auth.accessTtlSec': 604800, // 登录有效期 7 天（免频繁掉线）
+    'auth.refreshTtlDays': 30,
 };
 let cache = null;
 function parseValue(raw, fallback, key) {
