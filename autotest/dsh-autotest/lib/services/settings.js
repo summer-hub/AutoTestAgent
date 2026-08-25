@@ -65,11 +65,11 @@ export function getAllSettings() {
         return { key, value: parseValue(entry.value, SETTING_DEFAULTS[key]), updatedAt: entry.updatedAt };
     });
 }
-/** 启动时全量加载（ensureReady 调用）。 */
+/** 启动时全量加载（ensureReady 调用）。注意：key 是 MySQL 保留字，别名必须避开。 */
 export async function loadSettings() {
     try {
-        const rows = await getDb().prepare('SELECT `key` AS key, value, updated_at FROM settings').all();
-        cache = new Map(rows.map((r) => [r.key, { value: r.value, updatedAt: r.updated_at }]));
+        const rows = await getDb().prepare('SELECT `key` AS k, value, updated_at FROM settings').all();
+        cache = new Map(rows.map((r) => [r.k, { value: r.value, updatedAt: r.updated_at }]));
     }
     catch (e) {
         console.warn('[dsh-autotest] settings 加载失败，使用默认值：', e.message);

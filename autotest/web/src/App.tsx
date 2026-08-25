@@ -73,6 +73,7 @@ export default function App() {
   });
   const [me, setMe] = useState<AuthUser | null>(null);
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const [backend, setBackend] = useState<{ version: string; db: string } | null>(null);
   // 启动流程：有 token 直接校验；无 token 但记住了账号 → 静默自动登录
   const [booting, setBooting] = useState(true);
 
@@ -100,6 +101,7 @@ export default function App() {
     let cancelled = false;
     (async () => {
       try {
+        api.health().then((h) => { if (!cancelled) setBackend({ version: String((h as { version?: string }).version ?? '?'), db: String((h as { db?: string }).db ?? '?') }); }).catch(() => {});
         if (authState.has()) {
           const r = await api.me();
           if (!cancelled) { setMe(r.user); }
@@ -200,8 +202,8 @@ export default function App() {
             </span>
           )}
           <span className="tb-pill" style={{ cursor: 'pointer' }} onClick={doLogout} title="退出登录">退出</span>
-          <div className="tb-pill">
-            <span className="dot green" /> 后端在线
+          <div className="tb-pill" title={backend ? `后端版本 ${backend.version} · ${backend.db}` : '加载中'}>
+            <span className="dot green" /> {backend ? `v${backend.version} · ${backend.db}` : '连接中'}
           </div>
         </header>
         <div className="embed-content">{renderPage()}</div>
@@ -260,8 +262,8 @@ export default function App() {
           <div className="tb-pill">
             <span className="dot green" /> 模型已连接 · deepseek-v4
           </div>
-          <div className="tb-pill">
-            <span className="dot green" /> 后端在线
+          <div className="tb-pill" title={backend ? `后端版本 ${backend.version} · ${backend.db}` : '加载中'}>
+            <span className="dot green" /> {backend ? `v${backend.version} · ${backend.db}` : '连接中'}
           </div>
         </header>
         <div className="content">{renderPage()}</div>

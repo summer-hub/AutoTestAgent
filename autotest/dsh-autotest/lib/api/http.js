@@ -99,8 +99,13 @@ export function makeApiHandler(llm) {
                     break;
                 }
             }
-            if (!matched)
-                return send(res, 404, { error: 'Not Found', path });
+            if (!matched) {
+                return send(res, 404, {
+                    error: 'Not Found',
+                    path,
+                    message: `接口不存在：${method} ${path} —— 服务端可能未更新到最新版本，请重启宿主进程后重试`,
+                });
+            }
             const body = ['POST', 'PUT', 'PATCH'].includes(method) ? await readBody(req) : {};
             // 认证 / 权限
             let auth;

@@ -8,7 +8,7 @@ export declare function getAllSettings(): Array<{
     value: SettingValue;
     updatedAt: string | null;
 }>;
-/** 启动时全量加载（ensureReady 调用）。 */
+/** 启动时全量加载（ensureReady 调用）。注意：key 是 MySQL 保留字，别名必须避开。 */
 export declare function loadSettings(): Promise<void>;
 /** 写入配置：同步更新内存，异步写库（MySQL/SQLite 双方言 upsert）。 */
 export declare function setSetting(key: string, value: SettingValue): void;
