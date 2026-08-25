@@ -19,6 +19,7 @@ export const SETTING_DEFAULTS = {
     'data.shardCount': 16,
     'device.execEngine': 'hdc',
     'device.appAbilities': '{}',
+    'device.autoScanInterval': 30, // 设备自动检测间隔（秒），0=关闭；启动时立即检测一次
     'explore.maxDepth': 2, // 真机 UI 遍历：BFS 最大深度
     'explore.maxPages': 20, // 真机 UI 遍历：最多收录页面数
     'explore.controlsPerPage': 12, // 真机 UI 遍历：每页最多收集控件数

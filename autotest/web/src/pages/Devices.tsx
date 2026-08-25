@@ -42,6 +42,12 @@ export default function DevicesPage() {
 
   useEffect(() => { load(); }, [load]);
 
+  // 自动检测：后端周期扫描 hdc，前端每 8 秒刷新列表（无需手动点击）
+  useEffect(() => {
+    const timer = setInterval(load, 8000);
+    return () => clearInterval(timer);
+  }, [load]);
+
   const scan = async () => {
     setScanning(true);
     setMsg('正在扫描局域网 / USB 设备…（hdc list targets）');
@@ -71,7 +77,7 @@ export default function DevicesPage() {
   return (
     <>
       <div className="page-title">设备管理</div>
-      <div className="page-desc">单设备 / 多设备管理 · 设备识别 · 历史设备保存</div>
+      <div className="page-desc">连接真机后自动检测上线（启动即扫 + 周期检测，默认 30s 可配置）· 无需手动点击识别</div>
 
       {error && <div className="error">⚠️ {error}</div>}
 

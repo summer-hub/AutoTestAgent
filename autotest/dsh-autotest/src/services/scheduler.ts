@@ -1,14 +1,17 @@
-// 定时调度器：注册 scheduled 计划，cron 到点触发 executePlan
+// 定时调度器：注册 scheduled 计划，cron 到点触发 executePlan；设备自动检测常驻
 import cron from 'node-cron';
 import { getDb } from '../db/connection.js';
 import { executePlan } from './planExecutor.js';
 import { archiveOldExecutions } from './archive.js';
 import { warmStatsCache } from './stats.js';
 import { getSetting } from './settings.js';
+import { startDeviceAutoScan } from './deviceScanner.js';
 
 const jobs = new Map<number, cron.ScheduledTask>();
 
 export async function startScheduler(): Promise<void> {
+  // 设备自动检测：与计划调度无关，任何节点都维护本地 devices 表在线状态
+  startDeviceAutoScan();
   if (!getSetting('exec.schedulerEnabled', true)) {
     console.log('[autotest] 调度器已禁用（exec.schedulerEnabled=false，多节点模式仅主节点开启）');
     return;

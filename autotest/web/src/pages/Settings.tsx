@@ -38,6 +38,7 @@ const SECTIONS: Array<{ title: string; desc: string; fields: Array<{ key: string
   {
     title: '设备与执行', desc: '设备执行引擎', fields: [
       { key: 'device.execEngine', label: '执行引擎', type: 'text' },
+      { key: 'device.autoScanInterval', label: '设备自动检测间隔（秒）', type: 'number', hint: '0=关闭；启动时立即检测一次，此后按间隔自动维护在线状态' },
       { key: 'device.appAbilities', label: '应用启动映射（JSON）', type: 'text', hint: '{"时钟":"com.xx/.MainAbility"}' },
       { key: 'exec.scriptMode', label: '脚本执行模式', type: 'text', hint: 'script / step' },
     ],

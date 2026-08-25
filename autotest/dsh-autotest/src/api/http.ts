@@ -18,6 +18,7 @@ import { getAllSettings, getSetting, setSetting, type SettingValue } from '../se
 import { cacheDel, cacheGet, cacheSet } from '../services/cache.js';
 import { readDshDefaultModel } from '../services/llmHarness.js';
 import { deviceInfo, hdcAvailable, listTargets } from '../services/hdc.js';
+import { autoScanDevices } from '../services/deviceScanner.js';
 import { pullRepo, repoDirFor, workspaceDir, type RepoLib } from '../services/gitRepo.js';
 import { registerAuthRoutes, requireAuth, type HandlerArgs, type RouteFn } from '../auth/index.js';
 import { AuthError, hasPermission } from '../auth/service.js';
@@ -925,42 +926,24 @@ ${(row.logs ?? '').slice(0, 4000) || '（无）'}
   route('POST', '/devices/scan', async () => {
     const db = getDb();
     void cacheDel('devices');
-    const t = now();
     const count = async (): Promise<number> => (await db.prepare('SELECT COUNT(*) AS n FROM devices').get<{ n: number }>())?.n ?? 0;
 
-    // 真实识别：hdc list targets + param get
-    const hdcOk = await hdcAvailable();
-    if (hdcOk) {
-      const targets = await listTargets();
-      if (targets.length > 0) {
-        const info = await deviceInfo(targets[0]);
-        const upsert = dbMode() === 'sqlite'
-          ? `INSERT INTO devices (serial, model, os_version, status, last_seen_at, created_at)
-             VALUES (?, ?, ?, 'online', ?, ?)
-             ON CONFLICT(serial) DO UPDATE SET model = excluded.model, os_version = excluded.os_version,
-               status = 'online', last_seen_at = excluded.last_seen_at`
-          : `INSERT INTO devices (serial, model, os_version, status, last_seen_at, created_at)
-             VALUES (?, ?, ?, 'online', ?, ?)
-             ON DUPLICATE KEY UPDATE model=VALUES(model), os_version=VALUES(os_version), status='online', last_seen_at=VALUES(last_seen_at)`;
-        for (const s of targets) {
-          const d = s === targets[0] ? info : await deviceInfo(s);
-          await db.prepare(upsert).run(s, d.model, d.osVersion, t, t);
-        }
-        const marks = targets.map(() => '?').join(',');
-        await db.prepare(`UPDATE devices SET status='offline' WHERE status='online' AND serial NOT IN (${marks})`).run(...targets);
-        const row = await db.prepare('SELECT * FROM devices WHERE serial = ?').get(targets[0]);
-        return {
-          discovered: true,
-          device: mapDevice(row as Record<string, unknown>),
-          total: await count(),
-          source: 'hdc',
-          note: `hdc 识别到 ${targets.length} 台设备（已保存/更新在线状态）`,
-        };
-      }
+    // 真实识别（复用自动检测逻辑：upsert 在线设备 + 标记离线）
+    const scan = await autoScanDevices();
+    if (scan.ok && scan.detected > 0) {
+      const row = await db.prepare(`SELECT * FROM devices WHERE status = 'online' ORDER BY last_seen_at DESC, id LIMIT 1`).get<Record<string, unknown>>();
+      return {
+        discovered: true,
+        device: mapDevice(row as Record<string, unknown>),
+        total: await count(),
+        source: 'hdc',
+        note: `识别到 ${scan.detected} 台在线设备（已保存/更新状态；此后每 ${Math.max(1, Number(getSetting('device.autoScanInterval', 30)) || 30)}s 自动检测）`,
+      };
     }
 
     // 回退：hdc 不可用/无设备时生成模拟设备（演示模式）
-    const note = hdcOk ? 'hdc 可用但未发现已连接设备' : '未检测到 hdc 命令，已生成模拟设备用于演示';
+    const t = now();
+    const note = scan.ok ? 'hdc 可用但未发现已连接设备' : `自动检测未执行（${scan.reason ?? '未知原因'}）`;
     const serial = `HDC-${Math.floor(1000 + Math.random() * 9000).toString(16).toUpperCase()}`;
     const models = ['Mate X5', 'Pura 70', 'nova 13', 'MatePad Pro', 'Pocket 2'];
     const oss = ['HarmonyOS 5.0.1', 'HarmonyOS 4.2', 'OpenHarmony 5.0.2'];
