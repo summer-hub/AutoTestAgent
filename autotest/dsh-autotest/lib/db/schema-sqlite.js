@@ -85,6 +85,8 @@ CREATE TABLE IF NOT EXISTS plans (
   status TEXT NOT NULL DEFAULT 'draft',
   fail_policy TEXT NOT NULL DEFAULT 'continue',
   script_mode TEXT NOT NULL DEFAULT '',
+  progress INTEGER NOT NULL DEFAULT 0,
+  progress_note TEXT NOT NULL DEFAULT '',
   error TEXT NOT NULL DEFAULT '',
   last_run_at TEXT NULL,
   created_at TEXT NOT NULL,

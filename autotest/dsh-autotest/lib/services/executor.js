@@ -10,7 +10,7 @@ import { ensureLibraryByRepoUrl, inspectRepo, pullRepo, recentChanges, refreshPa
 import { getSetting } from './settings.js';
 import { extractJson, lastLlmCall } from './llmHarness.js';
 import { exploreApp, ensureDeviceOnline, saveExploreReport } from './uiExplorer.js';
-import { writeHypiumProject } from './hypiumGen.js';
+import { hypiumProjectDir, writeCaseScript } from './hypiumGen.js';
 // ---------- 定向用例设计（write_cases）辅助 ----------
 const normKey = (s) => s.toLowerCase().replace(/[\s_\-./\\()（）]/g, '');
 /** 从任务输入提取关键词（中英文词元）。 */
@@ -259,11 +259,12 @@ ${loadLessons(libName).map((l, i) => `${i + 1}. ${l}`).join('\n') || '（暂无�
     }
     return { cases: cur, fixedRounds: fixed };
 }
-/** 草稿入库：来源统一 AI 生成，V1 快照入 case_versions（author_type=ai），返回入库条数。 */
+/** 草稿入库：来源统一 AI 生成，V1 快照入 case_versions，返回创建的用例行（供绑定脚本）。 */
 async function insertDraftCases(libraryId, rows, note) {
     const db = getDb();
     const t = now();
-    const inserted = await db.transaction(async () => {
+    const created = [];
+    await db.transaction(async () => {
         let n = 0;
         const count = (await db.prepare('SELECT COUNT(*) AS n FROM cases WHERE library_id = ?').get(libraryId)) ?? { n: 0 };
         const maxCases = getSetting('agent.maxCasesPerTask', 20);
@@ -278,10 +279,28 @@ async function insertDraftCases(libraryId, rows, note) {
                 precondition: r.precondition, steps: r.steps, expected: r.expected,
                 status: '待确认', scriptStatus: '未绑定', currentVersion: 1, createdAt: t, updatedAt: t,
             }), note, t);
+            created.push({ id: caseId, caseNo, name: r.name, steps: r.steps });
         }
-        return n;
     });
-    return inserted;
+    return created;
+}
+/** 为一批新建用例生成并写入 Hypium（Python）绑定脚本。 */
+async function bindHypiumScripts(lib, packageName, created) {
+    if (created.length === 0)
+        return 0;
+    const hlib = { name: lib.name, packageName: packageName || lib.name };
+    let bound = 0;
+    for (const c of created) {
+        try {
+            writeCaseScript(hlib, { caseNo: c.caseNo, name: c.name, steps: c.steps });
+            await getDb().prepare(`UPDATE cases SET script_status = '已绑定', updated_at = ? WHERE id = ?`).run(now(), c.id);
+            bound++;
+        }
+        catch (e) {
+            console.warn(`[hypium] 绑定脚本失败 ${c.caseNo}:`, e.message);
+        }
+    }
+    return bound;
 }
 async function writeCases(task, lib, llm) {
     // 确保仓库已下载到本地（真实代码上下文）
@@ -382,9 +401,11 @@ ${loadLessons(lib.name).map((l, i) => `${i + 1}. ${l}`).join('\n') || '（暂无
     if (rows.length === 0)
         throw new Error('自审后无有效用例');
     await getDb().prepare('UPDATE tasks SET progress = 70, updated_at = ? WHERE id = ?').run(now(), task.id);
-    const inserted = await insertDraftCases(lib.id, rows, reviewed.fixedRounds > 0 ? `AI 生成（经 ${reviewed.fixedRounds} 轮自审修订）` : 'AI 生成初始创建');
-    await traceTask(task.id, '写入用例库', `生成 ${rows.length} 条（自审修订 ${reviewed.fixedRounds} 轮），入库 ${inserted} 条（V1，状态：待确认）`);
-    return `AI 已生成 ${rows.length} 条用例${reviewed.fixedRounds > 0 ? `（自审自动修订 ${reviewed.fixedRounds} 轮）` : ''}，入库 ${inserted} 条（V1，状态：待确认）。`;
+    // 入库（来源=AI 生成）+ 同步绑定 Hypium(Python) 脚本
+    const created = await insertDraftCases(lib.id, rows, reviewed.fixedRounds > 0 ? `AI 生成（经 ${reviewed.fixedRounds} 轮自审修订）` : 'AI 生成初始创建');
+    const bound = await bindHypiumScripts(lib, insp.bundleName || '', created);
+    await traceTask(task.id, '写入用例库', `生成 ${rows.length} 条（自审修订 ${reviewed.fixedRounds} 轮），入库 ${created.length} 条，绑定 Python 脚本 ${bound} 条（V1，状态：待确认）`);
+    return `AI 已生成 ${rows.length} 条用例${reviewed.fixedRounds > 0 ? `（自审自动修订 ${reviewed.fixedRounds} 轮）` : ''}，入库 ${created.length} 条并绑定 Hypium 脚本 ${bound} 条（V1）。`;
 }
 /**
  * 真机遍历生成用例（explore_cases）：真机 BFS 遍历 → 遍历数据交给「用例生成 Agent」（Prompt 管理 content+skill）
@@ -475,12 +496,11 @@ ${loadLessons(lib.name).map((l, i) => `${i + 1}. ${l}`).join('\n') || '（暂无
     if (rows.length === 0)
         throw new Error('自审后无有效用例');
     await getDb().prepare('UPDATE tasks SET progress = 80, updated_at = ? WHERE id = ?').run(now(), task.id);
-    // 5. 入库（来源=AI 生成）+ Hypium 工程落盘
-    const inserted = await insertDraftCases(lib.id, rows, `真机遍历 + 用例生成 Agent（自审修订 ${reviewed.fixedRounds} 轮）`);
-    const project = writeHypiumProject({ name: lib.name, packageName: bundle }, result.pages, serial);
-    await traceTask(task.id, '写入用例库', `入库 ${inserted} 条（V1，状态：待确认，来源=AI 生成）`);
-    await traceTask(task.id, 'Hypium 工程已生成', project.dir);
-    return `真机遍历 ${result.pages.length} 页 → AI 设计 ${rows.length} 条用例（自审修订 ${reviewed.fixedRounds} 轮），入库 ${inserted} 条（V1，来源=AI 生成）。Hypium：${project.dir}`;
+    // 5. 入库（来源=AI 生成）+ 绑定 Python 脚本
+    const created = await insertDraftCases(lib.id, rows, `真机遍历 + 用例生成 Agent（自审修订 ${reviewed.fixedRounds} 轮）`);
+    const bound = await bindHypiumScripts(lib, bundle, created);
+    await traceTask(task.id, '写入用例库', `入库 ${created.length} 条，绑定 Hypium 脚本 ${bound} 条（V1，状态：待确认，来源=AI 生成）`);
+    return `真机遍历 ${result.pages.length} 页 → AI 设计 ${rows.length} 条用例（自审修订 ${reviewed.fixedRounds} 轮），入库 ${created.length} 条并绑定 Python 脚本 ${bound} 条。工程：${hypiumProjectDir(lib.name)}`;
 }
 async function updateCases(task, lib, llm) {
     const db = getDb();
@@ -541,50 +561,30 @@ ${changeCtx}
     return `AI 已更新 ${updated} 条用例（版本自动递增，时间线完整）。`;
 }
 async function toScript(task, lib, llm) {
+    void llm; // 确定性模板生成，不消耗 token
     const db = getDb();
-    const cases = await db.prepare(`SELECT case_no, name, steps FROM cases WHERE library_id = ? AND script_status = '未绑定' ORDER BY id LIMIT 10`).all(lib.id);
+    const cases = await db.prepare(`SELECT id, case_no, name, steps FROM cases WHERE library_id = ? AND script_status = '未绑定' ORDER BY id LIMIT 50`).all(lib.id);
     if (cases.length === 0)
         return '没有未绑定脚本的用例，无需转换。';
-    const sys = `你是鸿蒙 UI 自动化脚本生成 Agent（OpenHarmony）。
-将测试用例转换为 TypeScript 自动化脚本骨架（基于 @ohos/hypium 或 UI 测试框架风格），
-输出 JSON 数组，每项：{ caseNo, script }。script 为可直接使用的代码文本。只输出 JSON。`;
-    const user = `三方库：${lib.name}
-用例：${JSON.stringify(cases.map((c) => ({ ...c, steps: JSON.parse(c.steps) })))}`;
-    const sysCompactScript = `只输出一个 JSON 数组，不要任何解释、围栏或多余字段。3 条精简脚本，每项仅：{ caseNo, script }，script 为简短 TS 骨架。`;
-    let scripts = null;
-    let lastErrScript = null;
-    for (let attempt = 0; attempt < 2 && !scripts; attempt++) {
-        try {
-            const text = await llm(attempt === 0
-                ? { system: sys, user }
-                : { system: sysCompactScript, user: `三方库：${lib.name}\n用例：${JSON.stringify(cases.map((c) => ({ ...c, steps: JSON.parse(c.steps) })))}` });
-            await traceTask(task.id, `AI 返回（${text.length} 字符${lastLlmCall.model ? ` · ${lastLlmCall.provider}/${lastLlmCall.model}` : ''}）`, text.slice(0, 600));
-            scripts = extractJson(text);
-        }
-        catch (e) {
-            lastErrScript = e;
-        }
-    }
-    if (!scripts)
-        throw lastErrScript instanceof Error ? lastErrScript : new Error(String(lastErrScript));
-    await getDb().prepare('UPDATE tasks SET progress = 45, updated_at = ? WHERE id = ?').run(now(), task.id);
-    const t = now();
-    const dir = path.join(workspaceDir(), 'scripts', lib.name.replace(/[^\w.-]/g, '_'));
-    fs.mkdirSync(dir, { recursive: true });
+    const full = await db.prepare('SELECT package_name FROM libraries WHERE id = ?').get(lib.id);
+    const hlib = { name: lib.name, packageName: String(full?.package_name ?? '') || lib.name };
     let bound = 0;
     const files = [];
-    await db.transaction(async () => {
-        for (const s of (Array.isArray(scripts) ? scripts : [])) {
-            const row = await db.prepare('SELECT id, name FROM cases WHERE case_no = ? AND library_id = ?').get(s.caseNo, lib.id);
-            if (!row)
-                continue;
-            await db.prepare(`UPDATE cases SET script_status = '已绑定', updated_at = ? WHERE id = ?`).run(t, row.id);
-            const file = path.join(dir, `${s.caseNo}.ts`);
-            fs.writeFileSync(file, `// ${s.caseNo} — ${row.name}（${lib.name}）自动化脚本\n// 生成时间：${t} · AI 生成\n\n${s.script}\n`);
-            files.push(file);
+    for (const c of cases) {
+        try {
+            const file = writeCaseScript(hlib, {
+                caseNo: c.case_no,
+                name: c.name,
+                steps: JSON.parse(c.steps || '[]'),
+            });
+            await db.prepare(`UPDATE cases SET script_status = '已绑定', updated_at = ? WHERE id = ?`).run(now(), c.id);
+            files.push(path.basename(file));
             bound++;
         }
-    });
-    await traceTask(task.id, '脚本落盘', `${bound} 个文件 → ${dir}`);
-    return `AI 已生成 ${bound} 个自动化脚本并落盘到：${dir}\n文件：${files.map((f) => path.basename(f)).join(', ') || '—'}`;
+        catch (e) {
+            await traceTask(task.id, `脚本生成失败 ${c.case_no}`, e.message.slice(0, 200));
+        }
+    }
+    await traceTask(task.id, 'Python 脚本落盘', `${bound} 个 → ${hypiumProjectDir(lib.name)}\\testcases\\${lib.name.replace(/[^\w.-]/g, '_')}`);
+    return `已按 HypiumProjectTemplate 模板为 ${bound} 条用例生成 Python 脚本并绑定（script_status=已绑定）。\n目录：${hypiumProjectDir(lib.name)}`;
 }

@@ -1,50 +1,100 @@
-// 执行引擎：将执行计划解析为用例集 → 真机（hdc）逐步执行 → 生成 executions → 更新计划状态
-// 严格模式：仅在真机在线时执行；设备未连接 / hdc 不可用 / 引擎配置为 simulate 时，
-// 计划置为 failed 并写入原因，绝不回退模拟执行、不产生虚假执行记录。
-// 脚本模式（计划级 script_mode，空 = 跟随系统配置 exec.scriptMode）：
-//  - script：用例绑定了自动化脚本（workspace/scripts/<lib>/<caseNo>.ts）时解析脚本动作步骤执行
-//  - step：始终按用例步骤执行
-// 失败策略 fail_policy：continue / abort_library / retry_twice
+// 执行引擎：执行计划直接运行用例绑定的自动化脚本（Python/Hypium + xdevice）
+//  - 严格前置：真机在线 + Python 环境可用，否则计划置 failed 并写明原因（绝不模拟）
+//  - 未绑定脚本的用例：记 skipped「未绑定自动化脚本」，不执行
+//  - 绑定脚本：workspace/hypium/<lib>/testcases/<lib>/<caseNo>.py；
+//    单用例执行 = 重写 main.py 的模块名 → python main.py <module> → 解析 reports/latest/result/<module>.xml 判定结果
+//  - 实时进度：plans.progress / progress_note 每步更新，前端轮询展示
+import { execFile } from 'node:child_process';
+import fs from 'node:fs';
+import path from 'node:path';
+import { promisify } from 'node:util';
 import { getDb, now } from '../db/connection.js';
-import { executeCaseSteps, hdcAvailable, listTargets, type CaseRun } from './hdc.js';
+import { hdcAvailable, listTargets } from './hdc.js';
 import { getSetting } from './settings.js';
-import { parseScriptSteps, readBoundScript } from './scriptRunner.js';
+import { ensureHypiumProject, hypiumProjectDir, hypiumCaseScriptPath, caseClassName } from './hypiumGen.js';
+
+const execFileAsync = promisify(execFile);
 
 interface PlanRow {
   id: number; plan_no: string; name: string; type: string; cron: string | null;
   scope: string; device_ids: string; status: string; fail_policy: string;
-  script_mode: string; error: string;
   last_run_at: string | null; created_at: string; updated_at: string;
 }
 interface CaseRow {
   id: number; library_id: number; case_no: string; name: string; steps: string; status: string; library_name: string;
 }
-interface DeviceRow { id: number; serial: string; model: string; }
 
-/** 解析计划 scope → 用例 id 列表（空 = 全量） */
-async function resolveCaseIds(db: ReturnType<typeof getDb>, scope: { libraryIds: number[]; caseIds: number[] }): Promise<Array<{ id: number; library_id: number }>> {
-  if (scope.caseIds && scope.caseIds.length > 0) {
-    const marks = scope.caseIds.map(() => '?').join(',');
-    return db.prepare(`SELECT id, library_id FROM cases WHERE id IN (${marks})`).all<{ id: number; library_id: number }>(...scope.caseIds);
+/** 检测本机 Python 命令。 */
+async function detectPython(): Promise<string | null> {
+  for (const cmd of ['python', 'python3']) {
+    try {
+      await execFileAsync(cmd, ['--version'], { timeout: 8000 });
+      return cmd;
+    } catch { /* 下一个 */ }
   }
-  if (scope.libraryIds && scope.libraryIds.length > 0) {
-    const marks = scope.libraryIds.map(() => '?').join(',');
-    return db.prepare(`SELECT id, library_id FROM cases WHERE library_id IN (${marks})`).all<{ id: number; library_id: number }>(...scope.libraryIds);
-  }
-  return db.prepare('SELECT id, library_id FROM cases').all<{ id: number; library_id: number }>();
+  return null;
 }
 
-function realThinking(caseRow: CaseRow, run: CaseRun): string {
-  const fails = run.steps.filter((s) => s.status === 'failed');
-  if (fails.length === 0) {
-    return `任务：在真实设备上执行用例 ${caseRow.case_no}（${caseRow.name}）。
-全部 ${run.steps.length} 步执行通过（hdc/uiautomator 实测，逐步轨迹见左侧）。
-结论：用例执行成功，界面状态与预期一致。`;
+/** 运行单个 Hypium 模块并解析结果 XML。返回 passed/failed + 日志摘要。 */
+async function runHypiumModule(
+  pythonCmd: string,
+  projDir: string,
+  moduleStem: string,
+  timeoutMs: number,
+): Promise<{ status: 'passed' | 'failed'; log: string }> {
+  // main.py 支持argv传模块名；兼容旧版占位符 main.py（重写一次）
+  const mainFile = path.join(projDir, 'main.py');
+  let src = fs.existsSync(mainFile) ? fs.readFileSync(mainFile, 'utf8') : '';
+  if (!src.includes('sys.argv')) {
+    fs.writeFileSync(mainFile, [
+      '# -*- coding: utf-8 -*-',
+      'import sys',
+      'from xdevice.__main__ import main_process',
+      '',
+      'if __name__ == "__main__":',
+      '  module = "PLACEHOLDER"',
+      '  if len(sys.argv) > 1:',
+      '    module = sys.argv[1]',
+      '  main_process(f"run -l {module} -ta agent_mode:bin;screenshot:true")',
+      '',
+    ].join('\n'), 'utf8');
+    src = fs.readFileSync(mainFile, 'utf8');
   }
-  return `任务：在真实设备上执行用例 ${caseRow.case_no}（${caseRow.name}）。
-检测到 ${fails.length} 个失败步骤：
-${fails.map((f) => `- 步骤 ${f.seq}「${f.desc}」：${f.log}`).join('\n')}
-根因：基于真实执行日志定位（控件未找到 / 断言失败 / 命令异常），建议进入归因分析进一步排查。`;
+  const reportsDir = path.join(projDir, 'reports');
+  const knownReports = new Set(fs.existsSync(reportsDir) ? fs.readdirSync(reportsDir) : []);
+
+  let stdout = '';
+  try {
+    const r = await execFileAsync(pythonCmd, ['main.py', moduleStem], { cwd: projDir, timeout: timeoutMs, maxBuffer: 32 * 1024 * 1024 });
+    stdout = (r.stdout || '') + (r.stderr || '');
+  } catch (e) {
+    const err = e as { stdout?: string; stderr?: string; message?: string };
+    stdout = (err.stdout || '') + (err.stderr || '') + `\n[process] ${err.message ?? ''}`;
+  }
+
+  // 定位本次新生成的报告目录
+  let latest = '';
+  if (fs.existsSync(reportsDir)) {
+    const fresh = fs.readdirSync(reportsDir).filter((d) => !knownReports.has(d));
+    if (fresh.length > 0) latest = fresh.sort().pop() ?? '';
+    else latest = fs.readdirSync(reportsDir).sort().pop() ?? '';
+  }
+  const resultXml = path.join(reportsDir, latest, 'result', `${moduleStem}.xml`);
+  if (!fs.existsSync(resultXml)) {
+    return { status: 'failed', log: `未找到结果报告 ${path.relative(projDir, resultXml)}；输出尾部：${stdout.slice(-400)}` };
+  }
+  const xml = fs.readFileSync(resultXml, 'utf8');
+  const attr = (k: string): string => new RegExp(`${k}="([^"]*)"`).exec(xml)?.[1] ?? '';
+  const failures = Number(attr('failures') || 0) + Number(attr('errors') || 0);
+  const unavailable = attr('unavailable') === '1';
+  const message = (attr('message') || '').replace(/&#\d+;/g, '').slice(0, 200);
+  if (unavailable) {
+    return { status: 'failed', log: `环境不可用：${message || '设备条件不满足'}` };
+  }
+  if (failures > 0) {
+    return { status: 'failed', log: `Hypium 执行失败（failures/errors=${failures}）${message ? `：${message}` : ''}；输出尾部：${stdout.slice(-300)}` };
+  }
+  return { status: 'passed', log: `Hypium 通过（${attr('tests') || '?'} tests, ${attr('time') || '0'}s），报告：reports/${latest}` };
 }
 
 export async function executePlan(planId: number): Promise<void> {
@@ -52,19 +102,19 @@ export async function executePlan(planId: number): Promise<void> {
   const plan = await db.prepare('SELECT * FROM plans WHERE id = ?').get<PlanRow>(planId);
   if (!plan) return;
   const t = now();
+  const setProgress = async (pct: number, note: string): Promise<void> => {
+    await db.prepare(`UPDATE plans SET progress = ?, progress_note = ?, updated_at = ? WHERE id = ?`)
+      .run(Math.max(0, Math.min(100, Math.round(pct))), note.slice(0, 280), now(), planId);
+  };
   const failPlan = async (reason: string): Promise<void> => {
-    await db.prepare(`UPDATE plans SET status='failed', error=?, updated_at=? WHERE id=?`).run(reason.slice(0, 480), now(), planId);
+    await db.prepare(`UPDATE plans SET status='failed', error=?, progress=100, progress_note=?, updated_at=? WHERE id=?`)
+      .run(reason.slice(0, 480), `失败：${reason.slice(0, 120)}`, now(), planId);
     console.warn(`[plan #${planId}] ${plan.name} 执行失败：${reason}`);
   };
 
-  await db.prepare(`UPDATE plans SET status='running', error='', updated_at=? WHERE id=?`).run(t, planId);
+  await db.prepare(`UPDATE plans SET status='running', error='', progress=2, progress_note='准备中…', updated_at=? WHERE id=?`).run(t, planId);
 
-  // ---- 设备严格校验：未连接直接失败，不执行、不造数据 ----
-  const engine = String(getSetting('device.execEngine', 'hdc'));
-  if (engine === 'simulate') {
-    await failPlan('系统配置 device.execEngine=simulate（模拟模式已停用）。请在「系统配置 → 设备与执行」改为 hdc 并连接真机后重试。');
-    return;
-  }
+  // ---- 前置校验 ----
   if (!(await hdcAvailable())) {
     await failPlan('真机未连接：未检测到 hdc 命令或服务不可用。请安装 HarmonyOS Device Connector 并连接设备后重试。');
     return;
@@ -74,108 +124,140 @@ export async function executePlan(planId: number): Promise<void> {
     await failPlan('真机未连接：hdc list targets 为空。请在「设备管理」页点击「识别设备」连接真机后重试。');
     return;
   }
-  // 设备选择：计划指定 device_ids → 取第一台在线的；未指定 → 第一台在线设备
-  let device: DeviceRow | undefined;
+  let deviceSerial = '';
   const wantedIds = JSON.parse(plan.device_ids || '[]') as number[];
   for (const id of wantedIds) {
-    const d = await db.prepare('SELECT * FROM devices WHERE id = ?').get<DeviceRow>(id);
-    if (d && targets.includes(d.serial)) { device = d; break; }
+    const d = await db.prepare('SELECT serial FROM devices WHERE id = ?').get<{ serial: string }>(id);
+    if (d && targets.includes(d.serial)) { deviceSerial = d.serial; break; }
   }
-  if (!device) {
-    for (const serial of targets) {
-      const d = await db.prepare('SELECT * FROM devices WHERE serial = ? AND status = ?').get<DeviceRow>(serial, 'online');
-      if (d) { device = d; break; }
-    }
-  }
-  if (!device) {
-    await failPlan(`真机未连接：计划内设备均不在线（在线目标：${targets.join(', ')}）。请重新识别设备后重试。`);
+  if (!deviceSerial) deviceSerial = targets[0];
+  const pythonCmd = await detectPython();
+  if (!pythonCmd) {
+    await failPlan('未检测到 Python 环境（python / python3）。Hypium 脚本执行需要 Python + xdevice，请安装后重试。');
     return;
   }
 
-  // ---- 解析范围与抽样 ----
+  // ---- 范围与抽样 ----
   const scope = JSON.parse(plan.scope || '{"libraryIds":[],"caseIds":[]}') as { libraryIds: number[]; caseIds: number[] };
-  const cases = await resolveCaseIds(db, scope);
-  if (cases.length === 0) {
+  let sample: Array<{ id: number; library_id: number }> = [];
+  if (scope.caseIds?.length > 0) {
+    const marks = scope.caseIds.map(() => '?').join(',');
+    sample = await db.prepare(`SELECT id, library_id FROM cases WHERE id IN (${marks})`).all(...scope.caseIds);
+  } else if (scope.libraryIds?.length > 0) {
+    const marks = scope.libraryIds.map(() => '?').join(',');
+    sample = await db.prepare(`SELECT id, library_id FROM cases WHERE library_id IN (${marks})`).all(...scope.libraryIds);
+  } else {
+    sample = await db.prepare('SELECT id, library_id FROM cases').all();
+  }
+  if (sample.length === 0) {
     await failPlan('执行范围为空：scope 未命中任何用例，请检查计划的库/用例选择。');
     return;
   }
   const fullSample = getSetting('exec.planSampleFull', 60);
   const batchSample = getSetting('exec.planSampleBatch', 30);
   const singleSample = getSetting('exec.planSampleSingle', 200);
-  const sample = plan.type === 'full'
-    ? cases.filter((_, i) => i % 750 === 0).slice(0, fullSample)
-    : cases.slice(0, plan.type === 'batch' ? batchSample : singleSample);
-
-  const scriptMode = (plan.script_mode || '').trim() || String(getSetting('exec.scriptMode', 'script'));
+  sample = plan.type === 'full'
+    ? sample.filter((_, i) => i % 750 === 0).slice(0, fullSample)
+    : sample.slice(0, plan.type === 'batch' ? batchSample : singleSample);
 
   const failPolicy = plan.fail_policy || 'continue';
   const retryTimes = failPolicy === 'retry_twice' ? 2 : 0;
-  const abortedLibs = new Set<number>();
 
-  let passed = 0;
-  let failed = 0;
-  let skipped = 0;
   const insExec = db.prepare(`INSERT INTO executions (plan_id, case_id, library_id, device_id, status, steps, thinking, logs, started_at, finished_at)
     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`);
 
+  // 展开用例详情并按库分组
+  interface Item { row: CaseRow; scriptPath: string | null; moduleStem: string; projDir: string }
+  const groups = new Map<string, Item[]>();
   for (const c of sample) {
-    const caseRow = await db.prepare(
+    const row = await db.prepare(
       `SELECT c.*, l.name AS library_name FROM cases c JOIN libraries l ON l.id = c.library_id WHERE c.id = ?`,
     ).get<CaseRow>(c.id);
-    if (!caseRow) continue;
-
-    // failPolicy: abort_library — 该库已有失败用例时跳过后续用例
-    if (abortedLibs.has(c.library_id)) {
-      await insExec.run(
-        planId, c.id, c.library_id, device.id, 'skipped',
-        JSON.stringify([{ seq: 1, desc: '整库失败中止，本用例跳过', status: 'skipped', durationMs: 0 }]),
-        '按失败策略 abort_library：该库已有失败用例，后续用例跳过。',
-        `[${t}] 设备 ${device.serial} · 用例 ${caseRow.case_no} 跳过（整库中止）`, t, now(),
-      );
-      skipped++;
-      continue;
-    }
-
-    // 计划级脚本模式：script = 用例绑定脚本时解析动作步骤执行；step = 始终用例步骤
-    let stepsArr = JSON.parse(caseRow.steps || '[]') as string[];
-    const extraLogs: string[] = [];
-    if (scriptMode === 'script') {
-      const script = readBoundScript(caseRow.library_name, caseRow.case_no);
-      if (script) {
-        const parsed = parseScriptSteps(script);
-        if (parsed.length > 0) {
-          stepsArr = parsed;
-          extraLogs.push(`[script] 用例绑定脚本 ${caseRow.case_no}.ts，解析出 ${parsed.length} 个动作步骤执行`);
-        } else {
-          extraLogs.push(`[script] 绑定脚本存在但未解析出可执行步骤，回退用例步骤`);
-        }
-      } else {
-        extraLogs.push(`[script] 未找到绑定脚本（scripts/${caseRow.library_name}/${caseRow.case_no}.ts），按用例步骤执行`);
-      }
-    }
-
-    const runOnce = async (): Promise<{ status: 'passed' | 'failed'; stepsJson: string; thinking: string; logs: string }> => {
-      const run = await executeCaseSteps(stepsArr, device!.serial);
-      const status = run.passed ? 'passed' : 'failed';
-      return {
-        status,
-        stepsJson: JSON.stringify(run.steps.map((s) => ({ seq: s.seq, desc: s.desc, status: s.status, durationMs: s.durationMs }))),
-        thinking: realThinking(caseRow, run),
-        logs: [...extraLogs, ...run.logs].join('\n'),
-      };
+    if (!row) continue;
+    const libName = row.library_name;
+    const scriptPath = hypiumCaseScriptPath(libName, row.case_no);
+    const bound = fs.existsSync(scriptPath);
+    const item: Item = {
+      row,
+      scriptPath: bound ? scriptPath : null,
+      moduleStem: path.basename(scriptPath, '.py'),
+      projDir: hypiumProjectDir(libName),
     };
-
-    let result = await runOnce();
-    for (let attempt = 1; attempt <= retryTimes && result.status === 'failed'; attempt++) {
-      extraLogs.push(`[retry] 第 ${attempt}/${retryTimes} 次重试…`);
-      result = await runOnce();
-    }
-
-    if (result.status === 'failed' && failPolicy === 'abort_library') abortedLibs.add(c.library_id);
-    if (result.status === 'failed') failed++; else passed++;
-    await insExec.run(planId, c.id, c.library_id, device.id, result.status, result.stepsJson, result.thinking, result.logs, t, now());
+    if (!groups.has(libName)) groups.set(libName, []);
+    groups.get(libName)!.push(item);
   }
 
-  await db.prepare(`UPDATE plans SET status='done', last_run_at=?, updated_at=? WHERE id=?`).run(t, now(), planId);
-  console.log(`[plan #${planId}] ${plan.name} 执行完成：${sample.length} 用例，通过 ${passed} / 失败 ${failed} / 跳过 ${skipped}（真机 ${device.serial} · 脚本模式 ${scriptMode}）`);
+  const total = [...groups.values()].flat().length;
+  const deviceIdRow = await db.prepare('SELECT id FROM devices WHERE serial = ?').get<{ id: number }>(deviceSerial);
+  const deviceId = deviceIdRow?.id ?? null;
+  let done = 0;
+  let passed = 0;
+  let failed = 0;
+  let skipped = 0;
+
+  for (const [libName, items] of groups) {
+    const boundItems = items.filter((i) => i.scriptPath !== null);
+    // 未绑定 → 全部跳过
+    for (const item of items.filter((i) => i.scriptPath === null)) {
+      done++;
+      skipped++;
+      await insExec.run(
+        planId, item.row.id, item.row.library_id, deviceId, 'skipped',
+        JSON.stringify([{ seq: 1, desc: '未绑定自动化脚本，跳过执行', status: 'skipped', durationMs: 0 }]),
+        '该用例尚未绑定自动化脚本（Python/Hypium）。请在任务页使用「用例转自动化脚本」生成，或在自动化脚本页手工新建 <用例编号>.py 后重试。',
+        `[${t}] 设备 ${deviceSerial} · 用例 ${item.row.case_no} 跳过（未绑定脚本）`, t, now(),
+      );
+      await setProgress(2 + (done / total) * 95, `${done}/${total} · ${item.row.case_no} 跳过（未绑定脚本）`);
+    }
+    if (boundItems.length === 0) continue;
+
+    // 工程骨架 + 设备序列号刷新
+    const pkgRow = await db.prepare('SELECT package_name FROM libraries WHERE name = ?').get<{ package_name: string }>(libName);
+    ensureHypiumProject({ name: libName, packageName: pkgRow?.package_name || libName }, deviceSerial);
+
+    for (const item of boundItems) {
+      const cls = caseClassName(item.row.case_no);
+      await setProgress(2 + (done / total) * 95, `${done}/${total} · 正在执行 ${item.row.case_no}（${cls}）…`);
+      const t0 = Date.now();
+      let result = await runHypiumModule(pythonCmd, item.projDir, item.moduleStem, 10 * 60_000);
+      let attempts = 1;
+      while (result.status === 'failed' && attempts <= retryTimes) {
+        result = await runHypiumModule(pythonCmd, item.projDir, item.moduleStem, 10 * 60_000);
+        attempts++;
+      }
+      const durationMs = Date.now() - t0;
+      const status = result.status;
+      await insExec.run(
+        planId, item.row.id, item.row.library_id, deviceId, status,
+        JSON.stringify([
+          { seq: 1, desc: `运行 Hypium 脚本 ${item.moduleStem}.py${attempts > 1 ? `（重试 ${attempts - 1} 次）` : ''}`, status, durationMs },
+        ]),
+        status === 'passed'
+          ? `在真实设备（${deviceSerial}）上通过 xdevice/Hypium 执行绑定脚本 ${item.moduleStem}.py，结果通过。`
+          : `在真实设备（${deviceSerial}）上执行绑定脚本 ${item.moduleStem}.py 失败。\n${result.log}`,
+        [`[${now()}] 设备 ${deviceSerial} · ${item.row.case_no} · python main.py ${item.moduleStem}`, result.log].join('\n'),
+        t, now(),
+      );
+      done++;
+      if (status === 'passed') passed++; else failed++;
+      if (status === 'failed' && failPolicy === 'abort_library') {
+        for (const rest of boundItems.slice(boundItems.indexOf(item) + 1)) {
+          done++;
+          skipped++;
+          await insExec.run(
+            planId, rest.row.id, rest.row.library_id, deviceId, 'skipped',
+            JSON.stringify([{ seq: 1, desc: '整库失败中止，跳过执行', status: 'skipped', durationMs: 0 }]),
+            '按失败策略 abort_library：该库已有失败用例，后续用例跳过。',
+            `[${t}] 设备 ${deviceSerial} · 用例 ${rest.row.case_no} 跳过（整库中止）`, t, now(),
+          );
+        }
+        break;
+      }
+      await setProgress(2 + (done / total) * 95, `${done}/${total} · ${item.row.case_no} ${status === 'passed' ? '通过' : '失败'}`);
+    }
+  }
+
+  await db.prepare(`UPDATE plans SET status='done', progress=100, progress_note=?, last_run_at=?, updated_at=? WHERE id=?`)
+    .run(`完成：通过 ${passed} / 失败 ${failed} / 跳过 ${skipped}（共 ${total} 条，真机 ${deviceSerial}）`, now(), planId);
+  console.log(`[plan #${planId}] ${plan.name} 执行完成：通过 ${passed} / 失败 ${failed} / 跳过 ${skipped}（真机 ${deviceSerial}）`);
 }

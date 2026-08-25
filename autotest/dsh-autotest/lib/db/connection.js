@@ -214,7 +214,7 @@ export async function ensureReady() {
                 // 列迁移（新版本补列）：PRAGMA table_info 检查后 ALTER
                 for (const [table, col] of [
                     ['libraries', 'package_name'], ['libraries', 'main_ability'],
-                    ['plans', 'script_mode'], ['plans', 'error'],
+                    ['plans', 'script_mode'], ['plans', 'error'], ['plans', 'progress'], ['plans', 'progress_note'],
                 ]) {
                     try {
                         const cols = await query(`PRAGMA table_info(${table})`, []);
@@ -224,6 +224,8 @@ export async function ensureReady() {
                                 main_ability: "ALTER TABLE libraries ADD COLUMN main_ability TEXT NOT NULL DEFAULT ''",
                                 script_mode: "ALTER TABLE plans ADD COLUMN script_mode TEXT NOT NULL DEFAULT ''",
                                 error: "ALTER TABLE plans ADD COLUMN error TEXT NOT NULL DEFAULT ''",
+                                progress: 'ALTER TABLE plans ADD COLUMN progress INTEGER NOT NULL DEFAULT 0',
+                                progress_note: "ALTER TABLE plans ADD COLUMN progress_note TEXT NOT NULL DEFAULT ''",
                             };
                             await query(ddl[col], []);
                         }
@@ -260,6 +262,8 @@ export async function ensureReady() {
                 ['libraries', 'main_ability', "ALTER TABLE libraries ADD COLUMN main_ability VARCHAR(255) NOT NULL DEFAULT ''"],
                 ['plans', 'script_mode', "ALTER TABLE plans ADD COLUMN script_mode VARCHAR(16) NOT NULL DEFAULT ''"],
                 ['plans', 'error', "ALTER TABLE plans ADD COLUMN error VARCHAR(500) NOT NULL DEFAULT ''"],
+                ['plans', 'progress', 'ALTER TABLE plans ADD COLUMN progress INT NOT NULL DEFAULT 0'],
+                ['plans', 'progress_note', "ALTER TABLE plans ADD COLUMN progress_note VARCHAR(300) NOT NULL DEFAULT ''"],
             ]) {
                 try {
                     await mysqlPool().query(ddl);

@@ -6,24 +6,45 @@ interface ScriptLib { id: number; name: string; dir: string; exists: boolean; fi
 
 const PAGE_SIZES = [30, 50, 100];
 
-// 新建脚本的初始模板（hypium 风格，parseScriptSteps 可解析 click/input/swipe/wait/assert）
-const SCRIPT_TEMPLATE = `// <用例编号> — 用例名称（库名）
-// 由测试工程师手工维护 · 执行计划「绑定脚本」模式解析本文件动作步骤真机执行
-// 支持的动作：by.text('xx').click() / inputText('xx') / swipe() / wait(1000) / expect(text('xx'))
+// 新建脚本的初始模板（Python/Hypium，与 HypiumProjectTemplate 一致）
+const SCRIPT_TEMPLATE = `# !/usr/bin/env python
+# coding: utf-8
+"""
+#!!================================================================
+# AutoTest · Hypium 用例脚本（文件名 = 用例编号，如 C-AI-001.py）
+# 执行计划「立即执行」将直接运行本脚本并解析 xdevice 报告回填结果
+# 支持动作：driver.touch(BY.text('xx')) / driver.input_text(BY.text(kw), text)
+#           driver.swipe(UiParam.UP, distance=60) / driver.wait(2) / driver.swipe_to_back()
+#==================================================================
+"""
 
-import { describe, it, expect } from '@ohos/hypium';
+from devicetest.core.test_case import TestCase, Step
+from hypium import *
+from hypium.model import UiParam
 
-export default function suite() {
-  return describe('scriptSuite', () => {
-    it('case01', 0, async () => {
-      // 打开应用后依次操作：
-      // driver.findComponent(by.text('开始')).click();
-      // driver.inputText(by.id('input'), 'hello');
-      // driver.wait(2000);
-      // expect(driver.findComponent(by.text('成功')).isExist()).assertTrue();
-    });
-  });
-}
+
+class Case_Template(TestCase):
+    def __init__(self, controllers):
+        self.TAG = self.__class__.__name__
+        TestCase.__init__(self, self.TAG, controllers)
+        self.driver = UiDriver(self.device1)
+
+    def setup(self):
+        Step('杀掉应用')
+        # self.driver.stop_app("com.example.app")
+        Step('启动应用')
+        # self.driver.start_app(package_name="com.example.app")
+        self.driver.wait(3)
+
+    def process(self):
+        Step('1. 示例步骤：点击目标按钮')
+        self.driver.touch(BY.text("开始"))
+        self.driver.wait(1)
+        Step('2. 验证结果')
+        comp = self.driver.find_component(BY.text("成功"))
+
+    def teardown(self):
+        pass
 `;
 
 function fmtSize(n: number): string {
@@ -139,7 +160,7 @@ export default function ScriptsPage() {
 
   const openCreate = (): void => {
     setEditor({ mode: 'create' });
-    setEditorName(`C-MANUAL-${Date.now().toString().slice(-6)}.ts`);
+    setEditorName(`C-MANUAL-${Date.now().toString().slice(-6)}.py`);
     setEditorContent(SCRIPT_TEMPLATE);
   };
 
@@ -158,8 +179,8 @@ export default function ScriptsPage() {
   const saveEditor = async (): Promise<void> => {
     if (curLib === null || !editor) return;
     const name = editorName.trim();
-    if (!/^[^\\/]+\.ts$/i.test(name) || name.includes('..')) {
-      setError('文件名非法：须为当前目录下的 .ts 文件（如 C-AI-001.ts）');
+    if (!/^[^\\/]+\.py$/i.test(name) || name.includes('..')) {
+      setError('文件名非法：须为当前目录下的 .py 文件（如 C-AI-001.py）');
       return;
     }
     setEditorBusy(true);
@@ -181,7 +202,8 @@ export default function ScriptsPage() {
   return (
     <>
       <div className="page-title">自动化脚本</div>
-      <div className="page-desc">用例转自动化脚本（hypium 风格 TS）落盘于工作区 scripts 目录 · 可查看 / 删除，重新生成时覆盖同名文件</div>
+      <div className="page-title">自动化脚本</div>
+      <div className="page-desc">Python/Hypium 自动化脚本（对齐 HypiumProjectTemplate）· 执行计划直接运行并解析 xdevice 报告 · 可新建 / 编辑 / 删除</div>
 
       {error && <div className="error">⚠️ {error}</div>}
 
@@ -328,7 +350,7 @@ export default function ScriptsPage() {
                   value={editorName}
                   disabled={editor.mode === 'edit'}
                   onChange={(e) => setEditorName(e.target.value)}
-                  placeholder="C-AI-001.ts（与用例编号一致即可被计划绑定执行）"
+                  placeholder="C-AI-001.py（与用例编号一致即可被执行计划直接运行）"
                 />
                 <span className="muted" style={{ fontSize: 11 }}>命名 = 用例编号时，「绑定脚本」模式自动关联该用例</span>
               </label>

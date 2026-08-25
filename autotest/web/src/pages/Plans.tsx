@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react';
+﻿import { useCallback, useEffect, useRef, useState } from 'react';
 import type { Library, Plan, TestCase } from 'shared';
 import { api } from '../api';
 
@@ -18,7 +18,7 @@ export default function PlansPage() {
   const [libs, setLibs] = useState<Library[]>([]);
   const [error, setError] = useState('');
   const [modal, setModal] = useState(false);
-  const [form, setForm] = useState({ name: '', type: 'immediate', cron: '0 2 * * *', libraryId: 0, deviceIds: [1] as number[], failPolicy: 'continue', scriptMode: '' });
+  const [form, setForm] = useState({ name: '', type: 'immediate', cron: '0 2 * * *', libraryId: 0, deviceIds: [1] as number[], failPolicy: 'continue' });
   // 跨库用例多选
   const [selCases, setSelCases] = useState<Map<number, { caseNo: string; name: string; libraryName: string }>>(new Map());
   const [pickerOpen, setPickerOpen] = useState(false);
@@ -35,6 +35,14 @@ export default function PlansPage() {
     api.libraries({ pageSize: 100 }).then((r) => setLibs(r.items)).catch(() => {});
   }, [load]);
 
+  // 有运行中的计划时每 2 秒轮询刷新进度
+  useEffect(() => {
+    const anyRunning = plans.some((p) => p.status === 'running');
+    if (!anyRunning) return;
+    const timer = setInterval(load, 2000);
+    return () => clearInterval(timer);
+  }, [plans, load]);
+
   const create = async () => {
     setError('');
     try {
@@ -50,7 +58,6 @@ export default function PlansPage() {
         scope,
         deviceIds: form.deviceIds,
         failPolicy: form.failPolicy as Plan['failPolicy'],
-        scriptMode: form.scriptMode,
       });
       setModal(false);
       setSelCases(new Map());
@@ -83,8 +90,26 @@ export default function PlansPage() {
   };
 
   const runNow = async (id: number) => {
-    try { await api.runPlan(id); load(); setTimeout(load, 3000); } catch (e) { setError((e as Error).message); }
+    try {
+      await api.runPlan(id);
+      load();
+      void pollRunning(id);
+    } catch (e) { setError((e as Error).message); }
   };
+
+  // 点击立即执行后短周期轮询（即使列表暂无 running 状态也先拉几次）
+  const pollRunning = async (id: number): Promise<void> => {
+    for (let i = 0; i < 10; i++) {
+      await new Promise((r) => setTimeout(r, 1500));
+      try { await api.plans().then(setPlans); } catch { /* 忽略 */ }
+      const p = plansRef.current.find((x) => x.id === id);
+      if (!p || p.status !== 'running') break;
+    }
+    load();
+  };
+
+  const plansRef = useRef(plans);
+  useEffect(() => { plansRef.current = plans; }, [plans]);
 
   const remove = async (id: number) => {
     try { await api.deletePlan(id); load(); } catch (e) { setError((e as Error).message); }
@@ -93,7 +118,7 @@ export default function PlansPage() {
   return (
     <>
       <div className="page-title">执行计划</div>
-      <div className="page-desc">严格真机执行：设备未连接时计划置为失败并提示原因，不做任何模拟 · 计划可指定脚本模式（绑定脚本优先 / 用例步骤）</div>
+      <div className="page-desc">严格真机执行绑定脚本：直接运行用例绑定的 Python/Hypium 自动化脚本，未绑定脚本的用例自动跳过；设备未连接时计划失败并提示原因</div>
 
       {error && <div className="error">⚠️ {error}</div>}
 
@@ -129,10 +154,25 @@ export default function PlansPage() {
                 </div>
               )}
               <div style={{ display: 'flex', gap: 6, flexShrink: 0 }}>
-                <button className="btn sm" onClick={() => runNow(p.id)}>▶ 立即执行</button>
+                <button className="btn sm" disabled={p.status === 'running'} onClick={() => runNow(p.id)}>{p.status === 'running' ? '执行中…' : '▶ 立即执行'}</button>
                 <button className="btn sm ghost" onClick={() => remove(p.id)}>删除</button>
               </div>
             </div>
+            {/* 实时进度条 */}
+            {(p.status === 'running' || (typeof p.progress === 'number' && p.progress > 0 && p.progress < 100)) && (
+              <div style={{ marginTop: 10, padding: '8px 12px', background: 'var(--bg2)', border: '1px solid var(--border)', borderRadius: 9 }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 10, fontSize: 11.8 }}>
+                  <span className={`tag ${p.status === 'running' ? 'blue' : 'gray'}`}>{p.progress ?? 0}%</span>
+                  <span className="muted" style={{ flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                    {p.progressNote || (p.status === 'running' ? '执行中…' : '')}
+                  </span>
+                  {p.status === 'running' && <span className="ana-spinner" />}
+                </div>
+                <div className="progress" style={{ height: 6, background: 'var(--panel3)', borderRadius: 4, marginTop: 7, overflow: 'hidden' }}>
+                  <i style={{ display: 'block', height: '100%', width: `${Math.max(2, Math.min(100, p.progress ?? 0))}%`, background: p.status === 'failed' ? 'var(--red)' : 'var(--accent)', borderRadius: 4, transition: 'width .5s' }} />
+                </div>
+              </div>
+            )}
           </div>
         ))
       )}
@@ -208,13 +248,12 @@ export default function PlansPage() {
                 </select>
               </div>
               <div className="s-field" style={{ marginBottom: 12 }}>
-                <div className="fl"><div className="ft">执行模式（脚本绑定）</div></div>
-                <select className="select" style={{ flex: 1 }} value={form.scriptMode} onChange={(e) => setForm({ ...form, scriptMode: e.target.value })}>
-                  <option value="">跟随系统配置（exec.scriptMode）</option>
-                  <option value="script">绑定脚本优先：用例有绑定脚本时解析脚本动作执行</option>
-                  <option value="step">始终按用例步骤执行</option>
-                </select>
-                <div className="muted" style={{ fontSize: 11, marginTop: 4 }}>绑定脚本存放于「自动化脚本」页 scripts/&lt;库名&gt;/&lt;用例编号&gt;.ts，可自行新建编辑</div>
+                <div className="fl"><div className="ft">脚本绑定</div></div>
+                <div className="muted" style={{ fontSize: 11.8, lineHeight: 1.7 }}>
+                  计划只执行<b>已绑定自动化脚本（Python/Hypium）</b>的用例，未绑定的自动跳过。
+                  绑定方式：任务页「用例转自动化脚本」批量生成，或「自动化脚本」页手工新建 &lt;用例编号&gt;.py。
+                  脚本经 xdevice 在真机执行，结果从 Hypium 报告解析回填。
+                </div>
               </div>
               <div style={{ display: 'flex', gap: 10, justifyContent: 'flex-end', marginTop: 16 }}>
                 <button className="btn" onClick={() => setModal(false)}>取消</button>

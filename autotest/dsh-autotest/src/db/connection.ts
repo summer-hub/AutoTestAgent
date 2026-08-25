@@ -226,23 +226,25 @@ export async function ensureReady(): Promise<void> {
           try { await query(stmt, []); } catch (e) { console.warn(`[sqlite] ${String(stmt).slice(0, 40)}…: ${(e as Error).message}`); }
         }
         // 列迁移（新版本补列）：PRAGMA table_info 检查后 ALTER
-        for (const [table, col] of [
-          ['libraries', 'package_name'], ['libraries', 'main_ability'],
-          ['plans', 'script_mode'], ['plans', 'error'],
-        ] as Array<[string, string]>) {
-          try {
-            const cols = await query(`PRAGMA table_info(${table})`, []) as Array<{ name: string }>;
-            if (Array.isArray(cols) && !cols.some((c) => c.name === col)) {
-              const ddl: Record<string, string> = {
-                package_name: "ALTER TABLE libraries ADD COLUMN package_name TEXT NOT NULL DEFAULT ''",
-                main_ability: "ALTER TABLE libraries ADD COLUMN main_ability TEXT NOT NULL DEFAULT ''",
-                script_mode: "ALTER TABLE plans ADD COLUMN script_mode TEXT NOT NULL DEFAULT ''",
-                error: "ALTER TABLE plans ADD COLUMN error TEXT NOT NULL DEFAULT ''",
-              };
-              await query(ddl[col], []);
-            }
-          } catch { /* 已存在则跳过 */ }
-        }
+      for (const [table, col] of [
+        ['libraries', 'package_name'], ['libraries', 'main_ability'],
+        ['plans', 'script_mode'], ['plans', 'error'], ['plans', 'progress'], ['plans', 'progress_note'],
+      ] as Array<[string, string]>) {
+        try {
+          const cols = await query(`PRAGMA table_info(${table})`, []) as Array<{ name: string }>;
+          if (Array.isArray(cols) && !cols.some((c) => c.name === col)) {
+            const ddl: Record<string, string> = {
+              package_name: "ALTER TABLE libraries ADD COLUMN package_name TEXT NOT NULL DEFAULT ''",
+              main_ability: "ALTER TABLE libraries ADD COLUMN main_ability TEXT NOT NULL DEFAULT ''",
+              script_mode: "ALTER TABLE plans ADD COLUMN script_mode TEXT NOT NULL DEFAULT ''",
+              error: "ALTER TABLE plans ADD COLUMN error TEXT NOT NULL DEFAULT ''",
+              progress: 'ALTER TABLE plans ADD COLUMN progress INTEGER NOT NULL DEFAULT 0',
+              progress_note: "ALTER TABLE plans ADD COLUMN progress_note TEXT NOT NULL DEFAULT ''",
+            };
+            await query(ddl[col], []);
+          }
+        } catch { /* 已存在则跳过 */ }
+      }
         const { loadSettings } = await import('../services/settings.js');
         await loadSettings();
         const row = await getDb().prepare('SELECT COUNT(*) AS n FROM libraries').get<{ n: number }>();
@@ -272,6 +274,8 @@ export async function ensureReady(): Promise<void> {
         ['libraries', 'main_ability', "ALTER TABLE libraries ADD COLUMN main_ability VARCHAR(255) NOT NULL DEFAULT ''"],
         ['plans', 'script_mode', "ALTER TABLE plans ADD COLUMN script_mode VARCHAR(16) NOT NULL DEFAULT ''"],
         ['plans', 'error', "ALTER TABLE plans ADD COLUMN error VARCHAR(500) NOT NULL DEFAULT ''"],
+        ['plans', 'progress', 'ALTER TABLE plans ADD COLUMN progress INT NOT NULL DEFAULT 0'],
+        ['plans', 'progress_note', "ALTER TABLE plans ADD COLUMN progress_note VARCHAR(300) NOT NULL DEFAULT ''"],
       ] as Array<[string, string, string]>) {
         try {
           await mysqlPool().query(ddl);

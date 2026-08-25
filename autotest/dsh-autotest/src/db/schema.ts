@@ -94,6 +94,8 @@ CREATE TABLE IF NOT EXISTS plans (
   status VARCHAR(16) NOT NULL DEFAULT 'draft',
   fail_policy VARCHAR(16) NOT NULL DEFAULT 'continue',
   script_mode VARCHAR(16) NOT NULL DEFAULT '',
+  progress INT NOT NULL DEFAULT 0,
+  progress_note VARCHAR(300) NOT NULL DEFAULT '',
   error VARCHAR(500) NOT NULL DEFAULT '',
   last_run_at VARCHAR(32) NULL,
   created_at VARCHAR(32) NOT NULL,

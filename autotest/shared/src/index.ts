@@ -103,8 +103,10 @@ export interface Plan {
   deviceIds: number[];
   status: PlanStatus;
   failPolicy: 'continue' | 'abort_library' | 'retry_twice';
-  scriptMode?: string;        // 计划级脚本模式：'' 跟随系统配置 / 'script' 绑定脚本优先 / 'step' 始终用例步骤
+  scriptMode?: string;        // 兼容保留（现版本计划固定直接执行绑定脚本）
   error?: string;             // 最近一次执行失败原因（设备未连接等）
+  progress?: number;          // 执行进度 0-100
+  progressNote?: string;      // 实时进度说明（如 12/30 · C-AI-005 通过）
   lastRunAt: string | null;
   createdAt: string;
   updatedAt: string;

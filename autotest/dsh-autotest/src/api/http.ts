@@ -18,10 +18,11 @@ import { getAllSettings, getSetting, setSetting, type SettingValue } from '../se
 import { cacheDel, cacheGet, cacheSet } from '../services/cache.js';
 import { readDshDefaultModel } from '../services/llmHarness.js';
 import { deviceInfo, hdcAvailable, listTargets } from '../services/hdc.js';
-import { pullRepo, repoDirFor, scriptsDirFor, workspaceDir, type RepoLib } from '../services/gitRepo.js';
+import { pullRepo, repoDirFor, workspaceDir, type RepoLib } from '../services/gitRepo.js';
 import { registerAuthRoutes, requireAuth, type HandlerArgs, type RouteFn } from '../auth/index.js';
 import { AuthError, hasPermission } from '../auth/service.js';
 import { type ExploreResult } from '../services/uiExplorer.js';
+import { hypiumProjectDir } from '../services/hypiumGen.js';
 
 // ---------- mini router ----------
 type Handler = (args: HandlerArgs) => Promise<unknown>;
@@ -677,14 +678,14 @@ function defineRoutes(llm: LlmCall): void {
     }).sort((a, b) => Number(b.exists) - Number(a.exists) || a.name.localeCompare(b.name));
   }, { permission: 'library:read' });
 
-  // 自动化脚本目录（to_script 落盘到 workspace/scripts/<lib>）
+  // 自动化脚本目录（Python/Hypium：workspace/hypium/<lib>/testcases/<lib>）
   route('GET', '/scripts', async () => {
     const rows = await getDb().prepare('SELECT id, name FROM libraries ORDER BY name').all<{ id: number; name: string }>();
     return rows.map((r) => {
-      const dir = scriptsDirFor(r.name);
+      const dir = path.join(hypiumProjectDir(r.name), 'testcases', r.name.replace(/[^\w.-]/g, '_'));
       let fileCount = 0;
       if (fs.existsSync(dir)) {
-        try { fileCount = fs.readdirSync(dir).filter((f) => f.endsWith('.ts')).length; } catch { /* 忽略 */ }
+        try { fileCount = fs.readdirSync(dir).filter((f) => f.endsWith('.py')).length; } catch { /* 忽略 */ }
       }
       return { id: r.id, name: r.name, dir, exists: fileCount > 0, fileCount };
     }).sort((a, b) => Number(b.exists) - Number(a.exists) || a.name.localeCompare(b.name));
@@ -694,11 +695,15 @@ function defineRoutes(llm: LlmCall): void {
     const db = getDb();
     const lib = await db.prepare('SELECT id, name FROM libraries WHERE id = ?').get<{ id: number; name: string }>(Number(params.id));
     if (!lib) throw Object.assign(new Error('三方库不存在'), { statusCode: 404 });
-    const kind = query.get('root') === 'scripts' ? 'scripts' : 'repos';
-    const root = kind === 'scripts' ? scriptsDirFor(lib.name) : repoDirFor(lib.name);
+    const rootKind = query.get('root') ?? 'repos';
+    const root = rootKind === 'scripts'
+      ? path.join(hypiumProjectDir(lib.name), 'testcases', lib.name.replace(/[^\w.-]/g, '_'))
+      : rootKind === 'hypium'
+        ? path.join(hypiumProjectDir(lib.name), 'testcases', lib.name.replace(/[^\w.-]/g, '_'))
+        : repoDirFor(lib.name);
     if (!fs.existsSync(root)) {
       throw Object.assign(
-        new Error(kind === 'scripts' ? '该库还没有生成脚本，请先执行「用例转自动化脚本」' : '仓库尚未拉取到本地，请先执行「拉取仓库代码」'),
+        new Error(rootKind !== 'repos' ? '该库还没有 Python/Hypium 脚本，请先执行「用例转自动化脚本」或在右侧新建' : '仓库尚未拉取到本地，请先执行「拉取仓库代码」'),
         { statusCode: 404 },
       );
     }
@@ -725,8 +730,8 @@ function defineRoutes(llm: LlmCall): void {
     const db = getDb();
     const lib = await db.prepare('SELECT id, name FROM libraries WHERE id = ?').get<{ id: number; name: string }>(Number(params.id));
     if (!lib) throw Object.assign(new Error('三方库不存在'), { statusCode: 404 });
-    const kind = query.get('root') === 'scripts' ? 'scripts' : 'repos';
-    const root = kind === 'scripts' ? scriptsDirFor(lib.name) : repoDirFor(lib.name);
+    const rootKind = query.get('root') ?? 'repos';
+    const root = rootKind === 'repos' ? repoDirFor(lib.name) : path.join(hypiumProjectDir(lib.name), 'testcases', lib.name.replace(/[^\w.-]/g, '_'));
     const rel = (query.get('path') ?? '').replace(/^\/+/, '');
     if (!rel) throw Object.assign(new Error('缺少文件路径'), { statusCode: 400 });
     const file = path.resolve(root, rel);
@@ -739,23 +744,33 @@ function defineRoutes(llm: LlmCall): void {
     return { name: rel, content, truncated, binary: buf.includes(0) };
   }, { permission: 'library:read' });
 
-  // 删除脚本文件（仅允许 scripts 目录下的 .ts，带路径穿越防护）
+  // 删除自动化脚本（仅 hypium 目录下 .py，带路径穿越防护）
   route('DELETE', '/repos/:libraryId/file', async ({ params, query }) => {
     const db = getDb();
     const lib = await db.prepare('SELECT id, name FROM libraries WHERE id = ?').get<{ id: number; name: string }>(Number(params.libraryId));
     if (!lib) throw Object.assign(new Error('三方库不存在'), { statusCode: 404 });
-    const kind = query.get('root') === 'scripts' ? 'scripts' : 'repos';
-    const root = kind === 'scripts' ? scriptsDirFor(lib.name) : repoDirFor(lib.name);
+    const rootKind = query.get('root') ?? 'repos';
     const rel = (query.get('path') ?? '').replace(/^\/+/, '');
-    if (!rel || !rel.endsWith('.ts')) throw Object.assign(new Error('仅支持删除 .ts 脚本文件'), { statusCode: 400 });
-    const file = path.resolve(root, rel);
-    if (file !== root && !file.startsWith(root + path.sep)) throw Object.assign(new Error('非法路径'), { statusCode: 400 });
+    let file: string;
+    if (rootKind === 'repos') {
+      if (!rel.endsWith('.ts')) throw Object.assign(new Error('仅支持删除 .ts 脚本文件'), { statusCode: 400 });
+      const root = repoDirFor(lib.name);
+      file = path.resolve(root, rel);
+      if (file !== root && !file.startsWith(root + path.sep)) throw Object.assign(new Error('非法路径'), { statusCode: 400 });
+    } else {
+      if (!rel || !/\.py$/i.test(rel) || rel.includes('..') || /[\\/]/.test(rel)) {
+        throw Object.assign(new Error('仅支持删除当前目录下的 .py 脚本文件'), { statusCode: 400 });
+      }
+      const root = path.join(hypiumProjectDir(lib.name), 'testcases', lib.name.replace(/[^\w.-]/g, '_'));
+      file = path.resolve(root, rel);
+      if (!file.startsWith(path.resolve(root))) throw Object.assign(new Error('非法路径'), { statusCode: 400 });
+    }
     if (!fs.existsSync(file) || !fs.statSync(file).isFile()) throw Object.assign(new Error('文件不存在'), { statusCode: 404 });
     fs.unlinkSync(file);
     return { ok: true, deleted: rel };
   }, { permission: 'library:write' });
 
-  // 新建 / 编辑自动化脚本（仅 scripts 目录下 .ts；body: { name, content }）
+  // 新建 / 编辑自动化脚本（hypium 目录 .py；body: { name, content }）
   route('PUT', '/repos/:libraryId/file', async ({ params, body }) => {
     const db = getDb();
     const lib = await db.prepare('SELECT id, name FROM libraries WHERE id = ?').get<{ id: number; name: string }>(Number(params.libraryId));
@@ -763,14 +778,12 @@ function defineRoutes(llm: LlmCall): void {
     const b = body as { name?: string; content?: string };
     const name = String(b.name ?? '').replace(/^\/+/, '').trim();
     const content = String(b.content ?? '');
-    if (!name || !/\.ts$/i.test(name) || /[\\]/.test(name) || name.includes('..')) {
-      throw Object.assign(new Error('文件名非法：须为 scripts 目录下的 .ts 文件'), { statusCode: 400 });
+    if (!name || !/\.py$/i.test(name) || /[\\]/.test(name) || name.includes('..')) {
+      throw Object.assign(new Error('文件名非法：须为当前目录下的 .py 文件（如 C-AI-001.py）'), { statusCode: 400 });
     }
-    const root = scriptsDirFor(lib.name);
+    const root = path.join(hypiumProjectDir(lib.name), 'testcases', lib.name.replace(/[^\w.-]/g, '_'));
     const file = path.resolve(root, name);
-    if (file !== path.resolve(root) && !file.startsWith(path.resolve(root) + path.sep)) {
-      throw Object.assign(new Error('非法路径'), { statusCode: 400 });
-    }
+    if (!file.startsWith(path.resolve(root))) throw Object.assign(new Error('非法路径'), { statusCode: 400 });
     fs.mkdirSync(path.dirname(file), { recursive: true });
     fs.writeFileSync(file, content, 'utf8');
     return { ok: true, saved: name, size: Buffer.byteLength(content, 'utf8') };
@@ -1375,6 +1388,8 @@ function mapPlan(row: Record<string, unknown>) {
     status: row.status, failPolicy: row.fail_policy,
     scriptMode: (row.script_mode as string | undefined) ?? '',
     error: (row.error as string | undefined) ?? '',
+    progress: Number(row.progress ?? 0) || 0,
+    progressNote: (row.progress_note as string | undefined) ?? '',
     lastRunAt: row.last_run_at,
     createdAt: row.created_at, updatedAt: row.updated_at,
   };
