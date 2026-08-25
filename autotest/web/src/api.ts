@@ -119,8 +119,8 @@ export const api = {
   deleteUser: (id: number) => req<{ ok: boolean }>(`${API_BASE}/auth/users/${id}`, { method: 'DELETE' }),
   resetPassword: (id: number) => req<{ ok: boolean; tempPassword: string }>(`${API_BASE}/auth/users/${id}/reset-password`, { method: 'POST' }),
   invites: () => req<{ ok: boolean; invites: Array<Record<string, unknown>> }>(`${API_BASE}/auth/invites`),
-  createInvite: (roleCode: string) =>
-    req<{ ok: boolean; code: string }>(`${API_BASE}/auth/invites`, { method: 'POST', body: JSON.stringify({ roleCode }) }),
+  createInvite: (roleCode: string, expiresDays?: number) =>
+    req<{ ok: boolean; code: string }>(`${API_BASE}/auth/invites`, { method: 'POST', body: JSON.stringify({ roleCode, expiresDays }) }),
   revokeInvite: (id: number) => req<{ ok: boolean }>(`${API_BASE}/auth/invites/${id}`, { method: 'DELETE' }),
   keys: () => req<{ ok: boolean; keys: Array<Record<string, unknown>> }>(`${API_BASE}/auth/keys`),
   createKey: (name: string, scopes: string[]) =>
