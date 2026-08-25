@@ -7,6 +7,24 @@ import { getSetting } from './settings.js';
 import { cacheDel } from './cache.js';
 let scanning = false;
 let lastScanAt = 0;
+/** 历史版本演示模式写入的假设备型号签名。 */
+const SIMULATED_MODELS = ['Mate X5', 'Pura 70', 'nova 13', 'MatePad Pro', 'Pocket 2'];
+/** 清理历史模拟设备残留（按型号签名精确匹配，真实设备不受影响）。 */
+export async function purgeSimulatedDevices() {
+    try {
+        const marks = SIMULATED_MODELS.map(() => '?').join(',');
+        const r = await getDb().prepare(`DELETE FROM devices WHERE model IN (${marks})`).run(...SIMULATED_MODELS);
+        const n = Number(r.changes) || 0;
+        if (n > 0) {
+            void cacheDel('devices');
+            console.warn(`[autotest] 已清理 ${n} 条历史模拟设备。若反复出现，说明仍有旧版本进程在运行并写入，请重启所有 DSH 宿主进程`);
+        }
+        return n;
+    }
+    catch {
+        return 0;
+    }
+}
 /** 双方言设备 upsert（MySQL ON DUPLICATE KEY / SQLite ON CONFLICT）。 */
 async function upsertOnlineDevice(serial, model, osVersion, t) {
     const sql = dbMode() === 'sqlite'
@@ -54,11 +72,13 @@ export async function autoScanDevices() {
         return { ok: false, detected: 0, reason: e.message };
     }
     finally {
+        await purgeSimulatedDevices();
         scanning = false;
     }
 }
-/** 启动入口：立即扫一次 + 周期 tick。 */
+/** 启动入口：立即扫一次（含假设备清理）+ 周期 tick。 */
 export function startDeviceAutoScan() {
+    void purgeSimulatedDevices();
     void autoScanDevices().then((r) => {
         if (r.ok && r.detected > 0)
             console.log(`[autotest] 设备自动检测：发现 ${r.detected} 台在线设备`);
