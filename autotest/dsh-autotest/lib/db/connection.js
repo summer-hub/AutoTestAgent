@@ -196,6 +196,20 @@ async function upgradeBuiltinPrompts() {
     catch (e) {
         console.warn('[dsh-autotest] 内置 Prompt 升级跳过：', e.message);
     }
+    // 老库补插「用例优化 Agent」（不存在时插入；用户改过/已建则跳过）
+    try {
+        const insertSql = dbMode() === 'sqlite'
+            ? `INSERT INTO prompts (name, role, content, skill, variables, builtin, version, updated_at)
+         SELECT '用例优化 Agent', '用例优化', ?, ?, '[]', 1, 1, ?
+         WHERE NOT EXISTS (SELECT 1 FROM prompts WHERE role = '用例优化')`
+            : `INSERT INTO prompts (name, role, content, skill, variables, builtin, version, updated_at)
+         SELECT '用例优化 Agent', '用例优化', ?, ?, '[]', 1, 1, ? FROM DUAL
+         WHERE NOT EXISTS (SELECT 1 FROM prompts WHERE role = '用例优化')`;
+        await getDb().prepare(insertSql).run('你是鸿蒙三方库测试用例优化 Agent。在保持原用例测试意图与覆盖目标不变的前提下提升质量：\n1. 真实可操作——步骤引用的控件必须来自给定上下文（页面源码/真机遍历控件清单），删除或修正臆造的按钮与跳转；\n2. 逻辑合理——补全前置条件，理顺操作顺序，拆分过长的组合步骤，去除重复；\n3. 预期结果明确清晰——具体到控件文本/动画名/回调 JSON 字段/hilog 日志，禁止空泛描述；内容超一屏时补「向上滑动查看输出区域」步骤；\n4. 输出 JSON：{ name, precondition, steps[], expected }。只输出 JSON，不要解释。', 'autotest-case-optimizer：保持测试意图不变，步骤真实、逻辑顺畅、预期可验证；结合控件清单修正臆造引用。', now());
+    }
+    catch (e) {
+        console.warn('[dsh-autotest] 用例优化 Agent 补插跳过：', e.message);
+    }
 }
 /** 建表 + settings 加载 + 种子（幂等，首次请求前完成）。 */
 export async function ensureReady() {

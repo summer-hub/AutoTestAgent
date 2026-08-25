@@ -6,6 +6,20 @@ const SOURCE_COLORS: Record<string, string> = { 老库存量: 'gray', 新需求�
 const STATUS_COLORS: Record<string, string> = { 通过: 'green', 失败: 'red', 待确认: 'gray', 未执行: 'gray' };
 const PAGE_SIZES = [30, 50, 100];
 
+/** 版本说明渲染：【AI优化】前缀显示为蓝色徽标（AI 迭代标识）。 */
+function renderChangeNote(note: string | null): React.ReactNode {
+  const n = note || '（无更新说明）';
+  if (n.startsWith('【AI优化】')) {
+    return (
+      <>
+        <span style={{ color: 'var(--accent2)', fontWeight: 600 }}>【AI优化】</span>
+        {n.slice('【AI优化】'.length)}
+      </>
+    );
+  }
+  return n;
+}
+
 export default function CasesPage({ me }: { me?: { permissions?: string[] } | null } = {}) {
   // case:delete 权限缺失（工程师/访客）时隐藏删除入口，避免 403 困惑
   const canDelete = me?.permissions ? me.permissions.includes('case:delete') : true;
@@ -32,6 +46,38 @@ export default function CasesPage({ me }: { me?: { permissions?: string[] } | nu
   const [detail, setDetail] = useState<TestCase | null>(null);
   const [caseForm, setCaseForm] = useState<null | { mode: 'create' } | { mode: 'edit'; case: TestCase }>(null);
   const [savingCase, setSavingCase] = useState(false);
+
+  // 行内操作：转脚本 / AI优化（按用例 id 标记 busy）
+  const [rowBusy, setRowBusy] = useState<{ id: number; kind: 'script' | 'optimize' } | null>(null);
+
+  const caseToScript = async (c: TestCase): Promise<void> => {
+    if (curLib === null) return;
+    setRowBusy({ id: c.id, kind: 'script' });
+    setError('');
+    try {
+      const r = await api.caseToScript(c.id);
+      setImportMsg(`✓ ${c.caseNo} 已绑定 Python 脚本：${r.file}`);
+      loadCases(curLib, casePage);
+    } catch (e) { setError(String((e as Error).message)); } finally { setRowBusy(null); }
+  };
+
+  const optimizeCase = async (c: TestCase): Promise<void> => {
+    if (curLib === null) return;
+    setRowBusy({ id: c.id, kind: 'optimize' });
+    setError('');
+    try {
+      const r = await api.optimizeCase(c.id);
+      flashOptimize(r);
+      loadCases(curLib, casePage);
+    } catch (e) { setError(String((e as Error).message)); } finally { setRowBusy(null); }
+  };
+
+  // AI 优化完成提示（3.5s 自动消失）
+  const [optMsg, setOptMsg] = useState('');
+  const flashOptimize = (r: { caseNo: string; version: number }): void => {
+    setOptMsg(`✓ ${r.caseNo} 已由「用例优化 Agent」优化并迭代到 V${r.version}（版本说明带【AI优化】标识）`);
+    setTimeout(() => setOptMsg(''), 3500);
+  };
 
   const toggleSel = (id: number): void => {
     setSel((s) => {
@@ -286,6 +332,7 @@ export default function CasesPage({ me }: { me?: { permissions?: string[] } | nu
             <button className="btn sm" disabled={curLib === null} onClick={() => fileRef.current?.click()}>⬆ 导入 Excel</button>
             <button className="btn sm primary" disabled={curLib === null} onClick={() => setCaseForm({ mode: 'create' })}>＋ 新增用例</button>
             {importMsg && <span className="muted" style={{ fontSize: 11.5 }}>{importMsg}</span>}
+            {optMsg && <span className="tag blue" style={{ fontSize: 11.5 }}>{optMsg}</span>}
             <span className="muted" style={{ fontSize: 11.5, marginLeft: 'auto' }}>
               版本按单条用例迭代 · 更新自动递增 · 可单独回滚
             </span>
@@ -343,6 +390,14 @@ export default function CasesPage({ me }: { me?: { permissions?: string[] } | nu
                       <span className="link" onClick={() => setCaseForm({ mode: 'edit', case: c })}>编辑</span>
                       <span style={{ margin: '0 6px', color: 'var(--text3)' }}>·</span>
                       <span className="link" onClick={() => openDrawer(c)}>版本历史</span>
+                      <span style={{ margin: '0 6px', color: 'var(--text3)' }}>·</span>
+                      {rowBusy?.id === c.id && rowBusy.kind === 'script'
+                        ? <span className="muted">转脚本中…</span>
+                        : <span className="link" title="生成并绑定 Python/Hypium 自动化脚本（执行计划直接运行）" onClick={() => void caseToScript(c)}>⚙ 转脚本</span>}
+                      <span style={{ margin: '0 6px', color: 'var(--text3)' }}>·</span>
+                      {rowBusy?.id === c.id && rowBusy.kind === 'optimize'
+                        ? <span className="muted">AI 优化中…</span>
+                        : <span className="link" style={{ color: 'var(--accent2)' }} title="用例优化 Agent：保持测试意图，提升真实性与可验证性，版本自动迭代并标注【AI优化】" onClick={() => void optimizeCase(c)}>✨ AI优化</span>}
                       {canDelete && (
                         <>
                           <span style={{ margin: '0 6px', color: 'var(--text3)' }}>·</span>
@@ -533,7 +588,9 @@ export default function CasesPage({ me }: { me?: { permissions?: string[] } | nu
                           : <span className="tag gray">历史版本</span>}
                       </div>
                       <div className="vd">{v.createdAt} · {v.author} · {v.authorType === 'ai' ? 'AI' : '人工'}</div>
-                      <div className="vc">{v.changeNote || '（无更新说明）'}</div>
+                      <div className="vc">
+                        {renderChangeNote(v.changeNote)}
+                      </div>
                       <div className="va">
                         <button className="btn sm" onClick={() => rollback(v.version)}>↩ 回滚到此版本</button>
                         <button className="btn sm" onClick={() => setCompare({ from: v.version, to: drawer.case.currentVersion })}>对比</button>

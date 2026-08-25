@@ -527,6 +527,76 @@ ${loadLessons(lib.name).map((l, i) => `${i + 1}. ${l}`).join('\n') || '（暂无
   return `真机遍历 ${result.pages.length} 页 → AI 设计 ${rows.length} 条用例（自审修订 ${reviewed.fixedRounds} 轮），入库 ${created.length} 条并绑定 Python 脚本 ${bound} 条。工程：${hypiumProjectDir(lib.name)}`;
 }
 
+const CASE_OPT_FALLBACK = `你是鸿蒙三方库测试用例优化 Agent。在保持原用例测试意图与覆盖目标不变的前提下提升质量：
+1. 真实可操作——步骤引用的控件必须来自给定上下文，删除或修正臆造的按钮与跳转；
+2. 逻辑合理——补全前置条件，理顺操作顺序，拆分过长组合步骤，去除重复；
+3. 预期结果明确清晰——具体到控件文本/动画名/回调 JSON 字段/hilog 日志，禁止空泛描述；超一屏内容补「向上滑动查看输出区域」步骤。
+只输出 JSON：{ name, precondition, steps[], expected }。`;
+
+/**
+ * 单条用例 AI 优化：用例优化 Agent（Prompt 管理 content+skill）重写 → 版本 +1，
+ * changeNote 以【AI优化】前缀落库（前端蓝色徽标标识）。
+ */
+export async function optimizeCaseById(
+  caseId: number,
+  llm: LlmCall,
+): Promise<{ caseNo: string; name: string; version: number }> {
+  const db = getDb();
+  const c = await db.prepare(
+    `SELECT c.*, l.name AS library_name, l.description AS library_desc, l.package_name
+     FROM cases c JOIN libraries l ON l.id = c.library_id WHERE c.id = ?`,
+  ).get<{ id: number; library_id: number; case_no: string; name: string; precondition: string; steps: string; expected: string; current_version: number; library_name: string; library_desc: string; package_name: string }>(caseId);
+  if (!c) throw Object.assign(new Error('用例不存在'), { statusCode: 404 });
+
+  // 真机对照数据（存在遍历报告时注入全部页紧凑清单）
+  const report = latestExploreResult(c.library_name);
+  const uiCtx = report && report.pages.length > 0
+    ? `【真机遍历对照数据】（真实 dump 控件清单，步骤只能引用这里出现的控件文本）：\n${JSON.stringify(report.pages.slice(0, 10).map((pg) => ({ path: pg.path.join(' → '), controls: pg.controls.map((x) => (x.text || x.desc).trim()).filter(Boolean).slice(0, 12), scrolls: pg.scrolls ?? 0 })))}`
+    : '';
+
+  const sceneCtx = `三方库：${c.library_name}（bundle=${c.package_name || '—'}）库简介：${c.library_desc ?? ''}
+【真机遍历对照数据】${uiCtx}
+待优化用例 ${c.case_no}：
+名称：${c.name}
+前置条件：${c.precondition}
+步骤：${JSON.stringify(JSON.parse(c.steps || '[]'))}
+预期结果：${c.expected}`;
+
+  const tpl = await promptBundle('用例优化', CASE_OPT_FALLBACK);
+  const sys = `${tpl.content}${tpl.skill ? `\n\n【绑定技能】\n${tpl.skill}` : ''}`;
+  let parsed: unknown = null;
+  let lastErr: unknown = null;
+  for (let attempt = 0; attempt < 2 && !parsed; attempt++) {
+    try {
+      const text = await llm(attempt === 0
+        ? { system: sys, user: sceneCtx, maxTokens: 3000 }
+        : { system: '只输出一个 JSON 对象 { name, precondition, steps[], expected }，不要解释。', user: sceneCtx, maxTokens: 2000 });
+      parsed = extractJson<unknown>(text);
+    } catch (e) { lastErr = e; }
+  }
+  if (!parsed) throw lastErr instanceof Error ? lastErr : new Error(String(lastErr));
+  const rows = normalizeDraftCases(parsed);
+  if (rows.length === 0) throw new Error('AI 未返回有效优化结果');
+  const r = rows[0];
+
+  const next = c.current_version + 1;
+  const t = now();
+  const snapshot = {
+    id: c.id, libraryId: c.library_id, caseNo: c.case_no, name: r.name || c.name,
+    source: 'AI 生成', precondition: r.precondition, steps: r.steps,
+    expected: r.expected, status: '待确认', scriptStatus: '未绑定',
+    currentVersion: next, createdAt: t, updatedAt: t,
+  };
+  await db.transaction(async () => {
+    await db.prepare(`UPDATE cases SET name=?, precondition=?, steps=?, expected=?, current_version=?, updated_at=? WHERE id=?`)
+      .run(snapshot.name, snapshot.precondition, JSON.stringify(snapshot.steps), snapshot.expected, next, t, c.id);
+    await db.prepare(`INSERT INTO case_versions (case_id, version, snapshot, change_note, author, author_type, created_at)
+      VALUES (?, ?, ?, ?, 'AI 用例优化 Agent', 'ai', ?)`)
+      .run(c.id, next, JSON.stringify(snapshot), `【AI优化】按用例优化 Agent 重写：步骤对齐真实控件、预期落到可验证证据（自 v${c.current_version}）。`, t);
+  });
+  return { caseNo: c.case_no, name: snapshot.name, version: next };
+}
+
 async function updateCases(task: TaskRow, lib: RepoLib & { current_version: string }, llm: LlmCall): Promise<string> {
   const db = getDb();
   const samples = await db.prepare(`SELECT case_no, name FROM cases WHERE library_id = ? ORDER BY id LIMIT 10`).all<{ case_no: string; name: string }>(lib.id);

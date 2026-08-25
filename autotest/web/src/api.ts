@@ -157,6 +157,10 @@ export const api = {
   createCase: (b: { libraryId: number; caseNo: string; name: string; source?: string; precondition?: string; steps?: string[]; expected?: string; dtsUrl?: string; status?: string }) =>
     req<TestCase>(`${API_BASE}/cases`, { method: 'POST', body: JSON.stringify(b) }),
   deleteCase: (id: number) => req<{ ok: boolean; deletedCaseNo: string }>(`${API_BASE}/cases/${id}`, { method: 'DELETE' }),
+  caseToScript: (id: number) =>
+    req<{ ok: boolean; file: string; dir: string }>(`${API_BASE}/cases/${id}/script`, { method: 'POST' }),
+  optimizeCase: (id: number) =>
+    req<{ ok: boolean; caseNo: string; name: string; version: number }>(`${API_BASE}/cases/${id}/optimize`, { method: 'POST' }),
   batchDeleteCases: (ids: number[]) =>
     req<{ ok: boolean; deleted: number }>(`${API_BASE}/cases/batch-delete`, { method: 'POST', body: JSON.stringify({ ids }) }),
   batchUpdateCaseStatus: (ids: number[], status: string) =>

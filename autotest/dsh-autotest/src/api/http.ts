@@ -7,7 +7,7 @@ import XLSX from 'xlsx';
 import { ensureReady, dbMode, getDb, now, withRead } from '../db/connection.js';
 import { caseTableFor, shardOf, shardStats } from '../db/repository.js';
 import type { LlmCall } from '../services/llmHarness.js';
-import { runTask } from '../services/executor.js';
+import { runTask, optimizeCaseById } from '../services/executor.js';
 import { executePlan } from '../services/planExecutor.js';
 import { registerScheduledPlan } from '../services/scheduler.js';
 import {
@@ -23,7 +23,7 @@ import { pullRepo, repoDirFor, workspaceDir, type RepoLib } from '../services/gi
 import { registerAuthRoutes, requireAuth, type HandlerArgs, type RouteFn } from '../auth/index.js';
 import { AuthError, hasPermission } from '../auth/service.js';
 import { type ExploreResult } from '../services/uiExplorer.js';
-import { hypiumProjectDir } from '../services/hypiumGen.js';
+import { hypiumProjectDir, writeCaseScript } from '../services/hypiumGen.js';
 
 // ---------- mini router ----------
 type Handler = (args: HandlerArgs) => Promise<unknown>;
@@ -347,6 +347,30 @@ function defineRoutes(llm: LlmCall): void {
     const marks = ids.map(() => '?').join(',');
     const r = await db.prepare(`UPDATE cases SET status = ?, updated_at = ? WHERE id IN (${marks})`).run(status, now(), ...ids);
     return { ok: true, updated: r.changes, status };
+  }, { permission: 'case:write' });
+
+  route('POST', '/cases/:id/optimize', async ({ params }) => {
+    const id = Number(params.id);
+    const r = await optimizeCaseById(id, llm);
+    void cacheDel('cases');
+    return { ok: true, ...r };
+  }, { permission: 'case:write', llm: true });
+
+  // 单条用例生成并绑定 Python/Hypium 脚本（行内「转脚本」按钮）
+  route('POST', '/cases/:id/script', async ({ params }) => {
+    const id = Number(params.id);
+    const db = getDb();
+    const c = await db.prepare(
+      `SELECT c.case_no, c.name, c.steps, l.name AS library_name, l.package_name
+       FROM cases c JOIN libraries l ON l.id = c.library_id WHERE c.id = ?`,
+    ).get<{ case_no: string; name: string; steps: string; library_name: string; package_name: string }>(id);
+    if (!c) throw Object.assign(new Error('用例不存在'), { statusCode: 404 });
+    const file = writeCaseScript(
+      { name: c.library_name, packageName: c.package_name || c.library_name },
+      { caseNo: c.case_no, name: c.name, steps: JSON.parse(c.steps || '[]') as string[] },
+    );
+    await db.prepare(`UPDATE cases SET script_status = '已绑定', updated_at = ? WHERE id = ?`).run(now(), id);
+    return { ok: true, file: path.basename(file), dir: hypiumProjectDir(c.library_name) };
   }, { permission: 'case:write' });
 
   route('PUT', '/cases/:id', async ({ params, body }) => {

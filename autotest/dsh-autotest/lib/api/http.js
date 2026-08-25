@@ -3,7 +3,7 @@ import path from 'node:path';
 import XLSX from 'xlsx';
 import { ensureReady, dbMode, getDb, now, withRead } from '../db/connection.js';
 import { caseTableFor, shardOf, shardStats } from '../db/repository.js';
-import { runTask } from '../services/executor.js';
+import { runTask, optimizeCaseById } from '../services/executor.js';
 import { executePlan } from '../services/planExecutor.js';
 import { registerScheduledPlan } from '../services/scheduler.js';
 import { analyzeAttribution, analyzeCaseUpdates, analyzePrChanges, fetchPr, fetchPrs, fetchPrsFromGit, parseRepoPath, } from '../services/analyzer.js';
@@ -14,7 +14,7 @@ import { autoScanDevices } from '../services/deviceScanner.js';
 import { pullRepo, repoDirFor, workspaceDir } from '../services/gitRepo.js';
 import { registerAuthRoutes, requireAuth } from '../auth/index.js';
 import { AuthError, hasPermission } from '../auth/service.js';
-import { hypiumProjectDir } from '../services/hypiumGen.js';
+import { hypiumProjectDir, writeCaseScript } from '../services/hypiumGen.js';
 const routes = [];
 // 分析进度（内存态，供前端轮询展示实时过程；完成后 60s 自动清理）
 const analysisProgress = new Map();
@@ -351,6 +351,24 @@ function defineRoutes(llm) {
         const marks = ids.map(() => '?').join(',');
         const r = await db.prepare(`UPDATE cases SET status = ?, updated_at = ? WHERE id IN (${marks})`).run(status, now(), ...ids);
         return { ok: true, updated: r.changes, status };
+    }, { permission: 'case:write' });
+    route('POST', '/cases/:id/optimize', async ({ params }) => {
+        const id = Number(params.id);
+        const r = await optimizeCaseById(id, llm);
+        void cacheDel('cases');
+        return { ok: true, ...r };
+    }, { permission: 'case:write', llm: true });
+    // 单条用例生成并绑定 Python/Hypium 脚本（行内「转脚本」按钮）
+    route('POST', '/cases/:id/script', async ({ params }) => {
+        const id = Number(params.id);
+        const db = getDb();
+        const c = await db.prepare(`SELECT c.case_no, c.name, c.steps, l.name AS library_name, l.package_name
+       FROM cases c JOIN libraries l ON l.id = c.library_id WHERE c.id = ?`).get(id);
+        if (!c)
+            throw Object.assign(new Error('用例不存在'), { statusCode: 404 });
+        const file = writeCaseScript({ name: c.library_name, packageName: c.package_name || c.library_name }, { caseNo: c.case_no, name: c.name, steps: JSON.parse(c.steps || '[]') });
+        await db.prepare(`UPDATE cases SET script_status = '已绑定', updated_at = ? WHERE id = ?`).run(now(), id);
+        return { ok: true, file: path.basename(file), dir: hypiumProjectDir(c.library_name) };
     }, { permission: 'case:write' });
     route('PUT', '/cases/:id', async ({ params, body }) => {
         const id = Number(params.id);
