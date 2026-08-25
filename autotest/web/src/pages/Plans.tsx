@@ -18,7 +18,7 @@ export default function PlansPage() {
   const [libs, setLibs] = useState<Library[]>([]);
   const [error, setError] = useState('');
   const [modal, setModal] = useState(false);
-  const [form, setForm] = useState({ name: '', type: 'immediate', cron: '0 2 * * *', libraryId: 0, deviceIds: [1] as number[], failPolicy: 'continue' });
+  const [form, setForm] = useState({ name: '', type: 'immediate', cron: '0 2 * * *', libraryId: 0, deviceIds: [1] as number[], failPolicy: 'continue', scriptMode: '' });
   // 跨库用例多选
   const [selCases, setSelCases] = useState<Map<number, { caseNo: string; name: string; libraryName: string }>>(new Map());
   const [pickerOpen, setPickerOpen] = useState(false);
@@ -50,6 +50,7 @@ export default function PlansPage() {
         scope,
         deviceIds: form.deviceIds,
         failPolicy: form.failPolicy as Plan['failPolicy'],
+        scriptMode: form.scriptMode,
       });
       setModal(false);
       setSelCases(new Map());
@@ -92,7 +93,7 @@ export default function PlansPage() {
   return (
     <>
       <div className="page-title">执行计划</div>
-      <div className="page-desc">用例库绑定自动化脚本后执行测试 · 立即 / 定时 / 单独 / 批量 / 全量（默认 hdc 真机执行，无设备自动回退模拟）</div>
+      <div className="page-desc">严格真机执行：设备未连接时计划置为失败并提示原因，不做任何模拟 · 计划可指定脚本模式（绑定脚本优先 / 用例步骤）</div>
 
       {error && <div className="error">⚠️ {error}</div>}
 
@@ -111,8 +112,13 @@ export default function PlansPage() {
               <div style={{ flex: 1 }}>
                 <b style={{ fontSize: 13.5 }}>{p.name}</b>
                 <div className="muted" style={{ fontSize: 11.8, marginTop: 3 }}>
-                  {p.planNo} · {p.type === 'full' ? '全量' : p.type === 'scheduled' ? `cron ${p.cron}` : p.type} · 创建于 {p.createdAt}
+                  {p.planNo} · {p.type === 'full' ? '全量' : p.type === 'scheduled' ? `cron ${p.cron}` : p.type}
+                  {p.scriptMode ? ` · ${p.scriptMode === 'script' ? '绑定脚本' : '用例步骤'}` : ''}
+                  · 创建于 {p.createdAt}
                 </div>
+                {p.status === 'failed' && p.error && (
+                  <div style={{ fontSize: 11.8, color: 'var(--red)', marginTop: 4, lineHeight: 1.6 }}>✗ {p.error}</div>
+                )}
               </div>
               {p.execStats && (
                 <div style={{ fontSize: 12 }}>
@@ -200,6 +206,15 @@ export default function PlansPage() {
                   <option value="abort_library">整库失败即中止</option>
                   <option value="retry_twice">失败自动重试 2 次</option>
                 </select>
+              </div>
+              <div className="s-field" style={{ marginBottom: 12 }}>
+                <div className="fl"><div className="ft">执行模式（脚本绑定）</div></div>
+                <select className="select" style={{ flex: 1 }} value={form.scriptMode} onChange={(e) => setForm({ ...form, scriptMode: e.target.value })}>
+                  <option value="">跟随系统配置（exec.scriptMode）</option>
+                  <option value="script">绑定脚本优先：用例有绑定脚本时解析脚本动作执行</option>
+                  <option value="step">始终按用例步骤执行</option>
+                </select>
+                <div className="muted" style={{ fontSize: 11, marginTop: 4 }}>绑定脚本存放于「自动化脚本」页 scripts/&lt;库名&gt;/&lt;用例编号&gt;.ts，可自行新建编辑</div>
               </div>
               <div style={{ display: 'flex', gap: 10, justifyContent: 'flex-end', marginTop: 16 }}>
                 <button className="btn" onClick={() => setModal(false)}>取消</button>

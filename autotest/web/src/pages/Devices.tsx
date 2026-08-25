@@ -7,6 +7,34 @@ export default function DevicesPage() {
   const [scanning, setScanning] = useState(false);
   const [msg, setMsg] = useState('');
   const [error, setError] = useState('');
+  // 设备详情弹窗
+  const [detail, setDetail] = useState<Device | null>(null);
+  const [detailExecs, setDetailExecs] = useState<Array<{ id: number; caseNo: string; caseName: string; status: string; startedAt: string | null }>>([]);
+  const [rescanning, setRescanning] = useState(false);
+
+  const openDetail = (d: Device): void => {
+    setDetail(d);
+    setDetailExecs([]);
+    api.executions({ limit: 100 })
+      .then((items) => setDetailExecs(items.filter((e) => e.deviceSerial === d.serial).slice(0, 8)))
+      .catch(() => {});
+  };
+
+  const rescan = async (): Promise<void> => {
+    if (!detail) return;
+    setRescanning(true);
+    setError('');
+    try {
+      await api.scanDevices();
+      load();
+      const fresh = (await api.devices()).find((x) => x.id === detail.id);
+      if (fresh) setDetail(fresh);
+    } catch (e) {
+      setError(String((e as Error).message));
+    } finally {
+      setRescanning(false);
+    }
+  };
 
   const load = useCallback(() => {
     api.devices().then(setDevices).catch((e) => setError(String((e as Error).message)));
@@ -69,7 +97,7 @@ export default function DevicesPage() {
               <b style={{ color: 'var(--text)' }}>最后在线：</b>{d.lastSeenAt ?? '—'}
             </div>
             <div style={{ display: 'flex', gap: 6, marginTop: 10 }}>
-              <button className="btn sm">设备详情</button>
+              <button className="btn sm" onClick={() => openDetail(d)}>设备详情</button>
               <button className="btn sm ghost" onClick={() => remove(d)}>移除</button>
             </div>
           </div>
@@ -101,6 +129,58 @@ export default function DevicesPage() {
           </table>
         )}
       </div>
+      {detail && (
+        <div className="s-overlay show">
+          <div className="s-mask" onClick={() => setDetail(null)} />
+          <div style={{ position: 'relative', zIndex: 1, width: 560, maxWidth: 'calc(100vw - 40px)', maxHeight: 'calc(100vh - 40px)', background: 'var(--panel)', border: '1px solid var(--border2)', borderRadius: 16, boxShadow: '0 24px 80px rgba(0,0,0,.55)', display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '14px 18px', borderBottom: '1px solid var(--border)' }}>
+              <span style={{ fontSize: 15, fontWeight: 600 }}>📱 设备详情 · {detail.model || '未知型号'}</span>
+              <span className={`tag ${detail.status === 'online' ? 'green' : 'gray'}`}>{detail.status === 'online' ? '● 在线' : detail.status === 'history' ? '历史' : '离线'}</span>
+              <div style={{ flex: 1 }} />
+              <button className="s-header x" onClick={() => setDetail(null)} style={{ width: 28, height: 28, borderRadius: 28, border: 'none', background: 'none', color: 'var(--text2)', cursor: 'pointer', fontSize: 14 }}>✕</button>
+            </div>
+            <div style={{ padding: '16px 18px', overflowY: 'auto' }}>
+              <table>
+                <tbody>
+                  <tr><td className="muted" style={{ width: 96 }}>序列号</td><td className="mono">{detail.serial}</td></tr>
+                  <tr><td className="muted">型号</td><td>{detail.model || '—'}</td></tr>
+                  <tr><td className="muted">系统版本</td><td>{detail.osVersion || '—'}</td></tr>
+                  <tr><td className="muted">电量 / 内存</td><td>{detail.battery != null ? `${detail.battery}%` : '—'} / {detail.memoryUsage != null ? `${detail.memoryUsage}%` : '—'}</td></tr>
+                  <tr><td className="muted">最后在线</td><td>{detail.lastSeenAt ?? '—'}</td></tr>
+                  <tr><td className="muted">接入时间</td><td>{detail.createdAt ?? '—'}</td></tr>
+                </tbody>
+              </table>
+
+              <div className="card-h" style={{ margin: '16px 0 8px' }}>
+                <span className="t">该设备最近执行记录</span>
+                <span className="sub">最多显示 8 条</span>
+              </div>
+              {detailExecs.length === 0 ? (
+                <div className="muted" style={{ fontSize: 12.3, padding: '4px 2px 8px' }}>
+                  暂无执行记录。在「执行计划」页运行计划（真机执行）后，这里会展示该设备的用例执行情况。
+                </div>
+              ) : (
+                <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+                  {detailExecs.map((e) => (
+                    <div key={e.id} style={{ display: 'flex', alignItems: 'center', gap: 10, fontSize: 12.3, border: '1px solid var(--border)', borderRadius: 8, padding: '7px 10px' }}>
+                      <span className={`tag ${e.status === 'passed' ? 'green' : e.status === 'failed' ? 'red' : e.status === 'running' ? 'blue' : 'gray'}`}>
+                        {e.status === 'passed' ? '通过' : e.status === 'failed' ? '失败' : e.status === 'running' ? '执行中' : e.status}
+                      </span>
+                      <span className="mono" style={{ color: 'var(--accent2)', flexShrink: 0 }}>{e.caseNo}</span>
+                      <span style={{ flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{e.caseName}</span>
+                      <span className="muted" style={{ fontSize: 11, flexShrink: 0 }}>{(e.startedAt ?? '').replace('T', ' ').slice(0, 19)}</span>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+            <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8, padding: '12px 18px', borderTop: '1px solid var(--border)' }}>
+              <button className="btn" disabled={rescanning} onClick={() => void rescan()} title="hdc list targets 实时识别并刷新在线状态">{rescanning ? '识别中…' : '🔄 重新识别'}</button>
+              <button className="btn primary" onClick={() => setDetail(null)}>关闭</button>
+            </div>
+          </div>
+        </div>
+      )}
     </>
   );
 }

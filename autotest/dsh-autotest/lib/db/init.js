@@ -1,7 +1,7 @@
 // CLI：npm run db:init / db:seed（独立初始化用；插件激活时也会自动 ensureSchemaAndSeed）
-import { getDb } from './connection.js';
+import { getDb, dbMode } from './connection.js';
+import { dataDir } from './sqlite.js';
 import { seed } from './seed.js';
-import { mysqlPool } from './connection.js';
 async function main() {
     const arg = process.argv[2] ?? 'init';
     const db = getDb();
@@ -13,7 +13,12 @@ async function main() {
         }
         await seed();
     }
+    else if (dbMode() === 'sqlite') {
+        const rows = await db.prepare(`SELECT name FROM sqlite_master WHERE type = 'table' ORDER BY name`).all();
+        console.log(`✅ SQLite（${dataDir()}）表：` + rows.map((t) => t.name).join(', '));
+    }
     else {
+        const { mysqlPool } = await import('./connection.js');
         const [rows] = await mysqlPool().query(`SELECT table_name AS name FROM information_schema.tables WHERE table_schema = DATABASE() ORDER BY table_name`);
         console.log('✅ 表：' + rows.map((t) => t.name).join(', '));
     }

@@ -1,6 +1,6 @@
 // 认证服务：scrypt 密码 / HS256 JWT / 邀请注册 / refresh 会话 / API Key / RBAC 装载
 import crypto from 'node:crypto';
-import { authPool } from './db.js';
+import { authDb } from './db.js';
 import { getSetting, setSetting } from '../services/settings.js';
 export class AuthError extends Error {
     statusCode;
@@ -77,7 +77,7 @@ export function generateApiKey() {
 }
 // ---------- 权限装载 ----------
 export async function loadAuthUser(userId) {
-    const db = await authPool();
+    const db = await authDb();
     const [users] = await db.query('SELECT id, username, status FROM auth_users WHERE id = ?', [userId]);
     if (users.length === 0)
         throw new AuthError('用户不存在', 401);
@@ -96,7 +96,7 @@ export async function loadAuthUser(userId) {
 /** 根据 Bearer token（JWT 或 API Key）解析当前用户。 */
 export async function authForToken(token) {
     if (token.startsWith('sk_')) {
-        const db = await authPool();
+        const db = await authDb();
         const hash = sha256(token);
         const [keys] = await db.query('SELECT id, user_id, status FROM auth_api_keys WHERE key_hash = ?', [hash]);
         if (keys.length === 0 || keys[0].status !== 'active')
@@ -115,7 +115,7 @@ export function hasPermission(user, perm) {
 // ---------- 审计 ----------
 export async function writeAudit(userId, action, target = '', detail = '', ip = '') {
     try {
-        const db = await authPool();
+        const db = await authDb();
         await db.query('INSERT INTO auth_audit_logs (user_id, action, target, detail, ip, created_at) VALUES (?, ?, ?, ?, ?, ?)', [userId, action, target, detail, ip, nowStr()]);
     }
     catch (e) {
@@ -124,7 +124,7 @@ export async function writeAudit(userId, action, target = '', detail = '', ip = 
 }
 // ---------- 登录 / 注册 / 会话 ----------
 export async function login(username, password, ip) {
-    const db = await authPool();
+    const db = await authDb();
     const name = String(username || '').trim().toLowerCase();
     if (!name || !password)
         throw new AuthError('用户名和密码必填', 400);
@@ -152,7 +152,7 @@ export async function login(username, password, ip) {
     return { token, refreshToken, user };
 }
 export async function register(inviteCode, username, password, ip) {
-    const db = await authPool();
+    const db = await authDb();
     const name = String(username || '').trim().toLowerCase();
     if (!/^[a-z0-9_]{3,32}$/.test(name))
         throw new AuthError('用户名需 3~32 位小写字母/数字/下划线', 400);
@@ -183,7 +183,7 @@ export async function register(inviteCode, username, password, ip) {
     throw new AuthError('当前禁止开放注册', 403);
 }
 export async function refresh(refreshToken, ip) {
-    const db = await authPool();
+    const db = await authDb();
     const [rows] = await db.query('SELECT id, user_id, expires_at FROM auth_refresh_sessions WHERE token_hash = ? AND revoked = 0', [sha256(refreshToken)]);
     if (rows.length === 0)
         throw new AuthError('会话不存在或已吊销', 401);
@@ -201,13 +201,13 @@ export async function refresh(refreshToken, ip) {
     return { token, refreshToken: newRefresh };
 }
 export async function logout(refreshToken, userId) {
-    const db = await authPool();
+    const db = await authDb();
     await db.query('UPDATE auth_refresh_sessions SET revoked = 1 WHERE token_hash = ?', [sha256(refreshToken)]);
     await writeAudit(userId, 'logout', '', '', '');
 }
 // ---------- 用户管理（user:manage） ----------
 export async function listUsers() {
-    const db = await authPool();
+    const db = await authDb();
     const [users] = await db.query('SELECT id, username, email, status, created_at, last_login_at FROM auth_users ORDER BY id');
     const [roles] = await db.query(`SELECT ur.user_id, GROUP_CONCAT(r.code) AS role_codes
      FROM auth_user_roles ur JOIN auth_roles r ON r.id = ur.role_id
@@ -216,7 +216,7 @@ export async function listUsers() {
     return users.map((u) => ({ ...u, roles: roleMap.get(Number(u.id)) ?? [] }));
 }
 export async function createUser(username, password, roleCodes) {
-    const db = await authPool();
+    const db = await authDb();
     const name = String(username || '').trim().toLowerCase();
     if (!/^[a-z0-9_]{3,32}$/.test(name))
         throw new AuthError('用户名需 3~32 位小写字母/数字/下划线', 400);
@@ -233,20 +233,20 @@ export async function createUser(username, password, roleCodes) {
     return userId;
 }
 export async function setUserRoles(userId, roleCodes) {
-    const db = await authPool();
+    const db = await authDb();
     await db.query('DELETE FROM auth_user_roles WHERE user_id = ?', [userId]);
     for (const role of [...new Set(roleCodes)]) {
         await db.query(`INSERT IGNORE INTO auth_user_roles (user_id, role_id) SELECT ?, id FROM auth_roles WHERE code = ?`, [userId, role]);
     }
 }
 export async function setUserStatus(userId, status) {
-    const db = await authPool();
+    const db = await authDb();
     if (!['active', 'locked', 'disabled'].includes(status))
         throw new AuthError('非法状态', 400);
     await db.query('UPDATE auth_users SET status = ? WHERE id = ?', [status, userId]);
 }
 export async function resetPassword(userId, newPassword) {
-    const db = await authPool();
+    const db = await authDb();
     const pw = newPassword && newPassword.length >= 8 ? newPassword : crypto.randomBytes(6).toString('base64url');
     await db.query('UPDATE auth_users SET password_hash = ? WHERE id = ?', [hashPassword(pw), userId]);
     await db.query('UPDATE auth_refresh_sessions SET revoked = 1 WHERE user_id = ?', [userId]);
@@ -254,37 +254,37 @@ export async function resetPassword(userId, newPassword) {
 }
 // ---------- 邀请码 ----------
 export async function listInvites() {
-    const db = await authPool();
+    const db = await authDb();
     const [rows] = await db.query(`SELECT c.id, c.code, c.role_code, c.used_by, u.username AS used_username, c.expires_at, c.created_at
      FROM auth_invite_codes c LEFT JOIN auth_users u ON u.id = c.used_by
      ORDER BY c.id DESC LIMIT 100`);
     return rows;
 }
 export async function createInvite(createdBy, roleCode, expiresDays = 7) {
-    const db = await authPool();
+    const db = await authDb();
     const code = crypto.randomBytes(4).toString('hex').toUpperCase();
     const exp = new Date(Date.now() + expiresDays * 86_400_000).toISOString().slice(0, 19).replace('T', ' ');
     await db.query('INSERT INTO auth_invite_codes (code, role_code, used_by, expires_at, created_by, created_at) VALUES (?, ?, NULL, ?, ?, ?)', [code, roleCode || 'viewer', exp, createdBy, nowStr()]);
     return code;
 }
 export async function revokeInvite(id) {
-    const db = await authPool();
+    const db = await authDb();
     await db.query('DELETE FROM auth_invite_codes WHERE id = ?', [id]);
 }
 // ---------- API Key 管理 ----------
 export async function listApiKeys(userId) {
-    const db = await authPool();
+    const db = await authDb();
     const [rows] = await db.query('SELECT id, name, scopes, status, created_at, last_used_at FROM auth_api_keys WHERE user_id = ? ORDER BY id DESC', [userId]);
     return rows;
 }
 export async function createApiKey(userId, name, scopes) {
-    const db = await authPool();
+    const db = await authDb();
     const { key, hash } = generateApiKey();
     const [r] = await db.query('INSERT INTO auth_api_keys (user_id, name, key_hash, scopes, status, created_at) VALUES (?, ?, ?, ?, \'active\', ?)', [userId, String(name || '默认 Key').slice(0, 128), hash, JSON.stringify(scopes), nowStr()]);
     return { key, row: { id: r.insertId, name: String(name || '默认 Key'), scopes, status: 'active', created_at: nowStr() } };
 }
 export async function revokeApiKey(id, userId) {
-    const db = await authPool();
+    const db = await authDb();
     const [rows] = await db.query('SELECT id FROM auth_api_keys WHERE id = ? AND user_id = ?', [id, userId]);
     if (rows.length === 0)
         throw new AuthError('Key 不存在', 404);
@@ -292,7 +292,7 @@ export async function revokeApiKey(id, userId) {
 }
 // ---------- 审计查询 ----------
 export async function listAudit(limit, offset, action = '') {
-    const db = await authPool();
+    const db = await authDb();
     const where = action ? 'WHERE a.action = ?' : '';
     const args = action ? [action, limit, offset] : [limit, offset];
     const [rows] = await db.query(`SELECT a.id, a.user_id, u.username, a.action, a.target, a.detail, a.ip, a.created_at

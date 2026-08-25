@@ -4,7 +4,7 @@ import type { IncomingMessage, ServerResponse } from 'node:http';
 import fs from 'node:fs';
 import path from 'node:path';
 import XLSX from 'xlsx';
-import { ensureReady, getDb, now, withRead } from '../db/connection.js';
+import { ensureReady, dbMode, getDb, now, withRead } from '../db/connection.js';
 import { caseTableFor, shardOf, shardStats } from '../db/repository.js';
 import type { LlmCall } from '../services/llmHarness.js';
 import { runTask } from '../services/executor.js';
@@ -155,7 +155,7 @@ function defineRoutes(llm: LlmCall): void {
   registerAuthRoutes(route as RouteFn);
 
   // ---- health ----
-  route('GET', '/health', async () => ({ ok: true, service: 'dsh-autotest', version: PKG_VERSION, routes: routes.length, time: new Date().toISOString() }), { permission: '@public' });
+  route('GET', '/health', async () => ({ ok: true, service: 'dsh-autotest', version: PKG_VERSION, db: dbMode(), routes: routes.length, time: new Date().toISOString() }), { permission: '@public' });
 
   // ---- 系统配置 ----
   route('GET', '/settings', async () => getAllSettings(), { permission: 'settings:read' });
@@ -755,6 +755,27 @@ function defineRoutes(llm: LlmCall): void {
     return { ok: true, deleted: rel };
   }, { permission: 'library:write' });
 
+  // 新建 / 编辑自动化脚本（仅 scripts 目录下 .ts；body: { name, content }）
+  route('PUT', '/repos/:libraryId/file', async ({ params, body }) => {
+    const db = getDb();
+    const lib = await db.prepare('SELECT id, name FROM libraries WHERE id = ?').get<{ id: number; name: string }>(Number(params.libraryId));
+    if (!lib) throw Object.assign(new Error('三方库不存在'), { statusCode: 404 });
+    const b = body as { name?: string; content?: string };
+    const name = String(b.name ?? '').replace(/^\/+/, '').trim();
+    const content = String(b.content ?? '');
+    if (!name || !/\.ts$/i.test(name) || /[\\]/.test(name) || name.includes('..')) {
+      throw Object.assign(new Error('文件名非法：须为 scripts 目录下的 .ts 文件'), { statusCode: 400 });
+    }
+    const root = scriptsDirFor(lib.name);
+    const file = path.resolve(root, name);
+    if (file !== path.resolve(root) && !file.startsWith(path.resolve(root) + path.sep)) {
+      throw Object.assign(new Error('非法路径'), { statusCode: 400 });
+    }
+    fs.mkdirSync(path.dirname(file), { recursive: true });
+    fs.writeFileSync(file, content, 'utf8');
+    return { ok: true, saved: name, size: Buffer.byteLength(content, 'utf8') };
+  }, { permission: 'library:write' });
+
   // ---- plans ----
   route('GET', '/plans', async () => {
     const db = getDb();
@@ -767,16 +788,17 @@ function defineRoutes(llm: LlmCall): void {
   }, { permission: 'plan:read' });
 
   route('POST', '/plans', async ({ body }) => {
-    const b = body as { name?: string; type?: string; cron?: string; scope?: { libraryIds: number[]; caseIds: number[] }; deviceIds?: number[]; failPolicy?: string };
+    const b = body as { name?: string; type?: string; cron?: string; scope?: { libraryIds: number[]; caseIds: number[] }; deviceIds?: number[]; failPolicy?: string; scriptMode?: string };
     if (!b.name || !b.type) throw Object.assign(new Error('name / type 必填'), { statusCode: 400 });
+    const scriptMode = ['script', 'step'].includes(String(b.scriptMode ?? '')) ? String(b.scriptMode) : '';
     const db = getDb();
     const t = now();
     const planNo = await nextPlanNo();
     const scope = b.scope ?? { libraryIds: [], caseIds: [] };
     const deviceIds = b.deviceIds ?? [];
-    const res = await db.prepare(`INSERT INTO plans (plan_no, name, type, cron, scope, device_ids, status, fail_policy, created_at, updated_at)
-      VALUES (?, ?, ?, ?, ?, ?, 'draft', ?, ?, ?)`).run(
-      planNo, b.name, b.type, b.cron ?? null, JSON.stringify(scope), JSON.stringify(deviceIds), b.failPolicy ?? 'continue', t, t,
+    const res = await db.prepare(`INSERT INTO plans (plan_no, name, type, cron, scope, device_ids, status, fail_policy, script_mode, error, created_at, updated_at)
+      VALUES (?, ?, ?, ?, ?, ?, 'draft', ?, ?, '', ?, ?)`).run(
+      planNo, b.name, b.type, b.cron ?? null, JSON.stringify(scope), JSON.stringify(deviceIds), b.failPolicy ?? 'continue', scriptMode, t, t,
     );
     const id = Number(res.lastInsertRowid);
     if (b.type === 'scheduled' && b.cron) {
@@ -899,12 +921,17 @@ ${(row.logs ?? '').slice(0, 4000) || '（无）'}
       const targets = await listTargets();
       if (targets.length > 0) {
         const info = await deviceInfo(targets[0]);
+        const upsert = dbMode() === 'sqlite'
+          ? `INSERT INTO devices (serial, model, os_version, status, last_seen_at, created_at)
+             VALUES (?, ?, ?, 'online', ?, ?)
+             ON CONFLICT(serial) DO UPDATE SET model = excluded.model, os_version = excluded.os_version,
+               status = 'online', last_seen_at = excluded.last_seen_at`
+          : `INSERT INTO devices (serial, model, os_version, status, last_seen_at, created_at)
+             VALUES (?, ?, ?, 'online', ?, ?)
+             ON DUPLICATE KEY UPDATE model=VALUES(model), os_version=VALUES(os_version), status='online', last_seen_at=VALUES(last_seen_at)`;
         for (const s of targets) {
           const d = s === targets[0] ? info : await deviceInfo(s);
-          await db.prepare(`INSERT INTO devices (serial, model, os_version, status, last_seen_at, created_at)
-            VALUES (?, ?, ?, 'online', ?, ?)
-            ON DUPLICATE KEY UPDATE model=VALUES(model), os_version=VALUES(os_version), status='online', last_seen_at=VALUES(last_seen_at)`)
-            .run(s, d.model, d.osVersion, t, t);
+          await db.prepare(upsert).run(s, d.model, d.osVersion, t, t);
         }
         const marks = targets.map(() => '?').join(',');
         await db.prepare(`UPDATE devices SET status='offline' WHERE status='online' AND serial NOT IN (${marks})`).run(...targets);
@@ -1345,7 +1372,10 @@ function mapPlan(row: Record<string, unknown>) {
     id: row.id, planNo: row.plan_no, name: row.name, type: row.type, cron: row.cron,
     scope: JSON.parse((row.scope as string) || '{"libraryIds":[],"caseIds":[]}'),
     deviceIds: JSON.parse((row.device_ids as string) || '[]'),
-    status: row.status, failPolicy: row.fail_policy, lastRunAt: row.last_run_at,
+    status: row.status, failPolicy: row.fail_policy,
+    scriptMode: (row.script_mode as string | undefined) ?? '',
+    error: (row.error as string | undefined) ?? '',
+    lastRunAt: row.last_run_at,
     createdAt: row.created_at, updatedAt: row.updated_at,
   };
 }

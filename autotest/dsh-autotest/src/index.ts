@@ -16,7 +16,7 @@ import { makeApiHandler } from './api/http.js';
 import { startScheduler } from './services/scheduler.js';
 import { makeStaticHandler } from './static.js';
 import { refreshPackageInfo, repoDirFor } from './services/gitRepo.js';
-import { ensureAuthSchema, authPool } from './auth/db.js';
+import { ensureAuthSchema, authDb } from './auth/db.js';
 import { createUser } from './auth/service.js';
 import { getSetting } from './services/settings.js';
 
@@ -54,11 +54,11 @@ export function apply(ctx: Context): void {
       } catch (e) {
         console.error('[dsh-autotest] 调度器启动失败：', (e as Error).message);
       }
-      // 认证库初始化（MySQL）：建表 + 角色权限种子 + 首启创建 admin
+      // 认证库初始化（跟随业务库引擎：MySQL 或 SQLite 本地降级）：建表 + 角色权限种子 + 首启创建 admin
       await ensureAuthSchema();
-      const db2 = await authPool();
-      const [rows] = await db2.query('SELECT COUNT(*) AS n FROM auth_users') as [Array<{ n: number }>, unknown];
-      if (rows[0].n === 0) {
+      const adb = await authDb();
+      const [uRows] = await adb.query('SELECT COUNT(*) AS n FROM auth_users') as [Array<{ n: number }>, unknown];
+      if (uRows[0].n === 0) {
         const pw = String(getSetting('auth.bootstrapPassword', '') || '').trim()
           || crypto.randomBytes(6).toString('base64url');
         await createUser('admin', pw, ['admin']);

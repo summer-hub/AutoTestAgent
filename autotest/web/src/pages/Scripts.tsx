@@ -6,6 +6,26 @@ interface ScriptLib { id: number; name: string; dir: string; exists: boolean; fi
 
 const PAGE_SIZES = [30, 50, 100];
 
+// 新建脚本的初始模板（hypium 风格，parseScriptSteps 可解析 click/input/swipe/wait/assert）
+const SCRIPT_TEMPLATE = `// <用例编号> — 用例名称（库名）
+// 由测试工程师手工维护 · 执行计划「绑定脚本」模式解析本文件动作步骤真机执行
+// 支持的动作：by.text('xx').click() / inputText('xx') / swipe() / wait(1000) / expect(text('xx'))
+
+import { describe, it, expect } from '@ohos/hypium';
+
+export default function suite() {
+  return describe('scriptSuite', () => {
+    it('case01', 0, async () => {
+      // 打开应用后依次操作：
+      // driver.findComponent(by.text('开始')).click();
+      // driver.inputText(by.id('input'), 'hello');
+      // driver.wait(2000);
+      // expect(driver.findComponent(by.text('成功')).isExist()).assertTrue();
+    });
+  });
+}
+`;
+
 function fmtSize(n: number): string {
   if (n >= 1024 * 1024) return (n / 1024 / 1024).toFixed(1) + ' MB';
   if (n >= 1024) return (n / 1024).toFixed(1) + ' KB';
@@ -25,6 +45,11 @@ export default function ScriptsPage() {
   const [page, setPage] = useState(1);
   const [pageSize, setPageSize] = useState(30);
   const [batchBusy, setBatchBusy] = useState(false);
+  // 新建 / 编辑脚本
+  const [editor, setEditor] = useState<null | { mode: 'create' } | { mode: 'edit'; name: string }>(null);
+  const [editorName, setEditorName] = useState('');
+  const [editorContent, setEditorContent] = useState('');
+  const [editorBusy, setEditorBusy] = useState(false);
 
   const loadLibs = useCallback(() => {
     api.scripts()
@@ -112,6 +137,45 @@ export default function ScriptsPage() {
     }
   };
 
+  const openCreate = (): void => {
+    setEditor({ mode: 'create' });
+    setEditorName(`C-MANUAL-${Date.now().toString().slice(-6)}.ts`);
+    setEditorContent(SCRIPT_TEMPLATE);
+  };
+
+  const openEdit = async (f: RepoFileEntry): Promise<void> => {
+    if (curLib === null) return;
+    try {
+      const file = await api.repoFile(curLib, f.name, 'scripts');
+      setEditor({ mode: 'edit', name: f.name });
+      setEditorName(f.name);
+      setEditorContent(file.content);
+    } catch (e) {
+      setError(String((e as Error).message));
+    }
+  };
+
+  const saveEditor = async (): Promise<void> => {
+    if (curLib === null || !editor) return;
+    const name = editorName.trim();
+    if (!/^[^\\/]+\.ts$/i.test(name) || name.includes('..')) {
+      setError('文件名非法：须为当前目录下的 .ts 文件（如 C-AI-001.ts）');
+      return;
+    }
+    setEditorBusy(true);
+    setError('');
+    try {
+      await api.saveScriptFile(curLib, name, editorContent);
+      setEditor(null);
+      loadScripts(curLib);
+      loadLibs();
+    } catch (e) {
+      setError(String((e as Error).message));
+    } finally {
+      setEditorBusy(false);
+    }
+  };
+
   const curName = curLib !== null ? libs.find((l) => l.id === curLib)?.name ?? '' : '';
 
   return (
@@ -159,6 +223,7 @@ export default function ScriptsPage() {
             >
               {PAGE_SIZES.map((n) => <option key={n} value={n}>{n} 条/页</option>)}
             </select>
+            <button className="btn sm primary" disabled={curLib === null} onClick={openCreate} title="手工新增自动化脚本（.ts），执行计划绑定脚本模式下解析动作步骤真机执行">＋ 新建脚本</button>
             <span className="muted" style={{ fontSize: 11.5, marginLeft: 'auto' }}>
               {curName} · {filtered.length} 个脚本
             </span>
@@ -203,6 +268,8 @@ export default function ScriptsPage() {
                       <td>
                         <span className="link" onClick={() => void openFile(s)}>查看</span>
                         <span style={{ margin: '0 6px', color: 'var(--text3)' }}>·</span>
+                        <span className="link" onClick={() => void openEdit(s)}>编辑</span>
+                        <span style={{ margin: '0 6px', color: 'var(--text3)' }}>·</span>
                         <span className="link" style={{ color: 'var(--red)' }} onClick={() => void removeFile(s)}>删除</span>
                       </td>
                     </tr>
@@ -238,6 +305,47 @@ export default function ScriptsPage() {
               ) : (
                 <pre className="mono" style={{ fontSize: 12, lineHeight: 1.6, whiteSpace: 'pre', overflowX: 'auto' }}>{detail.file.content}</pre>
               )}
+            </div>
+          </div>
+        </div>
+      )}
+      {editor && (
+        <div className="s-overlay show">
+          <div className="s-mask" onClick={() => { if (!editorBusy) setEditor(null); }} />
+          <div style={{ position: 'relative', zIndex: 1, width: 860, maxWidth: 'calc(100vw - 40px)', maxHeight: 'calc(100vh - 40px)', background: 'var(--panel)', border: '1px solid var(--border2)', borderRadius: 16, boxShadow: '0 24px 80px rgba(0,0,0,.55)', display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '14px 18px', borderBottom: '1px solid var(--border)' }}>
+              <span style={{ fontSize: 15, fontWeight: 600 }}>{editor.mode === 'create' ? '＋ 新建脚本' : `编辑脚本 · ${editor.name}`}</span>
+              <span className="muted" style={{ fontSize: 11.5 }}>scripts/{curName}/</span>
+              <div style={{ flex: 1 }} />
+              <button className="s-header x" onClick={() => setEditor(null)} style={{ width: 28, height: 28, borderRadius: 28, border: 'none', background: 'none', color: 'var(--text2)', cursor: 'pointer', fontSize: 14 }}>✕</button>
+            </div>
+            <div style={{ padding: '14px 18px', display: 'flex', flexDirection: 'column', gap: 10, minHeight: 0, flex: 1 }}>
+              <label style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                <span className="muted" style={{ fontSize: 12, flexShrink: 0 }}>文件名</span>
+                <input
+                  className="input mono"
+                  style={{ width: 280 }}
+                  value={editorName}
+                  disabled={editor.mode === 'edit'}
+                  onChange={(e) => setEditorName(e.target.value)}
+                  placeholder="C-AI-001.ts（与用例编号一致即可被计划绑定执行）"
+                />
+                <span className="muted" style={{ fontSize: 11 }}>命名 = 用例编号时，「绑定脚本」模式自动关联该用例</span>
+              </label>
+              <textarea
+                className="input mono"
+                style={{ flex: 1, minHeight: 320, resize: 'vertical', lineHeight: 1.6, fontSize: 12 }}
+                value={editorContent}
+                onChange={(e) => setEditorContent(e.target.value)}
+                spellCheck={false}
+              />
+              {error && <div className="error" style={{ marginBottom: 0 }}>⚠️ {error}</div>}
+              <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8 }}>
+                <button className="btn" onClick={() => setEditor(null)}>取消</button>
+                <button className="btn primary" disabled={editorBusy || !editorName.trim()} onClick={() => void saveEditor()}>
+                  {editorBusy ? '保存中…' : '保存脚本'}
+                </button>
+              </div>
             </div>
           </div>
         </div>

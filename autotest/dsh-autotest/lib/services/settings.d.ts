@@ -10,5 +10,5 @@ export declare function getAllSettings(): Array<{
 }>;
 /** 启动时全量加载（ensureReady 调用）。 */
 export declare function loadSettings(): Promise<void>;
-/** 写入配置：同步更新内存，异步写库。 */
+/** 写入配置：同步更新内存，异步写库（MySQL/SQLite 双方言 upsert）。 */
 export declare function setSetting(key: string, value: SettingValue): void;

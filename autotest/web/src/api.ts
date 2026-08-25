@@ -168,6 +168,8 @@ export const api = {
     req<RepoFile>(`${API_BASE}/repos/${id}/file?path=${encodeURIComponent(rel)}&root=${root}`),
   deleteScriptFile: (id: number, name: string) =>
     req<{ ok: boolean }>(`${API_BASE}/repos/${id}/file?path=${encodeURIComponent(name)}&root=scripts`, { method: 'DELETE' }),
+  saveScriptFile: (id: number, name: string, content: string) =>
+    req<{ ok: boolean; saved: string; size: number }>(`${API_BASE}/repos/${id}/file`, { method: 'PUT', body: JSON.stringify({ name, content }) }),
 
   // Prompt 模板
   prompts: () => req<Prompt[]>(`${API_BASE}/prompts`),

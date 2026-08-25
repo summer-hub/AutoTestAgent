@@ -92,6 +92,8 @@ CREATE TABLE IF NOT EXISTS plans (
   device_ids VARCHAR(2000) NOT NULL DEFAULT '[]',
   status VARCHAR(16) NOT NULL DEFAULT 'draft',
   fail_policy VARCHAR(16) NOT NULL DEFAULT 'continue',
+  script_mode VARCHAR(16) NOT NULL DEFAULT '',
+  error VARCHAR(500) NOT NULL DEFAULT '',
   last_run_at VARCHAR(32) NULL,
   created_at VARCHAR(32) NOT NULL,
   updated_at VARCHAR(32) NOT NULL,

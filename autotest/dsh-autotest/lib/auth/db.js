@@ -1,25 +1,8 @@
-// 认证数据源：MySQL（多用户服务器化）
-//  - auth_* 表建在 MySQL（用户/角色/权限/会话/密钥/审计/邀请码）
-//  - 业务表仍在 SQLite（阶段 0 不动存量数据），后续业务迁移 MySQL 后合流
-import mysql from 'mysql2/promise';
-import { getSetting } from '../services/settings.js';
-let pool = null;
-export function authPool() {
-    if (!pool) {
-        const uri = String(getSetting('db.mysqlUrl', '') || process.env.AUTOTEST_MYSQL_URL || '').trim();
-        if (!uri)
-            throw new Error('未配置 MySQL 连接（系统配置 db.mysqlUrl 或环境变量 AUTOTEST_MYSQL_URL）');
-        pool = mysql.createPool({
-            uri,
-            waitForConnections: true,
-            connectionLimit: 8,
-            charset: 'utf8mb4',
-            timezone: 'Z',
-            dateStrings: true,
-        });
-    }
-    return pool;
-}
+// 认证数据源：跟随业务库双引擎
+//  - MySQL 模式：auth_* 表建在 MySQL（多用户服务器化）
+//  - SQLite 本地降级模式：auth_* 表建在本地 autotest.sqlite3，登录/注册/用户管理全部可用
+//  - service.ts 通过 authDb() 适配器访问（mysql2 query 形态），底层走统一 facade
+import { dbMode, getDb } from '../db/connection.js';
 export const PERMISSION_CODES = [
     'library:read', 'library:write', 'library:manage',
     'case:read', 'case:write', 'case:delete',
@@ -57,7 +40,7 @@ export const ROLE_PERMISSIONS = {
         'exec:read', 'device:read', 'analysis:read', 'settings:read',
     ],
 };
-const AUTH_DDL = `
+const AUTH_DDL_MYSQL = `
 CREATE TABLE IF NOT EXISTS auth_users (
   id BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
   username VARCHAR(64) NOT NULL,
@@ -150,16 +133,119 @@ CREATE TABLE IF NOT EXISTS auth_login_attempts (
   KEY idx_ala_user (username, attempted_at)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 `;
+/** SQLite 版 auth DDL（与 MySQL 版逐表对应）。 */
+const AUTH_DDL_SQLITE = `
+CREATE TABLE IF NOT EXISTS auth_users (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  username TEXT NOT NULL,
+  email TEXT NOT NULL DEFAULT '',
+  password_hash TEXT NOT NULL,
+  status TEXT NOT NULL DEFAULT 'active',
+  created_at TEXT NOT NULL,
+  last_login_at TEXT NULL,
+  UNIQUE (username)
+);
+CREATE TABLE IF NOT EXISTS auth_refresh_sessions (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  user_id INTEGER NOT NULL,
+  token_hash TEXT NOT NULL,
+  expires_at TEXT NOT NULL,
+  revoked INTEGER NOT NULL DEFAULT 0,
+  ip TEXT NOT NULL DEFAULT '',
+  created_at TEXT NOT NULL,
+  UNIQUE (token_hash)
+);
+CREATE INDEX IF NOT EXISTS idx_ars_user ON auth_refresh_sessions(user_id);
+CREATE TABLE IF NOT EXISTS auth_api_keys (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  user_id INTEGER NOT NULL,
+  name TEXT NOT NULL,
+  key_hash TEXT NOT NULL,
+  scopes TEXT NOT NULL,
+  status TEXT NOT NULL DEFAULT 'active',
+  created_at TEXT NOT NULL,
+  last_used_at TEXT NULL,
+  UNIQUE (key_hash)
+);
+CREATE INDEX IF NOT EXISTS idx_aak_user ON auth_api_keys(user_id);
+CREATE TABLE IF NOT EXISTS auth_roles (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  code TEXT NOT NULL,
+  name TEXT NOT NULL,
+  builtin INTEGER NOT NULL DEFAULT 1,
+  UNIQUE (code)
+);
+CREATE TABLE IF NOT EXISTS auth_permissions (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  code TEXT NOT NULL,
+  UNIQUE (code)
+);
+CREATE TABLE IF NOT EXISTS auth_user_roles (
+  user_id INTEGER NOT NULL,
+  role_id INTEGER NOT NULL,
+  PRIMARY KEY (user_id, role_id)
+);
+CREATE TABLE IF NOT EXISTS auth_role_permissions (
+  role_id INTEGER NOT NULL,
+  permission_id INTEGER NOT NULL,
+  PRIMARY KEY (role_id, permission_id)
+);
+CREATE TABLE IF NOT EXISTS auth_invite_codes (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  code TEXT NOT NULL,
+  role_code TEXT NOT NULL DEFAULT 'viewer',
+  used_by INTEGER NULL,
+  expires_at TEXT NULL,
+  created_by INTEGER NOT NULL,
+  created_at TEXT NOT NULL,
+  UNIQUE (code)
+);
+CREATE TABLE IF NOT EXISTS auth_audit_logs (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  user_id INTEGER NULL,
+  action TEXT NOT NULL,
+  target TEXT NOT NULL DEFAULT '',
+  detail TEXT NOT NULL,
+  ip TEXT NOT NULL DEFAULT '',
+  created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_aal_user ON auth_audit_logs(user_id, created_at);
+CREATE INDEX IF NOT EXISTS idx_aal_action ON auth_audit_logs(action, created_at);
+CREATE TABLE IF NOT EXISTS auth_login_attempts (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  username TEXT NOT NULL,
+  attempted_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_ala_user ON auth_login_attempts(username, attempted_at);
+`;
+/**
+ * 认证数据访问适配器：保持 mysql2 的 `const [rows] = await db.query(sql, args)` 调用形态，
+ * 底层走统一 facade（MySQL/SQLite 双引擎自动切换）。
+ */
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+export async function authDb() {
+    const d = getDb();
+    return {
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        async query(sql, args = []) {
+            const head = sql.trimStart().slice(0, 6).toUpperCase();
+            if (head.startsWith('SELECT')) {
+                const rows = await d.prepare(sql).all(...args);
+                return [rows, null];
+            }
+            const r = await d.prepare(sql).run(...args);
+            return [{ insertId: Number(r.lastInsertRowid), affectedRows: r.changes }, null];
+        },
+    };
+}
 let initPromise = null;
 /** 建表 + 种子角色/权限（幂等）。 */
 export async function ensureAuthSchema() {
     if (!initPromise) {
         initPromise = (async () => {
-            const db = await authPool();
-            for (const stmt of AUTH_DDL.split('\n\n').map((s) => s.trim()).filter(Boolean)) {
-                await db.query(stmt);
-            }
-            const now = new Date().toISOString().slice(0, 19).replace('T', ' ');
+            const ddl = dbMode() === 'sqlite' ? AUTH_DDL_SQLITE : AUTH_DDL_MYSQL;
+            await getDb().exec(ddl);
+            const db = await authDb();
             // 权限点
             for (const code of PERMISSION_CODES) {
                 await db.query(`INSERT IGNORE INTO auth_permissions (code) VALUES (?)`, [code]);
@@ -179,7 +265,7 @@ export async function ensureAuthSchema() {
              SELECT r.id, p.id FROM auth_roles r JOIN auth_permissions p ON p.code = ? WHERE r.code = ?`, [perm, roleCode]);
                 }
             }
-            console.log('[dsh-autotest] 认证库就绪（MySQL，角色/权限已种子化）');
+            console.log(`[dsh-autotest] 认证库就绪（${dbMode() === 'sqlite' ? 'SQLite 本地' : 'MySQL'}，角色/权限已种子化）`);
         })().catch((e) => {
             initPromise = null; // 失败允许下次重试
             throw e;

@@ -1,6 +1,6 @@
 // 认证服务：scrypt 密码 / HS256 JWT / 邀请注册 / refresh 会话 / API Key / RBAC 装载
 import crypto from 'node:crypto';
-import { authPool } from './db.js';
+import { authDb } from './db.js';
 import { getSetting, setSetting } from '../services/settings.js';
 
 export class AuthError extends Error {
@@ -89,7 +89,7 @@ export function generateApiKey(): { key: string; hash: string } {
 
 // ---------- 权限装载 ----------
 export async function loadAuthUser(userId: number): Promise<AuthUser> {
-  const db = await authPool();
+  const db = await authDb();
   const [users] = await db.query(
     'SELECT id, username, status FROM auth_users WHERE id = ?',
     [userId],
@@ -113,7 +113,7 @@ export async function loadAuthUser(userId: number): Promise<AuthUser> {
 /** 根据 Bearer token（JWT 或 API Key）解析当前用户。 */
 export async function authForToken(token: string): Promise<AuthUser> {
   if (token.startsWith('sk_')) {
-    const db = await authPool();
+    const db = await authDb();
     const hash = sha256(token);
     const [keys] = await db.query(
       'SELECT id, user_id, status FROM auth_api_keys WHERE key_hash = ?',
@@ -135,7 +135,7 @@ export function hasPermission(user: AuthUser, perm: string): boolean {
 // ---------- 审计 ----------
 export async function writeAudit(userId: number | null, action: string, target = '', detail = '', ip = ''): Promise<void> {
   try {
-    const db = await authPool();
+    const db = await authDb();
     await db.query(
       'INSERT INTO auth_audit_logs (user_id, action, target, detail, ip, created_at) VALUES (?, ?, ?, ?, ?, ?)',
       [userId, action, target, detail, ip, nowStr()],
@@ -147,7 +147,7 @@ export async function writeAudit(userId: number | null, action: string, target =
 
 // ---------- 登录 / 注册 / 会话 ----------
 export async function login(username: string, password: string, ip: string): Promise<{ token: string; refreshToken: string; user: AuthUser }> {
-  const db = await authPool();
+  const db = await authDb();
   const name = String(username || '').trim().toLowerCase();
   if (!name || !password) throw new AuthError('用户名和密码必填', 400);
   // 失败锁定：15 分钟内 >= 5 次失败
@@ -182,7 +182,7 @@ export async function login(username: string, password: string, ip: string): Pro
 }
 
 export async function register(inviteCode: string, username: string, password: string, ip: string): Promise<{ token: string; refreshToken: string; user: AuthUser }> {
-  const db = await authPool();
+  const db = await authDb();
   const name = String(username || '').trim().toLowerCase();
   if (!/^[a-z0-9_]{3,32}$/.test(name)) throw new AuthError('用户名需 3~32 位小写字母/数字/下划线', 400);
   if (!password || password.length < 8) throw new AuthError('密码至少 8 位', 400);
@@ -217,7 +217,7 @@ export async function register(inviteCode: string, username: string, password: s
 }
 
 export async function refresh(refreshToken: string, ip: string): Promise<{ token: string; refreshToken: string }> {
-  const db = await authPool();
+  const db = await authDb();
   const [rows] = await db.query(
     'SELECT id, user_id, expires_at FROM auth_refresh_sessions WHERE token_hash = ? AND revoked = 0',
     [sha256(refreshToken)],
@@ -240,14 +240,14 @@ export async function refresh(refreshToken: string, ip: string): Promise<{ token
 }
 
 export async function logout(refreshToken: string, userId: number | null): Promise<void> {
-  const db = await authPool();
+  const db = await authDb();
   await db.query('UPDATE auth_refresh_sessions SET revoked = 1 WHERE token_hash = ?', [sha256(refreshToken)]);
   await writeAudit(userId, 'logout', '', '', '');
 }
 
 // ---------- 用户管理（user:manage） ----------
 export async function listUsers(): Promise<Array<Record<string, unknown>>> {
-  const db = await authPool();
+  const db = await authDb();
   const [users] = await db.query(
     'SELECT id, username, email, status, created_at, last_login_at FROM auth_users ORDER BY id',
   ) as [Array<Record<string, unknown>>, unknown];
@@ -261,7 +261,7 @@ export async function listUsers(): Promise<Array<Record<string, unknown>>> {
 }
 
 export async function createUser(username: string, password: string, roleCodes: string[]): Promise<number> {
-  const db = await authPool();
+  const db = await authDb();
   const name = String(username || '').trim().toLowerCase();
   if (!/^[a-z0-9_]{3,32}$/.test(name)) throw new AuthError('用户名需 3~32 位小写字母/数字/下划线', 400);
   if (!password || password.length < 8) throw new AuthError('密码至少 8 位', 400);
@@ -282,7 +282,7 @@ export async function createUser(username: string, password: string, roleCodes: 
 }
 
 export async function setUserRoles(userId: number, roleCodes: string[]): Promise<void> {
-  const db = await authPool();
+  const db = await authDb();
   await db.query('DELETE FROM auth_user_roles WHERE user_id = ?', [userId]);
   for (const role of [...new Set(roleCodes)]) {
     await db.query(
@@ -293,13 +293,13 @@ export async function setUserRoles(userId: number, roleCodes: string[]): Promise
 }
 
 export async function setUserStatus(userId: number, status: string): Promise<void> {
-  const db = await authPool();
+  const db = await authDb();
   if (!['active', 'locked', 'disabled'].includes(status)) throw new AuthError('非法状态', 400);
   await db.query('UPDATE auth_users SET status = ? WHERE id = ?', [status, userId]);
 }
 
 export async function resetPassword(userId: number, newPassword?: string): Promise<string> {
-  const db = await authPool();
+  const db = await authDb();
   const pw = newPassword && newPassword.length >= 8 ? newPassword : crypto.randomBytes(6).toString('base64url');
   await db.query('UPDATE auth_users SET password_hash = ? WHERE id = ?', [hashPassword(pw), userId]);
   await db.query('UPDATE auth_refresh_sessions SET revoked = 1 WHERE user_id = ?', [userId]);
@@ -308,7 +308,7 @@ export async function resetPassword(userId: number, newPassword?: string): Promi
 
 // ---------- 邀请码 ----------
 export async function listInvites(): Promise<Array<Record<string, unknown>>> {
-  const db = await authPool();
+  const db = await authDb();
   const [rows] = await db.query(
     `SELECT c.id, c.code, c.role_code, c.used_by, u.username AS used_username, c.expires_at, c.created_at
      FROM auth_invite_codes c LEFT JOIN auth_users u ON u.id = c.used_by
@@ -318,7 +318,7 @@ export async function listInvites(): Promise<Array<Record<string, unknown>>> {
 }
 
 export async function createInvite(createdBy: number, roleCode: string, expiresDays = 7): Promise<string> {
-  const db = await authPool();
+  const db = await authDb();
   const code = crypto.randomBytes(4).toString('hex').toUpperCase();
   const exp = new Date(Date.now() + expiresDays * 86_400_000).toISOString().slice(0, 19).replace('T', ' ');
   await db.query(
@@ -329,13 +329,13 @@ export async function createInvite(createdBy: number, roleCode: string, expiresD
 }
 
 export async function revokeInvite(id: number): Promise<void> {
-  const db = await authPool();
+  const db = await authDb();
   await db.query('DELETE FROM auth_invite_codes WHERE id = ?', [id]);
 }
 
 // ---------- API Key 管理 ----------
 export async function listApiKeys(userId: number): Promise<Array<Record<string, unknown>>> {
-  const db = await authPool();
+  const db = await authDb();
   const [rows] = await db.query(
     'SELECT id, name, scopes, status, created_at, last_used_at FROM auth_api_keys WHERE user_id = ? ORDER BY id DESC',
     [userId],
@@ -344,7 +344,7 @@ export async function listApiKeys(userId: number): Promise<Array<Record<string, 
 }
 
 export async function createApiKey(userId: number, name: string, scopes: string[]): Promise<{ key: string; row: Record<string, unknown> }> {
-  const db = await authPool();
+  const db = await authDb();
   const { key, hash } = generateApiKey();
   const [r] = await db.query(
     'INSERT INTO auth_api_keys (user_id, name, key_hash, scopes, status, created_at) VALUES (?, ?, ?, ?, \'active\', ?)',
@@ -354,7 +354,7 @@ export async function createApiKey(userId: number, name: string, scopes: string[
 }
 
 export async function revokeApiKey(id: number, userId: number): Promise<void> {
-  const db = await authPool();
+  const db = await authDb();
   const [rows] = await db.query('SELECT id FROM auth_api_keys WHERE id = ? AND user_id = ?', [id, userId]) as [Array<{ id: number }>, unknown];
   if (rows.length === 0) throw new AuthError('Key 不存在', 404);
   await db.query('UPDATE auth_api_keys SET status = \'revoked\' WHERE id = ?', [id]);
@@ -362,7 +362,7 @@ export async function revokeApiKey(id: number, userId: number): Promise<void> {
 
 // ---------- 审计查询 ----------
 export async function listAudit(limit: number, offset: number, action = ''): Promise<Array<Record<string, unknown>>> {
-  const db = await authPool();
+  const db = await authDb();
   const where = action ? 'WHERE a.action = ?' : '';
   const args = action ? [action, limit, offset] : [limit, offset];
   const [rows] = await db.query(

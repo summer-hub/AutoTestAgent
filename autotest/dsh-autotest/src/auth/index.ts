@@ -1,6 +1,6 @@
 // 认证接入：中间件 + /auth/* 路由
 import { IncomingMessage } from 'node:http';
-import { authPool } from './db.js';
+import { authDb } from './db.js';
 import {
   authForToken, AuthError, AuthUser, createApiKey, createInvite, createUser, hashPassword, listApiKeys, listAudit,
   listInvites, listUsers, login, logout, refresh, register, resetPassword, revokeApiKey, revokeInvite, setUserRoles,
@@ -78,7 +78,7 @@ export function registerAuthRoutes(route: RouteFn): void {
     if (!auth) throw new AuthError('未登录', 401);
     const b = body as { oldPassword?: string; newPassword?: string };
     if (!b.newPassword || b.newPassword.length < 8) throw new AuthError('新密码至少 8 位', 400);
-    const db = await authPool();
+    const db = await authDb();
     const [rows] = await db.query('SELECT password_hash FROM auth_users WHERE id = ?', [auth.id]) as [Array<{ password_hash: string }>, unknown];
     if (!rows[0] || !verifyPassword(String(b.oldPassword ?? ''), rows[0].password_hash)) throw new AuthError('原密码错误', 400);
     await db.query('UPDATE auth_users SET password_hash = ? WHERE id = ?', [hashPassword(b.newPassword), auth.id]);

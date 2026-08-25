@@ -54,7 +54,7 @@ const SECTIONS: Array<{ title: string; desc: string; fields: Array<{ key: string
   },
   {
     title: '多用户 / 服务器', desc: '认证与权限（auth_* 表在 MySQL）', fields: [
-      { key: 'db.mysqlUrl', label: 'MySQL 连接串', type: 'text', hint: 'mysql://用户:密码@127.0.0.1:3306/autotest' },
+      { key: 'db.mysqlUrl', label: 'MySQL 连接串', type: 'text', hint: 'mysql://用户:密码@127.0.0.1:3306/autotest · 留空时自动降级为本地 SQLite（data/autotest.sqlite3）' },
       { key: 'auth.inviteOnly', label: '仅邀请码注册', type: 'bool' },
       { key: 'auth.accessTtlSec', label: '登录有效期（秒）', type: 'number' },
       { key: 'auth.refreshTtlDays', label: '会话保持（天）', type: 'number' },

@@ -1,4 +1,4 @@
-import { authPool } from './db.js';
+import { authDb } from './db.js';
 import { authForToken, AuthError, createApiKey, createInvite, createUser, hashPassword, listApiKeys, listAudit, listInvites, listUsers, login, logout, refresh, register, resetPassword, revokeApiKey, revokeInvite, setUserRoles, setUserStatus, verifyPassword, writeAudit, } from './service.js';
 /** 从请求头解析 Bearer token。 */
 export function bearerToken(req) {
@@ -54,7 +54,7 @@ export function registerAuthRoutes(route) {
         const b = body;
         if (!b.newPassword || b.newPassword.length < 8)
             throw new AuthError('新密码至少 8 位', 400);
-        const db = await authPool();
+        const db = await authDb();
         const [rows] = await db.query('SELECT password_hash FROM auth_users WHERE id = ?', [auth.id]);
         if (!rows[0] || !verifyPassword(String(b.oldPassword ?? ''), rows[0].password_hash))
             throw new AuthError('原密码错误', 400);

@@ -1,7 +1,7 @@
 // 系统配置服务：settings 表（MySQL，key-value JSON）+ 默认值
 //  - 启动时 loadSettings() 全量加载进内存缓存，业务读取保持同步
 //  - setSetting 同步更新内存 + 异步写库
-import { mysqlPool, now } from '../db/connection.js';
+import { dbMode, getDb, now } from '../db/connection.js';
 
 export const SETTING_DEFAULTS: Record<string, unknown> = {
   'app.workspace': 'D:\\autotest\\workspace',
@@ -73,9 +73,7 @@ export function getAllSettings(): Array<{ key: string; value: SettingValue; upda
 /** 启动时全量加载（ensureReady 调用）。 */
 export async function loadSettings(): Promise<void> {
   try {
-    const [rows] = await mysqlPool().query('SELECT `key`, value, updated_at FROM settings') as [
-      Array<{ key: string; value: string; updated_at: string | null }>, unknown,
-    ];
+    const rows = await getDb().prepare('SELECT `key` AS key, value, updated_at FROM settings').all<{ key: string; value: string; updated_at: string | null }>();
     cache = new Map(rows.map((r) => [r.key, { value: r.value, updatedAt: r.updated_at }]));
   } catch (e) {
     console.warn('[dsh-autotest] settings 加载失败，使用默认值：', (e as Error).message);
@@ -83,7 +81,7 @@ export async function loadSettings(): Promise<void> {
   }
 }
 
-/** 写入配置：同步更新内存，异步写库。 */
+/** 写入配置：同步更新内存，异步写库（MySQL/SQLite 双方言 upsert）。 */
 export function setSetting(key: string, value: SettingValue): void {
   const json = JSON.stringify(value);
   if (cache) {
@@ -91,9 +89,11 @@ export function setSetting(key: string, value: SettingValue): void {
   } else {
     cache = new Map([[key, { value: json, updatedAt: now() }]]);
   }
-  void mysqlPool().query(
-    `INSERT INTO settings (\`key\`, value, updated_at) VALUES (?, ?, ?)
-     ON DUPLICATE KEY UPDATE value = VALUES(value), updated_at = VALUES(updated_at)`,
-    [key, json, now()],
-  ).catch((e) => console.warn('[dsh-autotest] 设置写入失败：', (e as Error).message));
+  const upsert = dbMode() === 'sqlite'
+    ? `INSERT INTO settings ("key", value, updated_at) VALUES (?, ?, ?)
+       ON CONFLICT("key") DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at`
+    : `INSERT INTO settings (\`key\`, value, updated_at) VALUES (?, ?, ?)
+       ON DUPLICATE KEY UPDATE value = VALUES(value), updated_at = VALUES(updated_at)`;
+  void getDb().prepare(upsert).run(key, json, now())
+    .catch((e) => console.warn('[dsh-autotest] 设置写入失败：', (e as Error).message));
 }
