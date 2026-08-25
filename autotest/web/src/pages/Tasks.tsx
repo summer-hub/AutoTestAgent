@@ -101,7 +101,7 @@ export default function TasksPage() {
         <textarea
           className="input"
           style={{ width: '100%', minHeight: 52, resize: 'none', background: 'transparent', border: 'none', outline: 'none', fontSize: 13.5, lineHeight: 1.6 }}
-          placeholder="输入任务描述，例如：为 charts-ohos 库编写柱状图边界场景测试用例…"
+          placeholder="输入任务描述，例如：针对 lottie_turbo 的 ImageLoadCallback 页面设计边界场景用例…"
           value={input}
           onChange={(e) => setInput(e.target.value)}
         />

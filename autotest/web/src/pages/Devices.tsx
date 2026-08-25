@@ -82,8 +82,8 @@ export default function DevicesPage() {
       {error && <div className="error">⚠️ {error}</div>}
 
       <div style={{ display: 'flex', gap: 10, marginBottom: 14, alignItems: 'center' }}>
-        <button className="btn primary" onClick={scan} disabled={scanning}>📡 {scanning ? '识别中…' : '识别设备'}</button>
-        <span className="muted" style={{ fontSize: 12 }}>{msg || '通过 hdc 扫描局域网 / USB 连接的鸿蒙设备'}</span>
+        <button className="btn primary" onClick={scan} disabled={scanning}>📡 {scanning ? '识别中…' : '立即扫描'}</button>
+        <span className="muted" style={{ fontSize: 12 }}>{msg || '自动检测已开启：连接鸿蒙机型设备后数秒内自动上线；也可点击立即扫描'}</span>
       </div>
 
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 14 }}>
@@ -108,7 +108,7 @@ export default function DevicesPage() {
             </div>
           </div>
         ))}
-        {online.length === 0 && <div className="card"><div className="loading">无在线设备，点击「识别设备」扫描</div></div>}
+        {online.length === 0 && <div className="card"><div className="loading">未检测到在线设备。请通过 USB 连接鸿蒙机型设备（开启 USB 调试），连接后将自动检测上线</div></div>}
       </div>
 
       <div className="card" style={{ marginTop: 14 }}>

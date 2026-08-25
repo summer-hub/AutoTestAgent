@@ -7,7 +7,7 @@ const TYPE_OPTIONS: Array<{ v: string; icon: string; label: string; desc: string
   { v: 'scheduled', icon: '🕐', label: '定时执行', desc: 'Cron 表达式周期执行' },
   { v: 'single', icon: '🎯', label: '单独执行', desc: '单个用例 / 单个库' },
   { v: 'batch', icon: '📦', label: '批量执行', desc: '多个用例 / 多个库' },
-  { v: 'full', icon: '🌐', label: '全量执行', desc: '全部 400 库用例（抽样演示）' },
+  { v: 'full', icon: '🌐', label: '全量执行', desc: '全部库用例（按系统配置抽样执行）' },
 ];
 
 const TYPE_TAG: Record<string, string> = { immediate: 'amber', scheduled: 'blue', single: 'green', batch: 'cyan', full: 'purple' };

@@ -17,7 +17,6 @@ import {
 import { getAllSettings, getSetting, setSetting, type SettingValue } from '../services/settings.js';
 import { cacheDel, cacheGet, cacheSet } from '../services/cache.js';
 import { readDshDefaultModel } from '../services/llmHarness.js';
-import { deviceInfo, hdcAvailable, listTargets } from '../services/hdc.js';
 import { autoScanDevices } from '../services/deviceScanner.js';
 import { pullRepo, repoDirFor, workspaceDir, type RepoLib } from '../services/gitRepo.js';
 import { registerAuthRoutes, requireAuth, type HandlerArgs, type RouteFn } from '../auth/index.js';
@@ -958,7 +957,7 @@ ${(row.logs ?? '').slice(0, 4000) || '（无）'}
     void cacheDel('devices');
     const count = async (): Promise<number> => (await db.prepare('SELECT COUNT(*) AS n FROM devices').get<{ n: number }>())?.n ?? 0;
 
-    // 真实识别（复用自动检测逻辑：upsert 在线设备 + 标记离线）
+    // 真实识别（与后台自动检测同一套逻辑：upsert 在线设备 + 标记离线），不产生任何模拟数据
     const scan = await autoScanDevices();
     if (scan.ok && scan.detected > 0) {
       const row = await db.prepare(`SELECT * FROM devices WHERE status = 'online' ORDER BY last_seen_at DESC, id LIMIT 1`).get<Record<string, unknown>>();
@@ -967,22 +966,24 @@ ${(row.logs ?? '').slice(0, 4000) || '（无）'}
         device: mapDevice(row as Record<string, unknown>),
         total: await count(),
         source: 'hdc',
-        note: `识别到 ${scan.detected} 台在线设备（已保存/更新状态；此后每 ${Math.max(1, Number(getSetting('device.autoScanInterval', 30)) || 30)}s 自动检测）`,
+        note: `识别到 ${scan.detected} 台在线鸿蒙设备（已保存/更新状态；此后每 ${Math.max(1, Number(getSetting('device.autoScanInterval', 30)) || 30)}s 自动检测）`,
       };
     }
 
-    // 回退：hdc 不可用/无设备时生成模拟设备（演示模式）
-    const t = now();
-    const note = scan.ok ? 'hdc 可用但未发现已连接设备' : `自动检测未执行（${scan.reason ?? '未知原因'}）`;
-    const serial = `HDC-${Math.floor(1000 + Math.random() * 9000).toString(16).toUpperCase()}`;
-    const models = ['Mate X5', 'Pura 70', 'nova 13', 'MatePad Pro', 'Pocket 2'];
-    const oss = ['HarmonyOS 5.0.1', 'HarmonyOS 4.2', 'OpenHarmony 5.0.2'];
-    const model = models[Math.floor(Math.random() * models.length)];
-    const os = oss[Math.floor(Math.random() * oss.length)];
-    const res = await db.prepare(`INSERT IGNORE INTO devices (serial, model, os_version, status, battery, memory_usage, last_seen_at, created_at)
-      VALUES (?, ?, ?, 'online', ?, ?, ?, ?)`).run(serial, model, os, 60 + Math.floor(Math.random() * 40), 40 + Math.floor(Math.random() * 40), t, t);
-    const row = await db.prepare('SELECT * FROM devices WHERE serial = ?').get(serial);
-    return { discovered: res.changes > 0, device: mapDevice(row as Record<string, unknown>), total: await count(), source: 'simulate', note };
+    if (!scan.ok) {
+      // hdc 不可用：明确报错，引导安装
+      throw Object.assign(
+        new Error('未检测到 hdc 命令或服务不可用。请安装 HarmonyOS Device Connector（hdc）并配置环境变量后，通过 USB 连接鸿蒙机型设备'),
+        { statusCode: 400 },
+      );
+    }
+    // hdc 可用但没有设备
+    return {
+      discovered: false,
+      total: await count(),
+      source: 'hdc',
+      note: '未检测到已连接设备。请通过 USB 连接鸿蒙机型设备（开启 USB 调试），连接后将自动检测上线',
+    };
   }, { permission: 'device:manage' });
 
   route('PUT', '/devices/:id', async ({ params, body }) => {

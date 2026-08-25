@@ -259,9 +259,6 @@ export default function App() {
             工作台 / <b>{TITLES[page]}</b>
           </div>
           <div className="tb-spacer" />
-          <div className="tb-pill">
-            <span className="dot green" /> 模型已连接 · deepseek-v4
-          </div>
           <div className="tb-pill" title={backend ? `后端版本 ${backend.version} · ${backend.db}` : '加载中'}>
             <span className="dot green" /> {backend ? `v${backend.version} · ${backend.db}` : '连接中'}
           </div>
