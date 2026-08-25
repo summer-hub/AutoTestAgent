@@ -72,7 +72,8 @@ export default function DevicesPage() {
   };
 
   const online = devices.filter((d) => d.status === 'online');
-  const history = devices.filter((d) => d.status === 'history');
+  // 离线/历史设备一并展示，状态透明（避免僵尸在线数据不可见）
+  const offlineList = devices.filter((d) => d.status !== 'online');
 
   return (
     <>
@@ -113,25 +114,29 @@ export default function DevicesPage() {
 
       <div className="card" style={{ marginTop: 14 }}>
         <div className="card-h">
-          <span className="t">🕘 历史设备</span>
-          <span className="sub">共 {history.length} 台 · 保留连接信息与执行记录</span>
+          <span className="t">🕘 离线 / 历史设备</span>
+          <span className="sub">共 {offlineList.length} 台 · 重新连接后自动恢复在线</span>
         </div>
-        {history.length === 0 ? (
-          <div className="loading">暂无历史设备</div>
+        {offlineList.length === 0 ? (
+          <div className="loading">暂无离线 / 历史设备</div>
         ) : (
           <table>
-            <tr><th>设备</th><th>型号</th><th>最后在线</th><th>操作</th></tr>
-            {history.map((d) => (
-              <tr key={d.id}>
-                <td className="mono">{d.serial}</td>
-                <td>{d.model} · {d.osVersion}</td>
-                <td className="muted">{d.lastSeenAt ?? '—'}</td>
-                <td className="row-actions">
-                  <span className="link" onClick={() => connect(d)}>重新连接</span>
-                  <span className="link" style={{ color: 'var(--red)' }} onClick={() => remove(d)}>移除</span>
-                </td>
-              </tr>
-            ))}
+            <thead><tr><th>设备</th><th>型号</th><th>状态</th><th>最后在线</th><th>操作</th></tr></thead>
+            <tbody>
+              {offlineList.map((d) => (
+                <tr key={d.id}>
+                  <td className="mono">{d.serial}</td>
+                  <td>{d.model} · {d.osVersion}</td>
+                  <td><span className={`tag ${d.status === 'offline' ? 'red' : 'gray'}`}>{d.status === 'offline' ? '离线' : '历史'}</span></td>
+                  <td className="muted">{d.lastSeenAt ?? '—'}</td>
+                  <td className="row-actions">
+                    <span className="link" onClick={() => connect(d)}>重新连接</span>
+                    <span style={{ margin: '0 6px', color: 'var(--text3)' }}>·</span>
+                    <span className="link" style={{ color: 'var(--red)' }} onClick={() => remove(d)}>移除</span>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
           </table>
         )}
       </div>
