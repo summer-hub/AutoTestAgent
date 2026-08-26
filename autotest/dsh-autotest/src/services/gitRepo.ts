@@ -37,12 +37,44 @@ export interface RepoInspect {
   entryDemo: string;
 }
 
-/** 工作区根目录（app.workspace 配置；未配置时落到插件进程 cwd/workspace）。 */
+/** 工作区根目录：app.workspace 显式设置优先；未设置时回退到启动目录下的 workspace（并在使用处提示）。 */
 export function workspaceDir(): string {
   const base = String(getSetting('app.workspace', '') || '').trim();
   const dir = base || path.join(process.cwd(), 'workspace');
   fs.mkdirSync(dir, { recursive: true });
   return dir;
+}
+
+/** 工作区是否已在系统配置中显式设置。 */
+export function workspaceConfigured(): boolean {
+  return !!String(getSetting('app.workspace', '') || '').trim();
+}
+
+/** 未配置工作区时的提示语（配置了返回 null）。 */
+export function workspaceNotice(): string | null {
+  if (workspaceConfigured()) return null;
+  return `⚠️ 未在「系统配置」中设置工作区路径，本次已临时使用启动目录下的 workspace：${workspaceDir()}。建议设置固定路径，避免更换启动目录后仓库/脚本/遍历报告分散丢失。`;
+}
+
+/** 运行中对账：仓库目录被删除时清空库的同步状态（首页/用例页不再残留过期信息）。 */
+export async function reconcileRepos(): Promise<number> {
+  const db = getDb();
+  const libs = await db.prepare('SELECT id, name FROM libraries').all<{ id: number; name: string }>();
+  let changed = 0;
+  for (const l of libs) {
+    const hasRepo = fs.existsSync(`${repoDirFor(l.name)}/.git`);
+    const row = await db.prepare('SELECT last_commit, last_synced_at, package_name FROM libraries WHERE id = ?')
+      .get<{ last_commit: string; last_synced_at: string | null; package_name: string }>(l.id);
+    if (!row) continue;
+    if (!hasRepo && (row.last_commit || row.last_synced_at)) {
+      await db.prepare(`UPDATE libraries SET last_commit = '', last_synced_at = NULL, updated_at = ? WHERE id = ?`)
+        .run(now(), l.id);
+      changed++;
+    } else if (hasRepo && !row.package_name) {
+      try { await refreshPackageInfo({ id: l.id, name: l.name }); } catch { /* 忽略 */ }
+    }
+  }
+  return changed;
 }
 
 async function runGit(args: string[], cwd?: string, timeoutMs = 180000): Promise<string> {

@@ -294,6 +294,10 @@ export const api = {
 
   // 系统配置（M7）
   settings: () => req<Array<{ key: string; value: string | number | boolean | null; updatedAt: string | null }>>(`${API_BASE}/settings`),
+  workspaceInfo: () =>
+    req<{ configured: boolean; setting: string; effective: string; notice: string | null }>(`${API_BASE}/workspace/info`),
+  openWorkspace: (path?: string) =>
+    req<{ ok: boolean; opened: string }>(`${API_BASE}/workspace/open`, { method: 'POST', body: JSON.stringify({ path }) }),
   updateSetting: (key: string, value: string | number | boolean) =>
     req<{ ok: boolean }>(`${API_BASE}/settings/${encodeURIComponent(key)}`, { method: 'PUT', body: JSON.stringify({ value }) }),
   sharding: () => req<Array<{ shard: number; libraries: number; cases: number }>>(`${API_BASE}/stats/sharding`),

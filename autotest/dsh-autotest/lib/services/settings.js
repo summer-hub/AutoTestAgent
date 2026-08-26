@@ -3,7 +3,7 @@
 //  - setSetting 同步更新内存 + 异步写库
 import { dbMode, getDb, now } from '../db/connection.js';
 export const SETTING_DEFAULTS = {
-    'app.workspace': 'D:\\autotest\\workspace',
+    'app.workspace': '', // 工作区路径：留空 = 启动目录下的 workspace（使用时会提示去配置）
     'agent.defaultModel': '',
     'agent.maxCasesPerTask': 20,
     'agent.caseReviewRounds': 2, // 用例生成自审进化轮次上限（0=关闭自审）

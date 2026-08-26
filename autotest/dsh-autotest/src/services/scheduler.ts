@@ -6,6 +6,7 @@ import { archiveOldExecutions } from './archive.js';
 import { warmStatsCache } from './stats.js';
 import { getSetting } from './settings.js';
 import { startDeviceAutoScan } from './deviceScanner.js';
+import { reconcileRepos } from './gitRepo.js';
 
 const jobs = new Map<number, cron.ScheduledTask>();
 
@@ -32,9 +33,12 @@ export async function startScheduler(): Promise<void> {
       .then((n) => { if (n > 0) console.log(`[autotest] 已归档 ${n} 条历史执行记录`); })
       .catch((e) => console.error('[autotest] 执行归档失败：', (e as Error).message));
   });
-  // 每分钟预热统计缓存（首页覆盖率/分片卡片不实时 COUNT）
+  // 每分钟：统计缓存预热 + 仓库目录对账（运行中删除仓库目录 → 库状态实时清空，无需重启）
   cron.schedule('*/1 * * * *', () => {
     warmStatsCache().catch((e) => console.warn('[autotest] 统计预热失败：', (e as Error).message));
+    reconcileRepos()
+      .then((n) => { if (n > 0) console.log(`[autotest] 仓库对账：${n} 个库的同步状态已清空（目录已不存在）`); })
+      .catch((e) => console.warn('[autotest] 仓库对账失败：', (e as Error).message));
   });
 }
 

@@ -7,7 +7,7 @@ interface ShardStat { shard: number; libraries: number; cases: number }
 const SECTIONS: Array<{ title: string; desc: string; fields: Array<{ key: string; label: string; type: 'text' | 'number' | 'bool'; hint?: string }> }> = [
   {
     title: '通用', desc: '基础工作区与默认规模', fields: [
-      { key: 'app.workspace', label: '工作区路径', type: 'text' },
+      { key: 'app.workspace', label: '工作区路径', type: 'text', hint: '仓库 / 脚本 / 遍历报告统一存放处 · 留空 = 启动目录下的 workspace（不推荐）' },
     ],
   },
   {
@@ -73,6 +73,12 @@ export default function SettingsPage() {
   const [msg, setMsg] = useState('');
   const [error, setError] = useState('');
   const [saving, setSaving] = useState(false);
+  // 工作区辅助
+  const [wsInfo, setWsInfo] = useState<{ configured: boolean; effective: string } | null>(null);
+
+  useEffect(() => {
+    api.workspaceInfo().then(setWsInfo).catch(() => {});
+  }, []);
 
   const load = useCallback(() => {
     api.settings()
@@ -101,6 +107,17 @@ export default function SettingsPage() {
       setError(String((e as Error).message));
     } finally {
       setSaving(false);
+    }
+  };
+
+  const openWsDir = async (): Promise<void> => {
+    try {
+      const p = String(values['app.workspace'] ?? '').trim();
+      const r = await api.openWorkspace(p || undefined);
+      setMsg(`已在资源管理器打开：${r.opened}`);
+      api.workspaceInfo().then(setWsInfo).catch(() => {});
+    } catch (e) {
+      setError(String((e as Error).message));
     }
   };
 
@@ -149,6 +166,19 @@ export default function SettingsPage() {
                     value={String(values[f.key] ?? '')}
                     onChange={(e) => setValues((v) => ({ ...v, [f.key]: f.type === 'number' ? Number(e.target.value) : e.target.value }))}
                   />
+                )}
+                {f.key === 'app.workspace' && (
+                  <>
+                    <div style={{ display: 'flex', gap: 6 }}>
+                      <button className="btn sm" type="button" title="在服务器本机打开（不存在则创建）该目录" onClick={() => void openWsDir()}>📂 打开 / 创建目录</button>
+                      <button className="btn sm" type="button" disabled={!wsInfo} title="把当前实际生效的工作区路径填入输入框" onClick={() => wsInfo && setValues((v) => ({ ...v, 'app.workspace': wsInfo.effective }))}>↙ 填入生效路径</button>
+                    </div>
+                    {wsInfo && (
+                      <span className="muted" style={{ fontSize: 11, wordBreak: 'break-all' }}>
+                        当前生效：{wsInfo.effective}{wsInfo.configured ? ' · 已配置' : ' · 未配置（回退启动目录，使用任务时会提示）'}
+                      </span>
+                    )}
+                  </>
                 )}
               </label>
             ))}

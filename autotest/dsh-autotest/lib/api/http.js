@@ -11,7 +11,8 @@ import { getAllSettings, getSetting, setSetting } from '../services/settings.js'
 import { cacheDel, cacheGet, cacheSet } from '../services/cache.js';
 import { readDshDefaultModel } from '../services/llmHarness.js';
 import { autoScanDevices } from '../services/deviceScanner.js';
-import { pullRepo, repoDirFor, workspaceDir } from '../services/gitRepo.js';
+import { spawn } from 'node:child_process';
+import { pullRepo, repoDirFor, workspaceConfigured, workspaceDir, workspaceNotice } from '../services/gitRepo.js';
 import { registerAuthRoutes, requireAuth } from '../auth/index.js';
 import { AuthError, hasPermission } from '../auth/service.js';
 import { hypiumProjectDir, writeCaseScript } from '../services/hypiumGen.js';
@@ -153,6 +154,28 @@ function defineRoutes(llm) {
     registerAuthRoutes(route);
     // ---- health ----
     route('GET', '/health', async () => ({ ok: true, service: 'dsh-autotest', version: PKG_VERSION, db: dbMode(), routes: routes.length, time: new Date().toISOString() }), { permission: '@public' });
+    // ---- 工作区 ----
+    route('GET', '/workspace/info', async () => {
+        const setting = String(getSetting('app.workspace', '') || '').trim();
+        return {
+            configured: workspaceConfigured(),
+            setting,
+            effective: workspaceDir(),
+            notice: workspaceNotice(),
+        };
+    }, { permission: 'settings:read' });
+    // 在服务器本机的资源管理器中打开（不存在则先创建）目录
+    route('POST', '/workspace/open', async ({ body }) => {
+        const requested = String(body.path ?? '').trim();
+        const target = path.resolve(requested || workspaceDir());
+        if (!/^[a-zA-Z]:[\\/]/.test(target) && !target.startsWith('/')) {
+            throw Object.assign(new Error('路径非法：需为绝对路径'), { statusCode: 400 });
+        }
+        fs.mkdirSync(target, { recursive: true });
+        const cmd = process.platform === 'win32' ? 'explorer' : process.platform === 'darwin' ? 'open' : 'xdg-open';
+        spawn(cmd, [target], { detached: true, stdio: 'ignore' }).unref();
+        return { ok: true, opened: target };
+    }, { permission: 'settings:write' });
     // ---- 系统配置 ----
     route('GET', '/settings', async () => getAllSettings(), { permission: 'settings:read' });
     route('PUT', '/settings/:key', async ({ params, body }) => {

@@ -1,12 +1,11 @@
 import crypto from 'node:crypto';
-import fs from 'node:fs';
 import { fileURLToPath } from 'node:url';
-import { defaultUrlProvider, ensureReady, getDb, setDbUrlProvider } from './db/connection.js';
+import { defaultUrlProvider, ensureReady, setDbUrlProvider } from './db/connection.js';
 import { makeLlm } from './services/llmHarness.js';
 import { makeApiHandler } from './api/http.js';
 import { startScheduler } from './services/scheduler.js';
 import { makeStaticHandler } from './static.js';
-import { refreshPackageInfo, repoDirFor } from './services/gitRepo.js';
+import { reconcileRepos } from './services/gitRepo.js';
 import { ensureAuthSchema, authDb } from './auth/db.js';
 import { createUser } from './auth/service.js';
 import { getSetting } from './services/settings.js';
@@ -19,19 +18,9 @@ export function apply(ctx) {
             setDbUrlProvider(() => String(getSetting('db.mysqlUrl', '') || '').trim() || defaultUrlProvider());
             await ensureReady();
             // 启动对账：本地没有克隆目录的库，同步状态一律清空（迁移/拷贝旧库后不再显示过期记录）
-            const db = getDb();
-            const libs = await db.prepare('SELECT id, name, package_name FROM libraries').all();
-            for (const lib of libs) {
-                if (!fs.existsSync(`${repoDirFor(lib.name)}/.git`)) {
-                    await db.prepare(`UPDATE libraries SET last_commit = '', last_synced_at = NULL WHERE id = ? AND (last_commit != '' OR last_synced_at IS NOT NULL)`).run(lib.id);
-                }
-                else if (!lib.package_name) {
-                    // 本地有 clone 但没解析过包名 → 从 app.json5/module.json5 解析回填
-                    const info = await refreshPackageInfo(lib);
-                    if (info.packageName)
-                        console.log(`[dsh-autotest] 已解析包名：${lib.name} → ${info.packageName}`);
-                }
-            }
+            const changed = await reconcileRepos();
+            if (changed > 0)
+                console.log(`[dsh-autotest] 启动对账：${changed} 个库的同步状态已清空`);
             console.log('[dsh-autotest] 业务库对账完成');
             // 定时执行计划调度（依赖业务表，须在初始化后注册）
             try {

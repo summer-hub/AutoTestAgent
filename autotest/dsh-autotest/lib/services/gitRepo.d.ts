@@ -22,8 +22,14 @@ export interface RepoInspect {
     pages: string[];
     entryDemo: string;
 }
-/** 工作区根目录（app.workspace 配置；未配置时落到插件进程 cwd/workspace）。 */
+/** 工作区根目录：app.workspace 显式设置优先；未设置时回退到启动目录下的 workspace（并在使用处提示）。 */
 export declare function workspaceDir(): string;
+/** 工作区是否已在系统配置中显式设置。 */
+export declare function workspaceConfigured(): boolean;
+/** 未配置工作区时的提示语（配置了返回 null）。 */
+export declare function workspaceNotice(): string | null;
+/** 运行中对账：仓库目录被删除时清空库的同步状态（首页/用例页不再残留过期信息）。 */
+export declare function reconcileRepos(): Promise<number>;
 /** 解析已克隆仓库工程：bundleName / mainAbility / 页面列表 / 入口页代码（供 AI 设计真实 UI 用例）。 */
 export declare function inspectRepo(lib: {
     name: string;

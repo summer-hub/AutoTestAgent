@@ -6,7 +6,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { getDb, now } from '../db/connection.js';
-import { ensureLibraryByRepoUrl, inspectRepo, pullRepo, recentChanges, refreshPackageInfo, updateRepo, workspaceDir } from './gitRepo.js';
+import { ensureLibraryByRepoUrl, inspectRepo, pullRepo, recentChanges, refreshPackageInfo, updateRepo, workspaceDir, workspaceNotice } from './gitRepo.js';
 import { getSetting } from './settings.js';
 import { extractJson, lastLlmCall } from './llmHarness.js';
 import { exploreApp, ensureDeviceOnline, saveExploreReport } from './uiExplorer.js';
@@ -77,6 +77,10 @@ export async function runTask(taskId, llm) {
     try {
         await set({ status: 'running', progress: 10, error: null });
         await traceTask(taskId, '任务开始', `${task.title}（${task.type}）`);
+        // 未配置工作区路径 → 明确提示（仍按回退目录继续执行）
+        const wn = workspaceNotice();
+        if (wn)
+            await traceTask(taskId, '工作区提示', wn);
         const result = await execute(task, llm);
         await set({ status: 'done', progress: 100, result_summary: result });
         await traceTask(taskId, '任务完成', result);
