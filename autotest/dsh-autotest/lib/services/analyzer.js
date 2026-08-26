@@ -320,43 +320,52 @@ ${samples.map((c) => `- ${c.case_no} ${c.name}：${(c.expected || '').slice(0, 1
         return { analyzed: items.length, prs: prs.length, source: 'fallback', message: `LLM 不可用，已用规则分析降级：${e.message}` };
     }
 }
-/** 归因分析：按粒度（单用例/单库/多库）对失败执行做 AI 归因。 */
+/** 归因分析：按勾选范围（任意用例多选 / 库级 / 全部）对失败执行做 AI 归因。 */
 export async function analyzeAttribution(llm, opts) {
     const db = getDb();
     const conds = ['e.status = \'failed\''];
-    const p = { limit: opts.granularity === 'single' ? 3 : 20 };
-    if (opts.caseId) {
-        conds.push('e.case_id = @caseId');
-        p.caseId = opts.caseId;
+    const args = [];
+    if (opts.caseIds && opts.caseIds.length > 0) {
+        conds.push(`e.case_id IN (${opts.caseIds.map(() => '?').join(',')})`);
+        args.push(...opts.caseIds);
     }
-    if (opts.libraryId) {
-        conds.push('e.library_id = @libraryId');
-        p.libraryId = opts.libraryId;
+    else if (opts.libraryIds && opts.libraryIds.length > 0) {
+        conds.push(`e.library_id IN (${opts.libraryIds.map(() => '?').join(',')})`);
+        args.push(...opts.libraryIds);
     }
-    const where = conds.join(' AND ');
+    else if (!opts.allLibraries) {
+        return { analyzed: 0, prs: 0, source: 'fallback', message: '请先勾选要归因的失败用例或选择库' };
+    }
     const rows = await db.prepare(`SELECT e.id, e.case_id, c.case_no, c.name AS case_name, e.library_id, l.name AS library_name,
             e.thinking, e.logs, e.status, e.started_at
      FROM executions e
      LEFT JOIN cases c ON c.id = e.case_id
      LEFT JOIN libraries l ON l.id = e.library_id
-     WHERE ${where} ORDER BY e.id DESC LIMIT @limit`).all(p);
+     WHERE ${conds.join(' AND ')} ORDER BY e.id DESC LIMIT 50`).all(...args);
     if (rows.length === 0) {
-        return { analyzed: 0, prs: 0, source: 'fallback', message: '没有匹配的失败执行记录，先执行计划产生失败用例' };
+        return { analyzed: 0, prs: 0, source: 'fallback', message: '勾选范围内没有失败执行记录，先执行计划产生失败用例' };
     }
-    const granularityLabel = { single: '单用例', lib: '单库', multi: '多库' }[opts.granularity];
-    const sys = `你是鸿蒙三方库测试归因分析 Agent。基于失败执行记录（含 AI 思考过程）做 ${granularityLabel} 粒度归因，输出 JSON：
+    // 范围描述与标题
+    const libs = [...new Set(rows.map((r) => r.library_name ?? '?'))];
+    let scopeLabel;
+    if (opts.caseIds?.length)
+        scopeLabel = `自选用例 ${rows.length} 条`;
+    else if (opts.libraryIds?.length === 1)
+        scopeLabel = `库级 · ${libs[0]}`;
+    else if (opts.allLibraries && !opts.libraryIds?.length && !opts.caseIds?.length)
+        scopeLabel = `全部库聚合（${libs.length} 库 / ${rows.length} 条）`;
+    else
+        scopeLabel = `多库聚合（${libs.length} 库 / ${rows.length} 条）`;
+    const sys = `你是鸿蒙三方库测试归因分析 Agent。基于失败执行记录（含 AI 思考过程与真实设备日志）做归因分析，输出 JSON：
 {"conclusion":"结论","rootCauses":["根因1",...],"evidence":["依据1",...],"suggestions":["建议1",...]}
 只输出 JSON。`;
-    const user = `归因粒度：${granularityLabel}
-${opts.caseId ? `目标用例：#${opts.caseId}` : ''}${opts.libraryId ? `目标库：#${opts.libraryId}` : ''}
+    const user = `归因范围：${scopeLabel}
 
 失败执行记录（${rows.length} 条）：
 ${rows.map((r) => `- [${r.started_at ?? ''}] ${r.library_name ?? '?'}/${r.case_no} ${r.case_name}（执行 #${r.id}）
   思考：${(r.thinking ?? '').slice(0, 600)}
   日志：${(r.logs ?? '').slice(0, 300)}`).join('\n\n')}`;
-    const title = opts.caseId ? `归因 · 单用例 #${opts.caseId}`
-        : opts.libraryId ? `归因 · 单库 #${opts.libraryId}`
-            : '归因 · 多库聚合';
+    const title = `归因 · ${scopeLabel}`;
     try {
         const text = await llmWithRetry(llm, {
             system: sys, user, maxTokens: 8192,
@@ -364,10 +373,10 @@ ${rows.map((r) => `- [${r.started_at ?? ''}] ${r.library_name ?? '?'}/${r.case_n
         });
         const parsed = extractJson(text);
         await saveAnalysis({
-            kind: 'attribution', granularity: opts.granularity, libraryId: opts.libraryId ?? null,
-            caseId: opts.caseId ?? null, title, round: '', content: parsed,
+            kind: 'attribution', granularity: opts.caseIds?.length ? 'single' : 'custom', libraryId: opts.libraryIds?.[0] ?? null,
+            caseId: opts.caseIds?.[0] ?? null, title, round: '', content: parsed,
         });
-        return { analyzed: 1, prs: rows.length, source: 'llm', message: `AI 归因完成（基于 ${rows.length} 条失败执行）` };
+        return { analyzed: 1, prs: rows.length, source: 'llm', message: `AI 归因完成（基于 ${rows.length} 条失败执行 · ${scopeLabel}）` };
     }
     catch (e) {
         const conclusions = rows.map((r) => {
@@ -379,15 +388,17 @@ ${rows.map((r) => `- [${r.started_at ?? ''}] ${r.library_name ?? '?'}/${r.case_n
                 causes.push('界面/事件响应与预期不符');
             if (/回归缺陷|代码变更/i.test(t))
                 causes.push('三方库近期代码变更引入回归');
+            if (/未找到|控件不存在/i.test(t))
+                causes.push('界面控件未找到（脚本引用与实际 UI 不一致）');
             if (causes.length === 0)
                 causes.push('执行环境或用例步骤与设备状态不匹配');
             return { caseNo: r.case_no, library: r.library_name, causes, thinking: t.slice(0, 200) };
         });
         await saveAnalysis({
-            kind: 'attribution', granularity: opts.granularity, libraryId: opts.libraryId ?? null,
-            caseId: opts.caseId ?? null, round: '', title: `${title}（规则降级）`,
+            kind: 'attribution', granularity: opts.caseIds?.length ? 'single' : 'custom', libraryId: opts.libraryIds?.[0] ?? null,
+            caseId: opts.caseIds?.[0] ?? null, round: '', title: `${title}（规则降级）`,
             content: {
-                conclusion: `基于 ${rows.length} 条失败执行记录，按 ${granularityLabel} 粒度聚合：失败集中在 ${[...new Set(conclusions.flatMap((c) => c.causes))].join('、')}。`,
+                conclusion: `基于 ${rows.length} 条失败执行记录（${scopeLabel}）：失败集中在 ${[...new Set(conclusions.flatMap((c) => c.causes))].join('、')}。`,
                 rootCauses: [...new Set(conclusions.flatMap((c) => c.causes))],
                 evidence: conclusions.slice(0, 10).map((c) => `${c.library ?? '?'}/${c.caseNo}：${c.causes.join('、')}`),
                 suggestions: ['核对近期合并 PR 是否影响相关模块', '用调试会话逐步骤复核失败用例', '更新用例脚本参数并重新执行'],

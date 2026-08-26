@@ -1249,15 +1249,12 @@ ${(row.logs ?? '').slice(0, 4000) || '（无）'}
     route('POST', '/analyses/attribution', async ({ body }) => {
         void cacheDel('analyses');
         const b = body;
-        const granularity = (b.granularity ?? 'multi');
-        if (!['single', 'lib', 'multi'].includes(granularity)) {
-            throw Object.assign(new Error('granularity 必须是 single / lib / multi'), { statusCode: 400 });
+        const caseIds = Array.isArray(b.caseIds) ? b.caseIds.map(Number).filter((n) => Number.isInteger(n) && n > 0) : [];
+        const libraryIds = Array.isArray(b.libraryIds) ? b.libraryIds.map(Number).filter((n) => Number.isInteger(n) && n > 0) : [];
+        if (caseIds.length === 0 && libraryIds.length === 0 && !b.allLibraries) {
+            throw Object.assign(new Error('请先勾选要归因的失败用例，或选择库级 / 全部'), { statusCode: 400 });
         }
-        return analyzeAttribution(llm, {
-            granularity,
-            libraryId: b.libraryId ? Number(b.libraryId) : null,
-            caseId: b.caseId ? Number(b.caseId) : null,
-        });
+        return analyzeAttribution(llm, { caseIds, libraryIds, allLibraries: !!b.allLibraries });
     }, { permission: 'analysis:run', llm: true });
     // ---- 真机遍历报告（可视化展示数据源：workspace/explore/<lib>/explore_*.json）----
     // 说明：遍历生成用例统一走 AI 任务 explore_cases（executor.exploreCases：遍历数据 → 用例生成 Agent → 自审进化），

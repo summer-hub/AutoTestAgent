@@ -171,6 +171,15 @@ export const REVIEW_RUBRIC = `评审标准（逐条对照）：
 2. 逻辑合理：步骤顺序符合真实用户操作路径，前置条件完整，无跳步、无重复步骤、场景间互不矛盾；
 3. 预期结果明确清晰：可观察、可验证——具体到动画名/控件文本/回调 JSON 字段/hilog 日志内容，禁止「显示正常」「工作正常」等空泛描述；
 4. 覆盖完整：对照给定界面数据逐个核对——目标范围内的主要可交互元素（按钮/开关/输入项/异常输入）都应有用例覆盖；预期证据在首屏之下（scrolls>0 或源码含滚动容器）而步骤没有「向上滑动查看输出区域」的，视为问题并在修订中补上。`;
+/** 预期证据强化规则（动画/视频/图片等媒体类库必须落到可断言的具体证据），注入所有用例生成/优化场景。 */
+export const EVIDENCE_RULE = `
+
+【预期证据强化 · 媒体类库专项】动画、视频、图片类库的预期结果禁止「播放正常」「加载成功」式描述，必须给出至少一个可断言的具体证据：
+- 从 demo 源码提取资源名（如 lottie json 文件名、图片 URL/base64 标识）、加载成功/失败回调的字段名与取值、hilog 关键字；
+- 图片类：写明来源形态（base64/URL/文件路径）与成功回调 JSON 字段（如 code=0/message）或失败态文案；
+- 动画类：写明资源文件、循环/进度表现、播放完成回调字段；
+- 视频类：写明起播/暂停/完成的状态回调或日志标记；
+- 每条 expected 至少包含一个可在界面文本或 hilog 中断言的具体字符串；对应自动化脚本将生成 assert_component_exist 断言。`;
 /** 归一化 LLM 输出（兼容 title/preconditions/testCases 包装等自然形态）。 */
 function normalizeDraftCases(parsed) {
     const rawList = Array.isArray(parsed)
@@ -372,7 +381,7 @@ ${repoContext}`;
 3. 对目标做场景矩阵拆解后取 4-12 条：正向主流程 / 边界值 / 异常输入与状态（null/空串/非法值/超大数据）/ 交互组合 / 连续重复操作；
 4. 页面内容超过一屏（scrolls>0 或源码含可滚动容器）时：涉及回调输出、日志区、动画状态等预期证据的用例，操作步骤必须包含「向上滑动查看输出区域」，预期结果写明滑动后应看到的证据内容（如回调 JSON 字段、日志文本）；
 5. 预期结果写具体证据：动画名 / 控件文本 / 回调 JSON 字段 / hilog 日志内容，禁止空泛描述。`;
-    const sys = `${tpl.content}${tpl.skill ? `\n\n【绑定技能】\n${tpl.skill}` : ''}${directedAddendum}`;
+    const sys = `${tpl.content}${tpl.skill ? `\n\n【绑定技能】\n${tpl.skill}` : ''}${directedAddendum}${EVIDENCE_RULE}`;
     const user = `${sceneCtx}
 历史教训（生成时务必规避）：
 ${loadLessons(lib.name).map((l, i) => `${i + 1}. ${l}`).join('\n') || '（暂无）'}`;
@@ -472,7 +481,7 @@ ${JSON.stringify(pagesCompact)}`;
 3. 预期结果写明具体控件文本与动画表现（越界动画页注明"滑动后完整可见"），可结合 hilog 日志断言；
 4. 来源固定为 AI 生成。`;
     const tpl = await promptBundle('用例生成', CASE_GEN_FALLBACK);
-    const sys = `${tpl.content}${tpl.skill ? `\n\n【绑定技能】\n${tpl.skill}` : ''}${exploreAddendum}`;
+    const sys = `${tpl.content}${tpl.skill ? `\n\n【绑定技能】\n${tpl.skill}` : ''}${exploreAddendum}${EVIDENCE_RULE}`;
     const user = `${sceneCtx}
 任务要求：${task.input || '基于遍历数据为每个页面设计可执行用例，交互丰富的页面补边界/异常场景。'}
 历史教训（生成时务必规避）：
@@ -539,7 +548,7 @@ export async function optimizeCaseById(caseId, llm) {
 步骤：${JSON.stringify(JSON.parse(c.steps || '[]'))}
 预期结果：${c.expected}`;
     const tpl = await promptBundle('用例优化', CASE_OPT_FALLBACK);
-    const sys = `${tpl.content}${tpl.skill ? `\n\n【绑定技能】\n${tpl.skill}` : ''}`;
+    const sys = `${tpl.content}${tpl.skill ? `\n\n【绑定技能】\n${tpl.skill}` : ''}${EVIDENCE_RULE}`;
     let parsed = null;
     let lastErr = null;
     for (let attempt = 0; attempt < 2 && !parsed; attempt++) {

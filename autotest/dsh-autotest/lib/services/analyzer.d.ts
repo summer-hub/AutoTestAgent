@@ -49,9 +49,12 @@ export declare function analyzePrChanges(llm: LlmCall, library: LibraryRow, prs:
 /** 用例更新分析：结合 PR 变更与现有用例，产出需要更新的用例及理由。 */
 export declare function analyzeCaseUpdates(llm: LlmCall, library: LibraryRow, prs: GitCodePr[], onStage?: (stage: string) => void, round?: string): Promise<AnalyzeResult>;
 export interface AttributionOptions {
-    granularity: 'single' | 'lib' | 'multi';
-    libraryId?: number | null;
-    caseId?: number | null;
+    /** 勾选的用例 id（跨库任意多选；与 libraryIds 可组合） */
+    caseIds?: number[];
+    /** 库级选择（该库全部失败执行） */
+    libraryIds?: number[];
+    /** 全部库所有失败执行 */
+    allLibraries?: boolean;
 }
-/** 归因分析：按粒度（单用例/单库/多库）对失败执行做 AI 归因。 */
+/** 归因分析：按勾选范围（任意用例多选 / 库级 / 全部）对失败执行做 AI 归因。 */
 export declare function analyzeAttribution(llm: LlmCall, opts: AttributionOptions): Promise<AnalyzeResult>;

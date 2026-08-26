@@ -90,11 +90,20 @@ export function ensureHypiumProject(lib: HypiumLib, serial?: string): void {
 function pickKw(desc: string): string {
   return desc
     .replace(/^(点击|单击|选择|选中|确认|打开|启动|切换|滚动|长按|勾选|取消|删除|验证|检查|断言|校验)[:：\s]*/, '')
+    .replace(/^[控件]+\s*[:：]\s*/, '')          // 剔除「控件：」等标签前缀（dump 里静态标签与值分离时的合并残留）
     .replace(/[「」“”"'，,。.！!？?；;、]/g, ' ')
-    .replace(/^(?:按钮|选项|列表项|弹窗|输入框|下拉菜单|返回按钮|开关)/, '')
+    .replace(/\s+/g, ' ')
     .trim()
     .split(/\s+/)[0]
     ?.slice(0, 20) ?? '';
+}
+
+/** 控件文本净化：剔除标签前缀、压缩空白 —— BY.text 必须与界面可见文本完全一致。 */
+function cleanLabel(label: string): string {
+  return label
+    .replace(/^控件\s*[:：]\s*/, '')
+    .replace(/\s+/g, ' ')
+    .trim();
 }
 
 function py(s: string): string {
@@ -115,7 +124,7 @@ function stepToPython(step: string): string[] {
   if (/^下滑|^向下滑/.test(d)) return ['        self.driver.swipe(UiParam.DOWN, distance=60)'];
   const input = d.match(/^(?:输入|键入|填写)[:：]?\s*[「"]?(.+?)[」"]?$/);
   if (input && !input[1].includes('框')) {
-    const kw = pickKw(d.replace(/^(?:输入|键入|填写)/, '点击')) || '输入框';
+    const kw = cleanLabel(pickKw(d.replace(/^(?:输入|键入|填写)/, '点击'))) || '输入框';
     return [
       `        self.driver.input_text(BY.text("${py(kw)}"), "${py(input[1].slice(0, 40))}")`,
       '        self.driver.wait(1)',
@@ -123,17 +132,18 @@ function stepToPython(step: string): string[] {
   }
   const verify = d.match(/^(?:验证|检查|断言|校验)[:：]?\s*[「"]?(.+?)[」"]?$/) || d.match(/^验证(?:页面.*?包含|界面.*?出现)?[「"]?(.+?)[」"]?$/);
   if (verify) {
-    const kw = verify[1].trim().slice(0, 20);
+    const kw = cleanLabel(verify[1]).slice(0, 24);
     return [
-      `        comp = self.driver.find_component(BY.text("${py(kw)}"))`,
-      `        Step('验证「${py(kw)}」')`,
+      `        # 断言：预期控件必须真实存在（不存在则该用例失败）`,
+      `        self.driver.assert_component_exist(BY.text("${py(kw)}"), "预期控件未找到: ${py(kw)}")`,
+      `        Step('已断言「${py(kw)}」存在')`,
     ];
   }
   const open = d.match(/^(?:打开|启动)(?:应用)?[「:]?\s*(.+?)[」]?$/);
   if (open) return [`        Step('打开 ${py(open[1].slice(0, 24))}')`, '        self.driver.wait(1)'];
   const click = d.match(/^(?:点击|单击|选择|选中|确认|切换|勾选|滚动到)[:：]?\s*[「"]?(.+?)[」"]?$/);
   if (click) {
-    const kw = click[1].trim().slice(0, 24);
+    const kw = cleanLabel(click[1]).slice(0, 24);
     return [
       `        self.driver.touch(BY.text("${py(kw)}"))`,
       '        self.driver.wait(1)',

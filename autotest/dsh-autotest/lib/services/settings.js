@@ -21,7 +21,7 @@ export const SETTING_DEFAULTS = {
     'device.appAbilities': '{}',
     'device.autoScanInterval': 30, // 设备自动检测间隔（秒），0=关闭；启动时立即检测一次
     'explore.maxDepth': 2, // 真机 UI 遍历：BFS 最大深度
-    'explore.maxPages': 20, // 真机 UI 遍历：最多收录页面数
+    'explore.maxPages': 40, // 真机 UI 遍历：最多收录页面数（保证全按钮覆盖）
     'explore.controlsPerPage': 12, // 真机 UI 遍历：每页最多收集控件数
     'explore.maxSwipePerPage': 5, // 真机 UI 遍历：单页为看全内容最多滑动次数
     'explore.statusBarFilter': true, // 真机 UI 遍历：过滤状态栏/系统窗口控件（时钟等）

@@ -83,7 +83,7 @@ async function swipePage(serial, dir) {
 export async function exploreApp(serial, packageName, opts = {}) {
     const t0 = Date.now();
     // 参数优先级：调用方覆盖 > 系统配置（explore.*）> 内置默认
-    const maxPages = numOpt(opts.maxPages, 'explore.maxPages', 20, 1, 200);
+    const maxPages = numOpt(opts.maxPages, 'explore.maxPages', 40, 1, 200);
     const maxDepth = numOpt(opts.maxDepth, 'explore.maxDepth', 2, 1, 6);
     const controlsPerPage = numOpt(opts.controlsPerPage, 'explore.controlsPerPage', 12, 1, 50);
     const maxSwipePerPage = numOpt(opts.maxSwipePerPage, 'explore.maxSwipePerPage', 5, 0, 20);
@@ -176,6 +176,8 @@ export async function exploreApp(serial, packageName, opts = {}) {
     });
     // 单页控件清单上限（多视口汇总后的存量，供 Agent 看到整页全部按钮/文本）
     const FULL_CONTROLS_CAP = 60;
+    // 单页点击覆盖上限：要求覆盖界面上全部可交互按钮（100 为安全上限，防异常页面死循环）
+    const CLICK_CAP = 100;
     // BFS 队列：{ path, depth }；只记录从首页可达的页面
     const queue = [{ path: ['首页'], depth: 0 }];
     let guard = 0;
@@ -259,7 +261,7 @@ export async function exploreApp(serial, packageName, opts = {}) {
                     const label = (c.text || c.desc).trim().slice(0, 24);
                     if (clickedLabels.has(label))
                         continue;
-                    if (clicked >= controlsPerPage || pages.length >= maxPages)
+                    if (clicked >= CLICK_CAP || pages.length >= maxPages)
                         break viewportLoop;
                     clickedLabels.add(label);
                     clicked++;
