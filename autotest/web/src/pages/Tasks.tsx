@@ -23,7 +23,27 @@ export default function TasksPage() {
   const [libPrompt, setLibPrompt] = useState('');
   const [libSaving, setLibSaving] = useState(false);
   const [traceView, setTraceView] = useState<Task | null>(null);
+  const [opsView, setOpsView] = useState<null | { libId: number; title: string }>(null);
+  const [opsData, setOpsData] = useState<null | { file: string; ops: Array<{ at: string; action: string; detail?: string }> }>(null);
+  const [opsQ, setOpsQ] = useState('');
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
+
+  // 拉取最新遍历报告的操作轨迹
+  const openOps = async (libId: number, title: string): Promise<void> => {
+    setOpsView({ libId, title });
+    setOpsData(null);
+    setOpsQ('');
+    try {
+      const list = await api.exploreReports(libId);
+      if (list.items.length === 0) { setOpsData({ file: '', ops: [] }); return; }
+      const latest = list.items[0];
+      const content = await api.exploreReportContent(libId, latest.file);
+      setOpsData({ file: latest.file, ops: content.ops ?? [] });
+    } catch (e) {
+      setError(String((e as Error).message));
+      setOpsData({ file: '', ops: [] });
+    }
+  };
 
   const load = useCallback(() => {
     api.tasks().then(setTasks).catch((e) => setError(String((e as Error).message)));
@@ -160,6 +180,9 @@ export default function TasksPage() {
                 {t.type === 'to_script' && t.status === 'done' && t.libraryId && (
                   <span className="link" style={{ fontSize: 12 }} onClick={() => setRepoDialog({ mode: 'browse', libId: t.libraryId ?? undefined, tab: 'scripts' })}>查看脚本</span>
                 )}
+                {t.type === 'explore_cases' && t.status === 'done' && t.libraryId && (
+                  <span className="link" style={{ fontSize: 12 }} onClick={() => void openOps(t.libraryId!, `${t.title} · 真机操作轨迹`)}>📋 操作日志</span>
+                )}
                 {(t.trace?.length ?? 0) > 0 && (
                   <span className="link" style={{ fontSize: 12 }} onClick={() => setTraceView(t)}>查看轨迹</span>
                 )}
@@ -243,6 +266,47 @@ export default function TasksPage() {
                   {libSaving ? '创建任务中…' : '创建任务'}
                 </button>
               </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {opsView && (
+        <div className="s-overlay show">
+          <div className="s-mask" onClick={() => setOpsView(null)} />
+          <div style={{ position: 'relative', zIndex: 1, width: 900, maxWidth: 'calc(100vw - 40px)', maxHeight: 'calc(100vh - 40px)', background: 'var(--panel)', border: '1px solid var(--border2)', borderRadius: 16, boxShadow: '0 24px 80px rgba(0,0,0,.55)', display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '14px 18px', borderBottom: '1px solid var(--border)' }}>
+              <span style={{ fontSize: 15, fontWeight: 600 }}>📋 {opsView.title}</span>
+              {opsData && opsData.file && <span className="mono muted" style={{ fontSize: 11 }}>{opsData.file}</span>}
+              <div style={{ flex: 1 }} />
+              <input className="input" style={{ width: 200 }} placeholder="筛选动作/详情…" value={opsQ} onChange={(e) => setOpsQ(e.target.value)} />
+              <button className="s-header x" onClick={() => setOpsView(null)} style={{ width: 28, height: 28, borderRadius: 28, border: 'none', background: 'none', color: 'var(--text2)', cursor: 'pointer', fontSize: 14 }}>✕</button>
+            </div>
+            <div style={{ flex: 1, minHeight: 0, overflowY: 'auto', padding: '12px 18px' }}>
+              {!opsData ? (
+                <div className="loading">加载操作轨迹…</div>
+              ) : opsData.ops.length === 0 ? (
+                <div className="loading">该报告无操作轨迹（旧版生成的报告不含 ops 字段，重新遍历一次即可）</div>
+              ) : (
+                <table>
+                  <thead><tr><th style={{ width: 110 }}>时间</th><th style={{ width: 170 }}>动作</th><th>详情</th></tr></thead>
+                  <tbody>
+                    {opsData.ops
+                      .filter((o) => !opsQ || `${o.action} ${o.detail ?? ''}`.toLowerCase().includes(opsQ.toLowerCase()))
+                      .map((o, i) => (
+                      <tr key={i}>
+                        <td className="mono muted">{o.at}</td>
+                        <td><span className={`tag ${/点击|启动/.test(o.action) ? 'blue' : /判定|收录/.test(o.action) ? 'green' : /滑|返回|强杀|重启/.test(o.action) ? 'amber' : 'plain'}`}>{o.action}</span></td>
+                        <td className="muted" style={{ wordBreak: 'break-all' }}>{o.detail ?? ''}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              )}
+            </div>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '10px 18px', borderTop: '1px solid var(--border)', fontSize: 11.5 }} className="muted">
+              <span>完整报告文件位于 workspace/explore/&lt;库名&gt;/ 目录</span>
+              <button className="btn" onClick={() => setOpsView(null)}>关闭</button>
             </div>
           </div>
         </div>

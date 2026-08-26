@@ -94,14 +94,26 @@ export async function exploreApp(serial, packageName, opts = {}) {
     const visited = new Set();
     const visitedPaths = new Set();
     const pages = [];
+    // ---- 操作轨迹记录器：每个真机动作/判定都留痕，随报告落盘供 UI 查询 ----
+    const ops = [];
+    const op = (action, detail) => {
+        ops.push({ at: new Date().toISOString().slice(11, 23), action, detail });
+        if (ops.length > 1500)
+            ops.splice(0, ops.length - 1500);
+    };
+    const restartApp = async () => {
+        op('强杀应用', packageName);
+        try {
+            await execShell(serial, ['aa', 'force-stop', packageName]);
+        }
+        catch { /* 忽略 */ }
+        op('启动应用', `${ability}（等待 3s）`);
+        await execShell(serial, launchArgs(ability));
+        await sleep(3000);
+    };
     // 确保从首页开始：先杀应用再启动（aa start 只切前台，不重置页面）
     const ability = opts.launchAbility || packageName;
-    try {
-        await execShell(serial, ['aa', 'force-stop', packageName]);
-    }
-    catch { /* 应用未运行 */ }
-    await execShell(serial, launchArgs(ability));
-    await sleep(3000);
+    await restartApp();
     const dumpCurrent = async () => {
         let xml = await uiDump(serial);
         const screen = screenSize(xml);
@@ -111,6 +123,7 @@ export async function exploreApp(serial, packageName, opts = {}) {
             const meta = dumpMeta(xml);
             if (!meta.bundleName || meta.bundleName === packageName)
                 break;
+            op('应用不在前台，重新拉起', meta.bundleName || 'unknown');
             await execShell(serial, launchArgs(ability));
             await sleep(2200);
             xml = await uiDump(serial);
@@ -121,6 +134,7 @@ export async function exploreApp(serial, packageName, opts = {}) {
             const out = detectOutOfScreen(nodes, screen.w, screen.h);
             if (!out)
                 break;
+            op('上滑适配越界内容', `第 ${sw + 1} 次`);
             await swipePage(serial, 'up');
             xml = await uiDump(serial);
             sw++;
@@ -169,6 +183,7 @@ export async function exploreApp(serial, packageName, opts = {}) {
         guard++;
         const cur = queue.shift();
         const isLeaf = cur.depth >= maxDepth; // 叶子页只做全量采集，不再点击扩展
+        op('重启回目标页', `${cur.path.join('→')}（深度 ${cur.depth}${isLeaf ? ' · 叶子仅采集' : ''}）`);
         try {
             await execShell(serial, ['aa', 'force-stop', packageName]);
         }
@@ -180,6 +195,7 @@ export async function exploreApp(serial, packageName, opts = {}) {
             const node = await findNodeScrollable(step);
             if (!node)
                 break;
+            op('点击（路径重放）', `「${step.slice(0, 24)}」 @(${node.x},${node.y})`);
             await tap(serial, node.x, node.y);
             await sleep(1200);
         }
@@ -200,6 +216,7 @@ export async function exploreApp(serial, packageName, opts = {}) {
         let clicked = 0;
         let vp = 0; // 已完成的下翻次数
         const replayToCur = async () => {
+            op('重启并重放路径', `回到 ${cur.path.join('→')} 视口${vp}`);
             try {
                 await execShell(serial, ['aa', 'force-stop', packageName]);
             }
@@ -210,6 +227,7 @@ export async function exploreApp(serial, packageName, opts = {}) {
                 const node = await findNodeScrollable(step);
                 if (!node)
                     break;
+                op('点击（重放）', `「${step.slice(0, 24)}」 @(${node.x},${node.y})`);
                 await tap(serial, node.x, node.y);
                 await sleep(1000);
             }
@@ -253,6 +271,7 @@ export async function exploreApp(serial, packageName, opts = {}) {
                     const pathKey = sub.meta.pagePath || sig;
                     const bundleOk = !sub.meta.bundleName || sub.meta.bundleName === packageName;
                     const entered = !visited.has(sig) && !visitedPaths.has(pathKey) && sub.nodes.length > 0 && bundleOk;
+                    op('进入判定', `点击「${label}」→ ${entered ? '进入新页面' : bundleOk ? '未进入（无导航/已访问）' : '离开目标应用'} · pagePath=${sub.meta.pagePath || '—'}`);
                     console.log(`[explore] ${cur.path.join('→')} 点击「${label}」(视口${vp}) → entered=${entered} pagePath=${sub.meta.pagePath} bundle=${sub.meta.bundleName} nodes=${sub.nodes.length}`);
                     if (entered) {
                         visited.add(sig);
@@ -267,7 +286,9 @@ export async function exploreApp(serial, packageName, opts = {}) {
                             note: anim ? '检测到越界动画/内容，已自动滑动适配' : '页面正常',
                         });
                         queue.push({ path: nextPath, depth: cur.depth + 1 });
+                        op('收录页面', `${nextPath.join(' → ')} · 控件 ${pages[pages.length - 1]?.controls.length ?? 0} 个${sub.sw ? ` · 适配滑动 ${sub.sw}` : ''}`);
                         // 返回列表页（边缘返回手势），滚动位置保持 → 本视口剩余候选坐标仍有效
+                        op('边缘返回手势');
                         await keyBack(serial);
                         await sleep(1000);
                     }
@@ -279,10 +300,13 @@ export async function exploreApp(serial, packageName, opts = {}) {
             }
             if (fresh === 0)
                 break; // 本屏无新内容 → 已到底/不可滚动
+            op('上滑翻屏', `视口${vp} → ${vp + 1}（本屏新增 ${fresh} 个控件）`);
             await swipePage(serial, 'up');
             vp++;
         }
         // 滑回顶部，下一轮从已知位置开始
+        if (vp > 0)
+            op('下滑回顶', `${vp} 屏 · 本页累计控件清单 ${Math.min(inventory.length, FULL_CONTROLS_CAP)} 条`);
         for (let i = 0; i < vp; i++)
             await swipePage(serial, 'down');
         // 完整控件清单回填本页记录（含首屏下内容），Agent / 用例预期据此覆盖全部按钮与回调输出
@@ -303,6 +327,7 @@ export async function exploreApp(serial, packageName, opts = {}) {
         pages,
         visitedCount: visited.size,
         durationMs: Date.now() - t0,
+        ops,
     };
 }
 /** 保存遍历报告（JSON）到 workspace/explore/<lib>/。 */

@@ -269,6 +269,13 @@ export interface ExploredPage {
   note: string;
 }
 
+/** 真机操作轨迹条目 */
+export interface ExploredOp {
+  at: string;
+  action: string;
+  detail?: string;
+}
+
 /** 遍历结果报告（explore_<ts>.json 内容） */
 export interface ExploreResult {
   packageName: string;
@@ -276,6 +283,8 @@ export interface ExploreResult {
   pages: ExploredPage[];
   visitedCount: number;
   durationMs: number;
+  /** 真机操作轨迹（新版报告才有，旧报告为空数组） */
+  ops?: ExploredOp[];
 }
 
 /** 遍历报告文件元信息（列表用） */

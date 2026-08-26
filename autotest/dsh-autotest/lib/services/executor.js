@@ -443,6 +443,11 @@ async function exploreCases(task, lib, llm) {
     await refreshPackageInfo({ id: lib.id, name: lib.name });
     await getDb().prepare('UPDATE tasks SET progress = 40, updated_at = ? WHERE id = ?').run(now(), task.id);
     await traceTask(task.id, '遍历完成', `${result.pages.length} 个页面 · 去重页 ${result.visitedCount} · 耗时 ${Math.round(result.durationMs / 1000)}s\n报告已存 workspace/explore/${lib.name}/`);
+    // 真机操作序列摘要（最近 100 条；完整轨迹随报告文件留存，可在任务卡片「操作日志」查看）
+    if (result.ops?.length) {
+        const digest = result.ops.slice(-100).map((o) => `${o.at} ${o.action}${o.detail ? ` · ${o.detail}` : ''}`).join('\n');
+        await traceTask(task.id, `真机操作序列（共 ${result.ops.length} 条，显示最近 100 条）`, digest);
+    }
     // 3. 遍历数据 → 用例生成 Agent（content + skill）
     const pagesCompact = result.pages.map((p) => ({
         path: p.path.join(' → '),

@@ -23,12 +23,19 @@ export interface ExploredPage {
     };
     note: string;
 }
+export interface ExploredOp {
+    at: string;
+    action: string;
+    detail?: string;
+}
 export interface ExploreResult {
     packageName: string;
     serial: string;
     pages: ExploredPage[];
     visitedCount: number;
     durationMs: number;
+    /** 真机操作轨迹（每次设备/判定动作一条，供 UI 回溯查询） */
+    ops: ExploredOp[];
 }
 export interface ExploreOpts {
     maxPages?: number;

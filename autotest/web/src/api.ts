@@ -1,5 +1,5 @@
 // API 客户端 — 统一走 /api（Vite 代理到后端 3280）
-import type { Analysis, CaseVersion, Device, Execution, Library, ModelConfig, ModelTestResult, Page, Plan, Prompt, RepoFile, RepoFileEntry, RepoInfo, Task, TestCase } from 'shared';
+import type { Analysis, CaseVersion, Device, Execution, ExploreReportMeta, ExploreResult, Library, ModelConfig, ModelTestResult, Page, Plan, Prompt, RepoFile, RepoFileEntry, RepoInfo, Task, TestCase } from 'shared';
 
 // 嵌入 DSH 时由构建注入 VITE_API_BASE=/api/autotest（同源直连插件路由）；
 // 独立版默认 /api（Vite 代理到 3280）。
@@ -213,6 +213,12 @@ export const api = {
     req<{ ok: boolean }>(`${API_BASE}/repos/${id}/file?path=${encodeURIComponent(name)}&root=scripts`, { method: 'DELETE' }),
   saveScriptFile: (id: number, name: string, content: string) =>
     req<{ ok: boolean; saved: string; size: number }>(`${API_BASE}/repos/${id}/file`, { method: 'PUT', body: JSON.stringify({ name, content }) }),
+
+  // 真机遍历报告（含操作轨迹 ops）
+  exploreReports: (libraryId: number) =>
+    req<{ items: ExploreReportMeta[]; dir: string }>(`${API_BASE}/explore/reports/${libraryId}`),
+  exploreReportContent: (libraryId: number, name: string) =>
+    req<ExploreResult>(`${API_BASE}/explore/reports/${libraryId}/content?name=${encodeURIComponent(name)}`),
 
   // Prompt 模板
   prompts: () => req<Prompt[]>(`${API_BASE}/prompts`),
