@@ -11,11 +11,13 @@ import { getAllSettings, getSetting, setSetting } from '../services/settings.js'
 import { cacheDel, cacheGet, cacheSet } from '../services/cache.js';
 import { readDshDefaultModel } from '../services/llmHarness.js';
 import { autoScanDevices } from '../services/deviceScanner.js';
+import { hdcAvailable, listTargets } from '../services/hdc.js';
 import { spawn } from 'node:child_process';
 import { pullRepo, repoDirFor, workspaceConfigured, workspaceDir, workspaceNotice } from '../services/gitRepo.js';
 import { registerAuthRoutes, requireAuth } from '../auth/index.js';
 import { AuthError, hasPermission } from '../auth/service.js';
-import { hypiumProjectDir, writeCaseScript } from '../services/hypiumGen.js';
+import { hypiumProjectDir, writeCaseScript, ensureHypiumProject } from '../services/hypiumGen.js';
+import { detectPython, runHypiumModule } from '../services/hypiumRunner.js';
 const routes = [];
 // 分析进度（内存态，供前端轮询展示实时过程；完成后 60s 自动清理）
 const analysisProgress = new Map();
@@ -386,6 +388,38 @@ function defineRoutes(llm) {
         void cacheDel('cases');
         return { ok: true, ...r };
     }, { permission: 'case:write', llm: true });
+    // 单脚本真机执行（自动化脚本页「执行」按钮）：python main.py <module> → 解析 xdevice 结果
+    route('POST', '/scripts/run', async ({ body }) => {
+        const b = body;
+        const libId = Number(b.libraryId);
+        const name = String(b.name ?? '').trim();
+        if (!libId || !/^[\w.-]+\.py$/i.test(name))
+            throw Object.assign(new Error('libraryId / name(.py) 必填'), { statusCode: 400 });
+        const db = getDb();
+        const lib = await db.prepare('SELECT name, package_name FROM libraries WHERE id = ?').get(libId);
+        if (!lib)
+            throw Object.assign(new Error('三方库不存在'), { statusCode: 404 });
+        if (!(await hdcAvailable()))
+            throw Object.assign(new Error('真机未连接：未检测到 hdc 命令。请连接鸿蒙设备后重试'), { statusCode: 400 });
+        const targets = await listTargets();
+        if (targets.length === 0)
+            throw Object.assign(new Error('真机未连接：hdc list targets 为空，请连接鸿蒙机型设备'), { statusCode: 400 });
+        const pythonCmd = await detectPython();
+        if (!pythonCmd)
+            throw Object.assign(new Error('未检测到 Python 环境（需 Python + xdevice）'), { statusCode: 400 });
+        ensureHypiumProject({ name: lib.name, packageName: lib.package_name || lib.name }, targets[0]);
+        const projDir = hypiumProjectDir(lib.name);
+        const moduleStem = name.replace(/\.py$/i, '');
+        const t0 = Date.now();
+        const result = await runHypiumModule(pythonCmd, projDir, moduleStem, 10 * 60_000);
+        return {
+            ok: true,
+            status: result.status,
+            durationMs: Date.now() - t0,
+            log: `设备 ${targets[0]} · python main.py ${moduleStem}\n${result.log}`,
+            reportDir: result.reportDir,
+        };
+    }, { permission: 'exec:run' });
     // 单条用例生成并绑定 Python/Hypium 脚本（行内「转脚本」按钮）
     route('POST', '/cases/:id/script', async ({ params }) => {
         const id = Number(params.id);

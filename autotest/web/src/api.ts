@@ -213,6 +213,10 @@ export const api = {
     req<{ ok: boolean }>(`${API_BASE}/repos/${id}/file?path=${encodeURIComponent(name)}&root=scripts`, { method: 'DELETE' }),
   saveScriptFile: (id: number, name: string, content: string) =>
     req<{ ok: boolean; saved: string; size: number }>(`${API_BASE}/repos/${id}/file`, { method: 'PUT', body: JSON.stringify({ name, content }) }),
+  runScript: (id: number, name: string) =>
+    req<{ ok: boolean; status: 'passed' | 'failed'; durationMs: number; log: string; reportDir?: string }>(
+      `${API_BASE}/scripts/run`, { method: 'POST', body: JSON.stringify({ libraryId: id, name }) },
+    ),
 
   // 真机遍历报告（含操作轨迹 ops）
   exploreReports: (libraryId: number) =>

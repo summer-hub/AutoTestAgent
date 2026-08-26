@@ -97,9 +97,17 @@ export default function SettingsPage() {
 
   const save = async () => {
     setSaving(true); setMsg(''); setError('');
+    const prevWorkspace = String(values['app.workspace'] ?? '').trim();
     try {
       for (const [key, value] of Object.entries(values)) {
         await api.updateSetting(key, value);
+      }
+      const newWorkspace = String(values['app.workspace'] ?? '').trim();
+      if (newWorkspace !== prevWorkspace) {
+        // 工作区变更：仓库/脚本/遍历报告全部换目录 → 整页刷新让所有页面立即读取新目录数据
+        setMsg('配置已保存 · 检测到工作区路径变更，正在刷新全平台数据…');
+        setTimeout(() => window.location.reload(), 900);
+        return;
       }
       setMsg('配置已保存，立即生效');
       load();

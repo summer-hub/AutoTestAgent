@@ -36,8 +36,14 @@ export default function HomePage() {
 
   return (
     <>
-      <div className="page-title">首页</div>
-      <div className="page-desc">鸿蒙三方库自动化测试平台工作台 — AI 驱动的用例生成 · 执行 · 归因分析</div>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+        <div>
+          <div className="page-title" style={{ marginBottom: 0 }}>首页</div>
+          <div className="page-desc">鸿蒙三方库自动化测试平台工作台 — AI 驱动的用例生成 · 执行 · 归因分析</div>
+        </div>
+        <div style={{ flex: 1 }} />
+        <button className="btn" title="刷新整个平台的所有页面数据（仓库/脚本/用例/设备/任务）" onClick={() => window.location.reload()}>🔄 刷新全平台</button>
+      </div>
 
       {error && <div className="error">⚠️ {error}</div>}
 

@@ -71,6 +71,9 @@ export default function ScriptsPage() {
   const [editorName, setEditorName] = useState('');
   const [editorContent, setEditorContent] = useState('');
   const [editorBusy, setEditorBusy] = useState(false);
+  // 单脚本真机执行
+  const [runningName, setRunningName] = useState('');
+  const [runResult, setRunResult] = useState<null | { name: string; status: 'passed' | 'failed'; durationMs: number; log: string }>(null);
 
   const loadLibs = useCallback(() => {
     api.scripts()
@@ -197,13 +200,26 @@ export default function ScriptsPage() {
     }
   };
 
+  const runOne = async (f: RepoFileEntry): Promise<void> => {
+    if (curLib === null) return;
+    setRunningName(f.name);
+    setError('');
+    try {
+      const r = await api.runScript(curLib, f.name);
+      setRunResult({ name: f.name, status: r.status, durationMs: r.durationMs, log: r.log });
+    } catch (e) {
+      setError(String((e as Error).message));
+    } finally {
+      setRunningName('');
+    }
+  };
+
   const curName = curLib !== null ? libs.find((l) => l.id === curLib)?.name ?? '' : '';
 
   return (
     <>
       <div className="page-title">自动化脚本</div>
-      <div className="page-title">自动化脚本</div>
-      <div className="page-desc">Python/Hypium 自动化脚本（对齐 HypiumProjectTemplate）· 执行计划直接运行并解析 xdevice 报告 · 可新建 / 编辑 / 删除</div>
+      <div className="page-desc">Python/Hypium 自动化脚本（对齐 HypiumProjectTemplate）· 可单脚本真机执行 · 新建 / 编辑 / 删除</div>
 
       {error && <div className="error">⚠️ {error}</div>}
 
@@ -288,6 +304,10 @@ export default function ScriptsPage() {
                       <td className="muted">{fmtSize(s.size)}</td>
                       <td className="muted">{new Date(s.mtime).toLocaleString('zh-CN', { hour12: false })}</td>
                       <td>
+                        <span className="link" onClick={() => void runOne(s)} title="真机执行该脚本（需设备在线 + Python/xdevice）">
+                          {runningName === s.name ? '执行中…' : '▶ 执行'}
+                        </span>
+                        <span style={{ margin: '0 6px', color: 'var(--text3)' }}>·</span>
                         <span className="link" onClick={() => void openFile(s)}>查看</span>
                         <span style={{ margin: '0 6px', color: 'var(--text3)' }}>·</span>
                         <span className="link" onClick={() => void openEdit(s)}>编辑</span>
@@ -368,6 +388,26 @@ export default function ScriptsPage() {
                   {editorBusy ? '保存中…' : '保存脚本'}
                 </button>
               </div>
+            </div>
+          </div>
+        </div>
+      )}
+      {runResult && (
+        <div className="s-overlay show">
+          <div className="s-mask" onClick={() => setRunResult(null)} />
+          <div style={{ position: 'relative', zIndex: 1, width: 720, maxWidth: 'calc(100vw - 40px)', maxHeight: 'calc(100vh - 40px)', background: 'var(--panel)', border: '1px solid var(--border2)', borderRadius: 16, boxShadow: '0 24px 80px rgba(0,0,0,.55)', display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '14px 18px', borderBottom: '1px solid var(--border)' }}>
+              <span style={{ fontSize: 15, fontWeight: 600 }}>▶ 执行结果 · {runResult.name}</span>
+              <span className={`tag ${runResult.status === 'passed' ? 'green' : 'red'}`}>{runResult.status === 'passed' ? '✓ 通过' : '✗ 失败'}</span>
+              <span className="muted" style={{ fontSize: 11.5 }}>{(runResult.durationMs / 1000).toFixed(1)}s</span>
+              <div style={{ flex: 1 }} />
+              <button className="s-header x" onClick={() => setRunResult(null)} style={{ width: 28, height: 28, borderRadius: 28, border: 'none', background: 'none', color: 'var(--text2)', cursor: 'pointer', fontSize: 14 }}>✕</button>
+            </div>
+            <div style={{ flex: 1, minHeight: 0, overflowY: 'auto', padding: 14 }}>
+              <pre className="mono" style={{ fontSize: 12, lineHeight: 1.7, whiteSpace: 'pre-wrap', wordBreak: 'break-word', color: runResult.status === 'passed' ? 'var(--text2)' : 'var(--red)' }}>{runResult.log}</pre>
+            </div>
+            <div style={{ display: 'flex', justifyContent: 'flex-end', padding: '10px 18px', borderTop: '1px solid var(--border)' }}>
+              <button className="btn primary" onClick={() => setRunResult(null)}>关闭</button>
             </div>
           </div>
         </div>
