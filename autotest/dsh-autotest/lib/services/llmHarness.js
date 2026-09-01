@@ -73,6 +73,8 @@ export function makeLlm(ctx) {
                 : unique[0];
         let lastErr = new Error('LLM 返回为空');
         const t0 = Date.now();
+        let tokensIn = 0;
+        let tokensOut = 0;
         for (let attempt = 0; attempt < 3; attempt++) {
             try {
                 console.log(`[dsh-autotest] llm call: provider=${preferred.provider} model=${preferred.model} attempt=${attempt + 1}`);
@@ -88,12 +90,18 @@ export function makeLlm(ctx) {
                 })) {
                     if (chunk.type === 'text-delta')
                         text += chunk.text;
+                    if (chunk.type === 'usage') {
+                        tokensIn += chunk.usage.inputTokens ?? 0;
+                        tokensOut += chunk.usage.outputTokens ?? 0;
+                    }
                     if (chunk.type === 'finish' && chunk.reason.kind === 'error') {
                         throw new Error(chunk.reason.failure?.message ?? 'LLM 调用失败');
                     }
                 }
                 if (text.trim()) {
                     const latencyMs = Date.now() - t0;
+                    const toksIn = tokensIn || undefined;
+                    const toksOut = tokensOut || undefined;
                     traceHook?.({
                         taskId: input.meta?.taskId,
                         spanId: input.meta?.spanId,
@@ -102,11 +110,13 @@ export function makeLlm(ctx) {
                         model: preferred.model,
                         latencyMs,
                         attempts: attempt + 1,
+                        tokensIn: toksIn,
+                        tokensOut: toksOut,
                         promptChars: (input.system?.length ?? 0) + input.user.length,
                         outputChars: text.length,
                         status: 'ok',
                     });
-                    return { text, provider: preferred.provider, model: preferred.model, latencyMs, attempts: attempt + 1, taskId: input.meta?.taskId, spanId: input.meta?.spanId, kind: input.meta?.kind };
+                    return { text, provider: preferred.provider, model: preferred.model, latencyMs, attempts: attempt + 1, tokensIn: toksIn, tokensOut: toksOut, taskId: input.meta?.taskId, spanId: input.meta?.spanId, kind: input.meta?.kind };
                 }
                 lastErr = new Error('LLM 返回为空');
             }
@@ -139,6 +149,38 @@ export function writeRawPayload(text) {
     }
     catch { /* 落盘失败不阻塞 */ }
 }
+/** JSON 指令后缀（严格输出，配合 llmJson 的解析失败回灌修复）。 */
+function jsonDirective(prompt) {
+    return `${prompt}\n\n严格只输出一个 JSON（对象或数组），不要 markdown 围栏、不要前后解释、不要注释。首个非空白字符必须是 { 或 [。`;
+}
+/**
+ * 结构化输出三保险：严格 JSON 指令 → extractJson 容错 → 解析失败把错误回灌 LLM 修复一次。
+ * 相比裸 extractJson，二次回灌让模型看到"哪里解析失败"，显著提升结构可靠性。
+ */
+export async function llmJson(llm, input, opts = {}) {
+    const retries = Math.max(0, Math.min(2, opts.retries ?? 1));
+    let first = null;
+    for (let i = 0; i <= retries; i++) {
+        const attemptInput = i === 0
+            ? { ...input, user: jsonDirective(input.user) }
+            : {
+                ...input,
+                user: `上次模型输出不是合法 JSON，解析失败原因：${(firstErr?.message ?? '未知').slice(0, 300)}\n\n请只输出修复后的纯 JSON（对象或数组），不要任何解释、围栏、注释。\n\n原始任务：${input.user.slice(0, 3000)}`,
+            };
+        const res = await llm(attemptInput);
+        first = res;
+        try {
+            const data = extractJson(res.text);
+            return { data, text: res.text, provider: res.provider, model: res.model };
+        }
+        catch (e) {
+            firstErr = e instanceof Error ? e : new Error(String(e));
+            writeRawPayload(res.text);
+        }
+    }
+    throw new Error(`JSON 解析失败（已回灌修复 ${retries} 次）：${firstErr?.message ?? '未知'}`);
+}
+let firstErr = null;
 /** 从 LLM 输出中提取 JSON（容忍 ```json 围栏与前后杂文） */
 export function extractJson(text) {
     const raw = text.trim();

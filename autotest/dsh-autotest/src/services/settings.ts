@@ -9,6 +9,7 @@ export const SETTING_DEFAULTS: Record<string, unknown> = {
   'agent.maxCasesPerTask': 20,
   'agent.caseReviewRounds': 2,     // 用例生成自审进化轮次上限（0=关闭自审）
   'agent.genPagesPerShard': 2,     // 用例生成分片大小（每次 LLM 调用处理的页面数，1-6；越小越不易输出截断）
+  'agent.genShardConcurrency': 3,  // 分片生成并发数（限流内并行，1-4）
   'agent.dryRunEnabled': true,     // 生成后是否在设备上 dry-run 并把失败证据回灌优化（执行器为真）
   'agent.dryRunMaxCases': 5,       // 单次任务最多 dry-run 的用例数（真机执行慢，需限流）
   'agent.dryRunPerStepTimeoutMs': 15000,

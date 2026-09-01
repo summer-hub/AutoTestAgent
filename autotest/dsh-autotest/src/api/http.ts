@@ -25,6 +25,7 @@ import { registerAuthRoutes, requireAuth, type HandlerArgs, type RouteFn } from 
 import { AuthError, hasPermission } from '../auth/service.js';
 import { type ExploreResult } from '../services/uiExplorer.js';
 import { hypiumProjectDir, writeCaseScript, ensureHypiumProject } from '../services/hypiumGen.js';
+import { listEvents } from '../services/events.js';
 import { detectPython, runHypiumModule } from '../services/hypiumRunner.js';
 
 // ---------- mini router ----------
@@ -696,9 +697,10 @@ function defineRoutes(llm: LlmCall): void {
       update_cases: '更新测试用例', to_script: '用例转自动化脚本',
     };
     const title = b.title ?? titleByType[b.type] ?? b.type;
-    const res = await db.prepare(`INSERT INTO tasks (task_no, type, title, library_id, input, trace, status, progress, created_at, updated_at)
-      VALUES (?, ?, ?, ?, ?, '[]', 'pending', 0, ?, ?)`).run(
-      taskNo, b.type, title, b.libraryId ?? null, b.input ?? '', t, t,
+    const traceId = `tr-${Date.now()}-${Math.floor(Math.random() * 10000)}`;
+    const res = await db.prepare(`INSERT INTO tasks (task_no, type, title, library_id, input, trace, trace_id, status, progress, created_at, updated_at)
+      VALUES (?, ?, ?, ?, ?, '[]', ?, 'pending', 0, ?, ?)`).run(
+      taskNo, b.type, title, b.libraryId ?? null, b.input ?? '', traceId, t, t,
     );
     const id = Number(res.lastInsertRowid);
     setImmediate(() => { runTask(id, llm).catch(() => {}); });
@@ -1332,6 +1334,14 @@ ${(row.logs ?? '').slice(0, 4000) || '（无）'}
       throw Object.assign(new Error(`报告解析失败：${(e as Error).message}`), { statusCode: 500 });
     }
   }, { permission: 'case:read' });
+
+  // ---- 链路追踪事件查询（agent_events，按任务/类型过滤，全链 traceId 观测） ----
+  route('GET', '/events', async ({ query }) => {
+    const taskId = Number(query.get('taskId')) || undefined;
+    const kind = query.get('kind') ?? undefined;
+    const limit = Math.min(500, Number(query.get('limit')) || 100);
+    return { ok: true, rows: await listEvents({ taskId, kind, limit }) };
+  }, { permission: 'task:read' });
 }
 
 // ---------- mappers / helpers ----------
@@ -1377,7 +1387,7 @@ function mapTask(row: Record<string, unknown>) {
   return {
     id: row.id, taskNo: row.task_no, type: row.type, title: row.title, libraryId: row.library_id,
     input: row.input ?? '', trace: safeJsonArray(row.trace), status: row.status, progress: row.progress, resultSummary: row.result_summary,
-    error: row.error, createdAt: row.created_at, updatedAt: row.updated_at,
+    error: row.error, traceId: row.trace_id ?? '', createdAt: row.created_at, updatedAt: row.updated_at,
   };
 }
 function mapDevice(row: Record<string, unknown>) {

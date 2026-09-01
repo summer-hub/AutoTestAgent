@@ -71,6 +71,16 @@ export async function dryRunCase(caseNo, caseName, steps, serial, opts = {}) {
             continue;
         }
         const r = await runStepWithTimeout(serial, desc, perStep);
+        // 全链 traceId：dry-run 每步一条事件（kind=dry_run_step），与任务/span 关联
+        if (opts.trace) {
+            void import('./events.js').then(({ appendEvent }) => appendEvent({
+                taskId: opts.trace?.taskId ?? null,
+                spanId: opts.trace?.spanId ?? '',
+                kind: 'dry_run_step',
+                status: r.ok ? 'ok' : 'error',
+                detail: `${caseNo} · 步骤${i + 1}「${desc}」→ ${r.ok ? '通过' : `失败：${r.log}`}`.slice(0, 500),
+            }));
+        }
         if (r.ok) {
             streak = 0;
             out.push({ seq: i + 1, desc, status: 'passed', log: r.log, durationMs: r.durationMs });

@@ -246,19 +246,22 @@ export async function ensureReady(): Promise<void> {
       for (const [table, col] of [
         ['libraries', 'package_name'], ['libraries', 'main_ability'],
         ['plans', 'script_mode'], ['plans', 'error'], ['plans', 'progress'], ['plans', 'progress_note'],
+        ['tasks', 'trace_id'], ['executions', 'trace_id'],
       ] as Array<[string, string]>) {
         try {
           const cols = await query(`PRAGMA table_info(${table})`, []) as Array<{ name: string }>;
           if (Array.isArray(cols) && !cols.some((c) => c.name === col)) {
             const ddl: Record<string, string> = {
-              package_name: "ALTER TABLE libraries ADD COLUMN package_name TEXT NOT NULL DEFAULT ''",
-              main_ability: "ALTER TABLE libraries ADD COLUMN main_ability TEXT NOT NULL DEFAULT ''",
-              script_mode: "ALTER TABLE plans ADD COLUMN script_mode TEXT NOT NULL DEFAULT ''",
-              error: "ALTER TABLE plans ADD COLUMN error TEXT NOT NULL DEFAULT ''",
-              progress: 'ALTER TABLE plans ADD COLUMN progress INTEGER NOT NULL DEFAULT 0',
-              progress_note: "ALTER TABLE plans ADD COLUMN progress_note TEXT NOT NULL DEFAULT ''",
+              'libraries:package_name': "ALTER TABLE libraries ADD COLUMN package_name TEXT NOT NULL DEFAULT ''",
+              'libraries:main_ability': "ALTER TABLE libraries ADD COLUMN main_ability TEXT NOT NULL DEFAULT ''",
+              'plans:script_mode': "ALTER TABLE plans ADD COLUMN script_mode TEXT NOT NULL DEFAULT ''",
+              'plans:error': "ALTER TABLE plans ADD COLUMN error TEXT NOT NULL DEFAULT ''",
+              'plans:progress': 'ALTER TABLE plans ADD COLUMN progress INTEGER NOT NULL DEFAULT 0',
+              'plans:progress_note': "ALTER TABLE plans ADD COLUMN progress_note TEXT NOT NULL DEFAULT ''",
+              'tasks:trace_id': "ALTER TABLE tasks ADD COLUMN trace_id TEXT NOT NULL DEFAULT ''",
+              'executions:trace_id': "ALTER TABLE executions ADD COLUMN trace_id TEXT NOT NULL DEFAULT ''",
             };
-            await query(ddl[col], []);
+            await query(ddl[`${table}:${col}`], []);
           }
         } catch { /* 已存在则跳过 */ }
       }
@@ -293,6 +296,8 @@ export async function ensureReady(): Promise<void> {
         ['plans', 'error', "ALTER TABLE plans ADD COLUMN error VARCHAR(500) NOT NULL DEFAULT ''"],
         ['plans', 'progress', 'ALTER TABLE plans ADD COLUMN progress INT NOT NULL DEFAULT 0'],
         ['plans', 'progress_note', "ALTER TABLE plans ADD COLUMN progress_note VARCHAR(300) NOT NULL DEFAULT ''"],
+        ['tasks', 'trace_id', "ALTER TABLE tasks ADD COLUMN trace_id VARCHAR(64) NOT NULL DEFAULT ''"],
+        ['executions', 'trace_id', "ALTER TABLE executions ADD COLUMN trace_id VARCHAR(64) NOT NULL DEFAULT ''"],
       ] as Array<[string, string, string]>) {
         try {
           await mysqlPool().query(ddl);

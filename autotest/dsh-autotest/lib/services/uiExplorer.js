@@ -110,6 +110,15 @@ export async function exploreApp(serial, packageName, opts = {}) {
         ops.push({ at: new Date().toISOString().slice(11, 23), action, detail });
         if (ops.length > 1500)
             ops.splice(0, ops.length - 1500);
+        // 追加式事件埋点（全链 traceId：遍历 op 属于任务/span）
+        if (opts.trace) {
+            void import('./events.js').then(({ appendEvent }) => appendEvent({
+                taskId: opts.trace?.taskId ?? null,
+                spanId: opts.trace?.spanId ?? '',
+                kind: 'explore_op',
+                detail: `${action}${detail ? ` · ${detail}` : ''}`.slice(0, 500),
+            }));
+        }
     };
     const restartApp = async () => {
         op('强杀应用', packageName);

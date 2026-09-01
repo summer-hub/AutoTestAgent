@@ -48,6 +48,8 @@ export function installLlmTracing(): void {
       provider: e.provider,
       model: e.model,
       latencyMs: e.latencyMs,
+      tokensIn: e.tokensIn ?? null,
+      tokensOut: e.tokensOut ?? null,
       promptChars: e.promptChars,
       outputChars: e.outputChars,
       error: e.error,

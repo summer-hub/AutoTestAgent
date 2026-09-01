@@ -44,6 +44,11 @@ export interface ExploreOpts {
     maxSwipePerPage?: number;
     launchAbility?: string;
     statusBarFilter?: boolean;
+    /** 链路追踪上下文：把遍历 op 写入 agent_events（kind=explore_op） */
+    trace?: {
+        taskId?: number;
+        spanId?: string;
+    };
 }
 /**
  * BFS 遍历：从首页出发，逐个点击可交互控件进入子页面，keyBack 返回；去重页面签名。

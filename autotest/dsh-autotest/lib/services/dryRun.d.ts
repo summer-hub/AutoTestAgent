@@ -26,6 +26,10 @@ export declare function dryRunCase(caseNo: string, caseName: string, steps: stri
     launch?: string;
     perStepTimeoutMs?: number;
     failStreakStop?: number;
+    trace?: {
+        taskId?: number;
+        spanId?: string;
+    };
 }): Promise<DryRunResult>;
 /** 汇总多条用例的 dry-run 结果，产出一次性回灌给 LLM 的修复简报。 */
 export declare function mergeFailureBriefs(results: Array<{

@@ -38,6 +38,7 @@ export async function executePlan(planId: number): Promise<void> {
   const plan = await db.prepare('SELECT * FROM plans WHERE id = ?').get<PlanRow>(planId);
   if (!plan) return;
   const t = now();
+  const planTraceId = `tr-plan-${planId}-${Date.now()}`;
   const setProgress = async (pct: number, note: string): Promise<void> => {
     await db.prepare(`UPDATE plans SET progress = ?, progress_note = ?, updated_at = ? WHERE id = ?`)
       .run(Math.max(0, Math.min(100, Math.round(pct))), note.slice(0, 280), now(), planId);
@@ -99,8 +100,8 @@ export async function executePlan(planId: number): Promise<void> {
   const failPolicy = plan.fail_policy || 'continue';
   const retryTimes = failPolicy === 'retry_twice' ? 2 : 0;
 
-  const insExec = db.prepare(`INSERT INTO executions (plan_id, case_id, library_id, device_id, status, steps, thinking, logs, started_at, finished_at)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`);
+  const insExec = db.prepare(`INSERT INTO executions (plan_id, case_id, library_id, device_id, status, steps, trace_id, thinking, logs, started_at, finished_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`);
 
   interface Item { row: CaseRow; scriptPath: string | null; moduleStem: string; projDir: string }
   const groups = new Map<string, Item[]>();
@@ -133,6 +134,7 @@ export async function executePlan(planId: number): Promise<void> {
       await insExec.run(
         planId, item.row.id, item.row.library_id, deviceId, 'skipped',
         JSON.stringify([{ seq: 1, desc: '未绑定自动化脚本，跳过执行', status: 'skipped', durationMs: 0 }]),
+        planTraceId,
         '该用例尚未绑定自动化脚本（Python/Hypium）。请在任务页使用「用例转自动化脚本」生成，或在自动化脚本页手工新建 <用例编号>.py 后重试。',
         `[${t}] 设备 ${deviceSerial} · 用例 ${item.row.case_no} 跳过（未绑定脚本）`, t, now(),
       );
@@ -158,6 +160,7 @@ export async function executePlan(planId: number): Promise<void> {
       await insExec.run(
         planId, item.row.id, item.row.library_id, deviceId, result.status,
         JSON.stringify([{ seq: 1, desc: `运行 Hypium 脚本 ${item.moduleStem}.py${attempts > 1 ? `（重试 ${attempts - 1} 次）` : ''}`, status: result.status, durationMs }]),
+        planTraceId,
         realThinking(item.row, result.status, result.log),
         [`[${now()}] 设备 ${deviceSerial} · ${item.row.case_no} · python main.py ${item.moduleStem}`, result.log].join('\n'),
         t, now(),
@@ -171,6 +174,7 @@ export async function executePlan(planId: number): Promise<void> {
           await insExec.run(
             planId, rest.row.id, rest.row.library_id, deviceId, 'skipped',
             JSON.stringify([{ seq: 1, desc: '整库失败中止，跳过执行', status: 'skipped', durationMs: 0 }]),
+            planTraceId,
             '按失败策略 abort_library：该库已有失败用例，后续用例跳过。',
             `[${t}] 设备 ${deviceSerial} · 用例 ${rest.row.case_no} 跳过（整库中止）`, t, now(),
           );

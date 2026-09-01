@@ -8,7 +8,7 @@ import path from 'node:path';
 import { getDb, now } from '../db/connection.js';
 import { ensureLibraryByRepoUrl, inspectRepo, pullRepo, recentChanges, refreshPackageInfo, updateRepo, workspaceDir, workspaceNotice } from './gitRepo.js';
 import { getSetting } from './settings.js';
-import { extractJson } from './llmHarness.js';
+import { llmJson } from './llmHarness.js';
 import { exploreApp, ensureDeviceOnline, saveExploreReport } from './uiExplorer.js';
 import { hypiumProjectDir, writeCaseScript } from './hypiumGen.js';
 import { dryRunCase, mergeFailureBriefs } from './dryRun.js';
@@ -55,6 +55,14 @@ function latestExploreResult(libName) {
     catch {
         return null;
     }
+}
+/** 生成 LLM 调用 span 元数据：taskId + spanId（traceId 派生，贯穿任务 → LLM 调用）。 */
+function spanMeta(task, kind) {
+    return {
+        taskId: task.id,
+        spanId: `${task.trace_id || task.id}:${Date.now()}-${Math.floor(Math.random() * 10000)}`,
+        kind,
+    };
 }
 /** 往任务的 AI 执行轨迹追加一条记录（tasks.trace JSON 数组）。 */
 async function traceTask(taskId, title, detail = '') {
@@ -294,8 +302,7 @@ ${STEP_CONTRACT}
 3. pagePath 必须原样保留；steps 可为空数组（表示整条无法修复）。
 只输出一个 JSON 数组，每项：{ index, name, precondition, steps[], expected, pagePath }，不要解释。`;
     try {
-        const { text } = await llm({ system: sys, user: JSON.stringify(payload, null, 1), maxTokens: 4000, meta: { taskId, kind: 'repair_drafts' } });
-        const data = extractJson(text);
+        const { data } = await llmJson(llm, { system: sys, user: JSON.stringify(payload, null, 1), maxTokens: 4000, meta: { taskId, kind: 'repair_drafts' } });
         const rawArr = Array.isArray(data) ? data : [];
         const norm = normalizeDraftCases(rawArr);
         const byIndex = new Map();
@@ -366,8 +373,7 @@ ${cur.map((c, i) => `${i + 1}. ${JSON.stringify({ name: c.name, precondition: c.
 历史教训（修订时务必规避）：
 ${loadLessons(libName).map((l, i) => `${i + 1}. ${l}`).join('\n') || '（暂无）'}`;
         try {
-            const { text } = await llm({ system: sys, user, maxTokens: 6000, meta: { taskId, kind: 'review_refine' } });
-            const data = extractJson(text);
+            const { data } = await llmJson(llm, { system: sys, user, maxTokens: 6000, meta: { taskId, kind: 'review_refine' } });
             const issues = Array.isArray(data.issues) ? data.issues.map(String).map((s) => s.trim()).filter(Boolean).slice(0, 10) : [];
             const passed = data.pass === true || issues.length === 0;
             // 增量合并：只按 index 替换对应条目
@@ -461,7 +467,8 @@ ${STEP_CONTRACT}
 只输出一个 JSON 数组，每项：{ caseNo, name, precondition, steps[], expected }，不要解释。`;
     let parsed = null;
     try {
-        parsed = extractJson((await llm({ system: sys, user: brief, maxTokens: 4000, meta: { taskId, kind: 'repair_dry_run' } })).text);
+        const { data } = await llmJson(llm, { system: sys, user: brief, maxTokens: 4000, meta: { taskId, kind: 'repair_dry_run' } });
+        parsed = data;
     }
     catch (e) {
         await traceTask(taskId, 'dry-run 回灌修订失败', e.message.slice(0, 200));
@@ -542,6 +549,7 @@ async function dryRunAndRepair(taskId, llm, lib, created, packageName) {
                 launch: packageName || lib.name,
                 perStepTimeoutMs: perStep,
                 failStreakStop: streakStop,
+                trace: { taskId, spanId: `${taskId}:dryrun-${Date.now()}-${Math.floor(Math.random() * 10000)}` },
             });
             if (r.passed)
                 passed++;
@@ -639,11 +647,11 @@ ${loadLessons(lib.name).map((l, i) => `${i + 1}. ${l}`).join('\n') || '（暂无
     let lastErr = null;
     for (let attempt = 0; attempt < 2 && !parsed; attempt++) {
         try {
-            const { text, provider, model } = await llm(attempt === 0
-                ? { system: sys, user, maxTokens: 6000, meta: { taskId: task.id, kind: 'write_cases' } }
-                : { system: sysStrict, user, maxTokens: 6000, meta: { taskId: task.id, kind: 'write_cases' } });
+            const { data, text, provider, model } = await llmJson(llm, attempt === 0
+                ? { system: sys, user, maxTokens: 6000, meta: spanMeta(task, 'write_cases') }
+                : { system: sysStrict, user, maxTokens: 6000, meta: spanMeta(task, 'write_cases') });
             await traceTask(task.id, `AI 返回（${text.length} 字符 · ${provider}/${model}）`, text.slice(0, 600));
-            parsed = extractJson(text);
+            parsed = data;
         }
         catch (e) {
             lastErr = e;
@@ -699,7 +707,7 @@ async function exploreCases(task, lib, llm) {
     const bundle = pkg.split('/')[0] || launchAbility.split('/')[0] || lib.name;
     await traceTask(task.id, '真机遍历开始', `设备 ${serial} · bundle=${bundle} · 入口=${launchAbility} · 参数读系统配置 explore.*`);
     // 2. 真机 BFS 遍历（含双向滚动探索、状态栏过滤）
-    const result = await exploreApp(serial, bundle, { launchAbility });
+    const result = await exploreApp(serial, bundle, { launchAbility, trace: spanMeta(task, 'explore_app') });
     saveExploreReport(lib.name, result);
     await refreshPackageInfo({ id: lib.id, name: lib.name });
     await getDb().prepare('UPDATE tasks SET progress = 40, updated_at = ? WHERE id = ?').run(now(), task.id);
@@ -729,7 +737,6 @@ async function exploreCases(task, lib, llm) {
 4. 来源固定为 AI 生成；每条用例必须带 pagePath 字段（值 = 该用例所属页面的 path 原文）。`;
     const tpl = await promptBundle('用例生成', CASE_GEN_FALLBACK);
     const sys = `${tpl.content}${tpl.skill ? `\n\n【绑定技能】\n${tpl.skill}` : ''}${exploreAddendum}${STEP_CONTRACT}${EVIDENCE_RULE}`;
-    const sysStrict = `${sys}\n\n严格只输出一个 JSON 数组（首字符必须是 [），每项：{ name, precondition, steps[], expected, pagePath }，不要围栏、不要解释。`;
     // 分片：agent.genPagesPerShard（默认 2 页/片）；每页配额按丰富度分配（富页面 2 条，普通 1 条）
     const shardSize = Math.max(1, Math.min(6, Number(getSetting('agent.genPagesPerShard', 2)) || 2));
     const shards = [];
@@ -738,7 +745,8 @@ async function exploreCases(task, lib, llm) {
     const lessonsText = loadLessons(lib.name).map((l, i) => `${i + 1}. ${l}`).join('\n') || '（暂无）';
     const allRows = [];
     let shardFail = 0;
-    for (let si = 0; si < shards.length; si++) {
+    // 单片处理：一次 llmJson（内部含严格 JSON 指令 + 解析失败回灌修复），失败返回 fail
+    const processShard = async (si) => {
         const shard = shards[si];
         const quota = shard.map((p) => (p.controls.length > 8 || p.scrolls > 0 ? 2 : 1));
         const quotaTotal = quota.reduce((a, b) => a + b, 0);
@@ -750,35 +758,52 @@ ${JSON.stringify(shard)}
 每条用例必须带 pagePath 字段（值 = 所属页面的 path 原文）。
 历史教训（生成时务必规避）：
 ${lessonsText}`;
-        let parsed = null;
-        let lastErr = null;
-        for (let attempt = 0; attempt < 2 && !parsed; attempt++) {
-            try {
-                const { text, provider, model } = await llm({ system: attempt === 0 ? sys : sysStrict, user, maxTokens: 6000, meta: { taskId: task.id, kind: 'explore_cases' } });
-                await traceTask(task.id, `AI 返回 · 第 ${si + 1}/${shards.length} 批（${text.length} 字符 · ${provider}/${model}）`, text.slice(0, 600));
-                parsed = extractJson(text);
+        try {
+            const { data, text, provider, model } = await llmJson(llm, { system: sys, user, maxTokens: 6000, meta: spanMeta(task, 'explore_cases') });
+            await traceTask(task.id, `AI 返回 · 第 ${si + 1}/${shards.length} 批（${text.length} 字符 · ${provider}/${model}）`, text.slice(0, 600));
+            const drafts = normalizeDraftCases(data);
+            // pagePath 归属兜底：模型漏填/写偏时按批次上下文修正（单页批直接归属；多页批按末段路径匹配）
+            for (const d of drafts) {
+                if (!d.pagePath || !pagesByPath.has(d.pagePath)) {
+                    const lastSeg = d.pagePath?.split(' → ').pop();
+                    const hit = shard.length === 1 ? shard[0] : shard.find((p) => (lastSeg ? p.path.endsWith(lastSeg) : false));
+                    if (hit)
+                        d.pagePath = hit.path;
+                }
             }
-            catch (e) {
-                lastErr = e;
-            }
+            await getDb().prepare('UPDATE tasks SET progress = ?, updated_at = ? WHERE id = ?').run(40 + Math.round(((si + 1) / shards.length) * 25), now(), task.id);
+            return { si, drafts, fail: null };
         }
-        if (!parsed) {
+        catch (e) {
+            return { si, drafts: [], fail: e instanceof Error ? e.message : String(e) };
+        }
+    };
+    // 并发执行（限流 agent.genShardConcurrency，默认 3）
+    const genConcurrency = Math.max(1, Math.min(4, Number(getSetting('agent.genShardConcurrency', 3)) || 3));
+    const results = [];
+    for (let i = 0; i < shards.length; i += genConcurrency) {
+        const batch = Array.from({ length: Math.min(genConcurrency, shards.length - i) }, (_, k) => processShard(i + k));
+        results.push(...(await Promise.all(batch)));
+    }
+    // 失败片自动补跑一轮（首次失败多为偶发解析问题，补跑命中率高）
+    const failSis = results.filter((r) => r.fail).map((r) => r.si);
+    if (failSis.length > 0) {
+        await traceTask(task.id, '分片补跑', `${failSis.length}/${shards.length} 批首次失败，自动补跑一轮`);
+        const retried = await Promise.all(failSis.map((si) => processShard(si)));
+        for (const r of retried) {
+            const idx = results.findIndex((x) => x.si === r.si);
+            if (idx >= 0)
+                results[idx] = r;
+        }
+    }
+    for (const r of results) {
+        if (r.fail) {
             shardFail++;
-            await traceTask(task.id, `第 ${si + 1}/${shards.length} 批生成失败`, `${lastErr instanceof Error ? lastErr.message : String(lastErr)}（跳过该批，不影响其他批次）`);
-            continue;
+            await traceTask(task.id, `第 ${r.si + 1}/${shards.length} 批生成失败（补跑后仍失败）`, `${r.fail.slice(0, 200)}（跳过该批，不影响其他批次）`);
         }
-        const drafts = normalizeDraftCases(parsed);
-        // pagePath 归属兜底：模型漏填/写偏时按批次上下文修正（单页批直接归属；多页批按末段路径匹配）
-        for (const d of drafts) {
-            if (!d.pagePath || !pagesByPath.has(d.pagePath)) {
-                const lastSeg = d.pagePath?.split(' → ').pop();
-                const hit = shard.length === 1 ? shard[0] : shard.find((p) => (lastSeg ? p.path.endsWith(lastSeg) : false));
-                if (hit)
-                    d.pagePath = hit.path;
-            }
+        else {
+            allRows.push(...r.drafts);
         }
-        allRows.push(...drafts);
-        await getDb().prepare('UPDATE tasks SET progress = ?, updated_at = ? WHERE id = ?').run(40 + Math.round(((si + 1) / shards.length) * 25), now(), task.id);
     }
     if (allRows.length === 0)
         throw new Error(`分片生成全部失败（${shardFail}/${shards.length} 批）`);
@@ -869,10 +894,10 @@ ${uiCtx}
     let lastErr = null;
     for (let attempt = 0; attempt < 2 && !parsed; attempt++) {
         try {
-            const { text } = await llm(attempt === 0
-                ? { system: sys, user: sceneCtx, maxTokens: 3000, meta: { taskId: c.id, kind: 'optimize_case' } }
-                : { system: `${sys}\n\n严格只输出一个 JSON 对象（首字符必须是 {），不要围栏、不要解释。`, user: sceneCtx, maxTokens: 3000, meta: { taskId: c.id, kind: 'optimize_case' } });
-            parsed = extractJson(text);
+            const { data } = await llmJson(llm, attempt === 0
+                ? { system: sys, user: sceneCtx, maxTokens: 3000, meta: spanMeta(c, 'optimize_case') }
+                : { system: `${sys}\n\n严格只输出一个 JSON 对象（首字符必须是 {），不要围栏、不要解释。`, user: sceneCtx, maxTokens: 3000, meta: spanMeta(c, 'optimize_case') });
+            parsed = data;
         }
         catch (e) {
             lastErr = e;
@@ -933,11 +958,11 @@ ${changeCtx}
     let lastErr = null;
     for (let attempt = 0; attempt < 2 && !updates; attempt++) {
         try {
-            const { text, provider, model } = await llm(attempt === 0
-                ? { system: sys, user, meta: { taskId: task.id, kind: 'update_cases' } }
-                : { system: sysCompactUpd, user: `三方库：${lib.name}（${lib.current_version}）\n${changeCtx}\n现有用例：${JSON.stringify(samples)}`, meta: { taskId: task.id, kind: 'update_cases' } });
+            const { data, text, provider, model } = await llmJson(llm, attempt === 0
+                ? { system: sys, user, meta: spanMeta(task, 'update_cases') }
+                : { system: sysCompactUpd, user: `三方库：${lib.name}（${lib.current_version}）\n${changeCtx}\n现有用例：${JSON.stringify(samples)}`, meta: spanMeta(task, 'update_cases') });
             await traceTask(task.id, `AI 返回（${text.length} 字符 · ${provider}/${model}）`, text.slice(0, 600));
-            updates = extractJson(text);
+            updates = data;
         }
         catch (e) {
             lastErr = e;

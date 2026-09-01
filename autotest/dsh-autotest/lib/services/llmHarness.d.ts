@@ -17,11 +17,19 @@ export interface LlmResult {
     model: string;
     latencyMs: number;
     attempts: number;
+    tokensIn?: number;
+    tokensOut?: number;
     taskId?: number;
     spanId?: string;
     kind?: string;
 }
 export type LlmCall = (input: LlmTextInput) => Promise<LlmResult>;
+export interface LlmJsonResult<T> {
+    data: T;
+    text: string;
+    provider: string;
+    model: string;
+}
 /** 统一埋点钩子（agent_events 表写入由 events.ts 注入，避免循环依赖）。 */
 export interface LlmTraceEvent {
     taskId?: number;
@@ -31,6 +39,8 @@ export interface LlmTraceEvent {
     model: string;
     latencyMs: number;
     attempts: number;
+    tokensIn?: number;
+    tokensOut?: number;
     promptChars: number;
     outputChars: number;
     status: 'ok' | 'error';
@@ -52,5 +62,12 @@ export declare function readDshDefaultModel(): {
 export declare function makeLlm(ctx: Context): LlmCall;
 /** 原始 LLM 输出落盘（extractJson 彻底失败时），路径跟随 workspace，不写死绝对路径。 */
 export declare function writeRawPayload(text: string): void;
+/**
+ * 结构化输出三保险：严格 JSON 指令 → extractJson 容错 → 解析失败把错误回灌 LLM 修复一次。
+ * 相比裸 extractJson，二次回灌让模型看到"哪里解析失败"，显著提升结构可靠性。
+ */
+export declare function llmJson<T>(llm: LlmCall, input: LlmTextInput, opts?: {
+    retries?: number;
+}): Promise<LlmJsonResult<T>>;
 /** 从 LLM 输出中提取 JSON（容忍 ```json 围栏与前后杂文） */
 export declare function extractJson<T>(text: string): T;
