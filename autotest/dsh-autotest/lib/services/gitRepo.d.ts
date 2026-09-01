@@ -40,6 +40,13 @@ export declare function recentChanges(lib: RepoLib): string[];
 export declare function repoDirFor(name: string): string;
 /** 自动化脚本落盘目录（工作区 scripts/<name>）。 */
 export declare function scriptsDirFor(name: string): string;
+/**
+ * 仓库 URL 规范化：剥离网页浏览路径段，得到可 clone 的仓库根地址。
+ *  - `https://host/owner/repo/tree/master/subdir` → `https://host/owner/repo.git`
+ *  - `https://host/owner/repo/blob/master/file.md` → `https://host/owner/repo.git`
+ *  - 仅对 gitcode/github/gitee/gitlab 等平台补 `.git`（ssh/本地路径不补）
+ */
+export declare function normalizeRepoUrl(url: string): string;
 /** 按仓库地址解析三方库：已存在（repo_url 匹配）则复用，否则自动创建。 */
 export declare function ensureLibraryByRepoUrl(url: string): Promise<RepoLib>;
 /** 解析仓库包名/主 Ability（app.json5 / module.json5）并回填 libraries 表。 */

@@ -4,6 +4,7 @@
 //  - LLM 不可用时降级为规则分析（保证无模型也能产出结果），
 //  - 全部结果写入 analyses 表（kind：pr_analysis / case_update_analysis / attribution）。
 import { getDb, now } from '../db/connection.js';
+import { normalizeRepoUrl } from './gitRepo.js';
 import { getSetting } from './settings.js';
 import { extractJson } from './llmHarness.js';
 import { execFileSync } from 'node:child_process';
@@ -30,7 +31,8 @@ async function fetchWithRetry(url, timeoutMs, retries = 2) {
 export function parseRepoPath(repoUrl) {
     if (!repoUrl)
         return null;
-    const m = repoUrl.match(/gitcode\.com\/([^/\s]+)\/([^/\s.]+?)(?:\.git)?\/?$/);
+    const u = normalizeRepoUrl(repoUrl);
+    const m = u.match(/gitcode\.com\/([^/\s]+)\/([^/\s.]+?)(?:\.git)?\/?$/);
     return m ? `${m[1]}/${m[2]}` : null;
 }
 /** 拉取仓库 PR 列表 + 每个 PR 的变更文件（并发拉取文件，失败不影响主体）。 */

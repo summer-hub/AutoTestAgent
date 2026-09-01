@@ -135,8 +135,27 @@ function hashCode(s) {
         h = (h * 31 + s.charCodeAt(i)) | 0;
     return Math.abs(h);
 }
+/**
+ * 仓库 URL 规范化：剥离网页浏览路径段，得到可 clone 的仓库根地址。
+ *  - `https://host/owner/repo/tree/master/subdir` → `https://host/owner/repo.git`
+ *  - `https://host/owner/repo/blob/master/file.md` → `https://host/owner/repo.git`
+ *  - 仅对 gitcode/github/gitee/gitlab 等平台补 `.git`（ssh/本地路径不补）
+ */
+export function normalizeRepoUrl(url) {
+    let u = String(url || '').trim();
+    if (!u)
+        return '';
+    u = u.replace(/\/tree\/[^/]+(?:\/[^?#]*)?$/, '');
+    u = u.replace(/\/blob\/[^/]+(?:\/[^?#]*)?$/, '');
+    u = u.replace(/[?#].*$/, '');
+    u = u.replace(/\/+$/, '');
+    if (!/\.git$/.test(u) && /(?:gitcode\.com|github\.com|gitee\.com|gitlab\.com)/i.test(u)) {
+        u = `${u}.git`;
+    }
+    return u;
+}
 function deriveName(url) {
-    const cleaned = url.trim().replace(/\/+$/, '').replace(/\.git$/, '');
+    const cleaned = normalizeRepoUrl(url).replace(/\.git$/, '');
     const seg = cleaned.split(/[/\\]/).filter(Boolean).pop() ?? '';
     const base = (seg || `repo-${hashCode(url) % 100000}`).replace(/[^\w.-]/g, '_');
     return base || 'repo';
@@ -146,16 +165,17 @@ export async function ensureLibraryByRepoUrl(url) {
     const db = getDb();
     const t = now();
     const trimmed = url.trim();
-    const existing = await db.prepare('SELECT * FROM libraries WHERE repo_url = ?').get(trimmed);
+    const normalized = normalizeRepoUrl(trimmed) || trimmed;
+    const existing = await db.prepare('SELECT * FROM libraries WHERE repo_url = ? OR repo_url = ?').get(normalized, trimmed);
     if (existing)
         return existing;
-    let name = deriveName(trimmed);
+    let name = deriveName(normalized);
     let n = 1;
     while (await db.prepare('SELECT id FROM libraries WHERE name = ?').get(name)) {
-        name = `${deriveName(trimmed)}-${++n}`;
+        name = `${deriveName(normalized)}-${++n}`;
     }
     const res = await db.prepare(`INSERT INTO libraries (name, repo_url, description, current_version, status, created_at, updated_at)
-    VALUES (?, ?, '由任务创建（拉取仓库代码）', 'v0.0.0', 'active', ?, ?)`).run(name, trimmed, t, t);
+    VALUES (?, ?, '由任务创建（拉取仓库代码）', 'v0.0.0', 'active', ?, ?)`).run(name, normalized, t, t);
     return (await db.prepare('SELECT * FROM libraries WHERE id = ?').get(Number(res.lastInsertRowid)));
 }
 async function describeVersion(dir, fallback) {
@@ -218,7 +238,7 @@ export async function pullRepo(lib) {
             }
         }
         fs.mkdirSync(path.dirname(dir), { recursive: true });
-        await runGit(['clone', lib.repo_url, dir]);
+        await runGit(['clone', normalizeRepoUrl(lib.repo_url) || lib.repo_url, dir]);
         action = 'clone';
     }
     const commit = await runGit(['rev-parse', 'HEAD'], dir);
