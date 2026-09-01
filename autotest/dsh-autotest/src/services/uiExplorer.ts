@@ -172,6 +172,9 @@ export async function exploreApp(
 
   // ---- 操作轨迹记录器：每个真机动作/判定都留痕，随报告落盘供 UI 查询 ----
   const ops: ExploredOp[] = [];
+  // 过滤目标 bundle：调用方传的可能是库名而非真实 bundle（如 json-schema vs com.openharmony.jsonschemavalidator），
+  // 首次 dump 识别到真实 bundleName 后升级，否则 BFS 会把目标应用页误判为「非目标」而全部跳过
+  let effectiveBundle = packageName;
   const op = (action: string, detail?: string): void => {
     ops.push({ at: new Date().toISOString().slice(11, 23), action, detail });
     if (ops.length > 1500) ops.splice(0, ops.length - 1500);
@@ -188,10 +191,10 @@ export async function exploreApp(
     }
   };
   const restartApp = async (): Promise<void> => {
-    op('强杀应用', packageName);
-    try { await execShell(serial, ['aa', 'force-stop', packageName]); } catch { /* 忽略 */ }
+    op('强杀应用', effectiveBundle);
+    try { await execShell(serial, ['aa', 'force-stop', effectiveBundle]); } catch { /* 忽略 */ }
     op('启动应用', `${ability}（等待 3s）`);
-    await execShell(serial, launchArgs(ability));
+    await execShell(serial, launchArgs(effectiveBundle));
     await sleep(3000);
   };
 
@@ -203,12 +206,18 @@ export async function exploreApp(
     let xml = await uiDump(serial);
     const screen = screenSize(xml);
     let sw = 0;
+    // 首次识别真实 bundleName 并升级过滤目标（调用方传的可能是库名）
+    const initMeta = dumpMeta(xml);
+    if (initMeta.bundleName && effectiveBundle === packageName && initMeta.bundleName !== packageName) {
+      effectiveBundle = initMeta.bundleName;
+      op('识别真实 bundleName', effectiveBundle);
+    }
     // 若不在目标应用（回到桌面/系统页），重新启动应用
     for (let i = 0; i < 2; i++) {
       const meta = dumpMeta(xml);
-      if (!meta.bundleName || meta.bundleName === packageName) break;
+      if (!meta.bundleName || meta.bundleName === effectiveBundle) break;
       op('应用不在前台，重新拉起', meta.bundleName || 'unknown');
-      await execShell(serial, launchArgs(ability));
+      await execShell(serial, launchArgs(effectiveBundle));
       await sleep(2200);
       xml = await uiDump(serial);
     }
@@ -272,8 +281,8 @@ export async function exploreApp(
     const cur = queue.shift()!;
     const isLeaf = cur.depth >= maxDepth; // 叶子页只做全量采集，不再点击扩展
     op('重启回目标页', `${cur.path.join('→')}（深度 ${cur.depth}${isLeaf ? ' · 叶子仅采集' : ''}）`);
-    try { await execShell(serial, ['aa', 'force-stop', packageName]); } catch { /* 忽略 */ }
-    await execShell(serial, launchArgs(ability));
+    try { await execShell(serial, ['aa', 'force-stop', effectiveBundle]); } catch { /* 忽略 */ }
+    await execShell(serial, launchArgs(effectiveBundle));
     await sleep(3000);
     // 重放点击序列（目标控件可能在首屏之下，支持翻屏查找）
     for (const step of cur.path.filter((s) => s !== '首页')) {
@@ -287,7 +296,7 @@ export async function exploreApp(
     // 非目标应用页面（桌面/系统）→ 跳过本轮
     const xml = await uiDump(serial);
     const meta = dumpMeta(xml);
-    if (meta.bundleName && meta.bundleName !== packageName) continue;
+    if (meta.bundleName && meta.bundleName !== effectiveBundle) continue;
     const curPagePath = meta.pagePath;
 
     /**
@@ -303,8 +312,8 @@ export async function exploreApp(
 
     const replayToCur = async (): Promise<void> => {
       op('重启并重放路径', `回到 ${cur.path.join('→')} 视口${vp}`);
-      try { await execShell(serial, ['aa', 'force-stop', packageName]); } catch { /* 忽略 */ }
-      await execShell(serial, launchArgs(ability));
+      try { await execShell(serial, ['aa', 'force-stop', effectiveBundle]); } catch { /* 忽略 */ }
+      await execShell(serial, launchArgs(effectiveBundle));
       await sleep(2500);
       for (const step of cur.path.filter((s) => s !== '首页')) {
         const node = await findNodeScrollable(step);
@@ -348,7 +357,7 @@ export async function exploreApp(
           const sub = await dumpCurrent();
           const sig = pageSignature(sub.nodes);
           const pathKey = sub.meta.pagePath || sig;
-          const bundleOk = !sub.meta.bundleName || sub.meta.bundleName === packageName;
+          const bundleOk = !sub.meta.bundleName || sub.meta.bundleName === effectiveBundle;
           const entered = !visited.has(sig) && !visitedPaths.has(pathKey) && sub.nodes.length > 0 && bundleOk;
           op('进入判定', `点击「${label}」→ ${entered ? '进入新页面' : bundleOk ? '未进入（无导航/已访问）' : '离开目标应用'} · pagePath=${sub.meta.pagePath || '—'}`);
           console.log(`[explore] ${cur.path.join('→')} 点击「${label}」(视口${vp}) → entered=${entered} pagePath=${sub.meta.pagePath} bundle=${sub.meta.bundleName} nodes=${sub.nodes.length}`);
