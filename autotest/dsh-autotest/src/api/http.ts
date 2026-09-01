@@ -990,7 +990,7 @@ ${(row.logs ?? '').slice(0, 4000) || '（无）'}
 
 用户的追问：${question}`;
     try {
-      const answer = (await llm({ system, user, temperature: 0.3, maxTokens: 800 })).trim();
+      const answer = (await llm({ system, user, temperature: 0.3, maxTokens: 800 })).text.trim();
       return { answer };
     } catch {
       // LLM 不可用时降级为规则回答（与归因分析一致）

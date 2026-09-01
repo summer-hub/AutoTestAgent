@@ -47,9 +47,19 @@ function toControl(n) {
         h: n.bounds ? Math.max(1, n.bounds.y2 - n.bounds.y1) : 40,
     };
 }
-/** 页面签名：控件文本集合排序拼接（去重用）。 */
+/** 单控件结构指纹：type + 坐标分桶 + 文本。坐标按 100px 网格分桶，布局微变不抖动，Tab/动态页布局变化可区分。 */
+function controlFingerprint(n) {
+    const label = (n.text || n.desc).trim();
+    if (!label)
+        return '';
+    const type = n.type || '?';
+    const bx = Math.floor(n.x / 100);
+    const by = Math.floor(n.y / 100);
+    return `${type}:${bx},${by}:${label.slice(0, 24)}`;
+}
+/** 页面签名：控件结构指纹集合排序拼接（去重）。纯文本相同时，层级/布局不同仍判为新页面，避免 Tab/动态页漏页。 */
 function pageSignature(nodes) {
-    return [...new Set(nodes.map((n) => (n.text || n.desc).trim()).filter(Boolean))].sort().join('|');
+    return [...new Set(nodes.map(controlFingerprint).filter(Boolean))].sort().join('|');
 }
 /** 检测「超出屏幕」的大控件/动画区域（bounds 任一边越出屏幕即视为未完整可见）。 */
 function detectOutOfScreen(nodes, sw, sh) {

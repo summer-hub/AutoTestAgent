@@ -57,7 +57,15 @@ function sleep(ms: number): Promise<void> {
   return new Promise((r) => setTimeout(r, ms));
 }
 
-interface RawNode { text: string; desc: string; x: number; y: number; bundle?: string; bounds?: { x1: number; y1: number; x2: number; y2: number } }
+interface RawNode {
+  text: string;
+  desc: string;
+  x: number;
+  y: number;
+  type?: string;
+  bundle?: string;
+  bounds?: { x1: number; y1: number; x2: number; y2: number };
+}
 
 /** 状态栏/系统窗口默认 bundle 清单（场景板时钟、系统 UI 网速/电量等）。 */
 const DEFAULT_SYSTEM_BUNDLES = [
@@ -96,9 +104,19 @@ function toControl(n: RawNode): ExploredControl {
   };
 }
 
-/** 页面签名：控件文本集合排序拼接（去重用）。 */
+/** 单控件结构指纹：type + 坐标分桶 + 文本。坐标按 100px 网格分桶，布局微变不抖动，Tab/动态页布局变化可区分。 */
+function controlFingerprint(n: RawNode): string {
+  const label = (n.text || n.desc).trim();
+  if (!label) return '';
+  const type = n.type || '?';
+  const bx = Math.floor(n.x / 100);
+  const by = Math.floor(n.y / 100);
+  return `${type}:${bx},${by}:${label.slice(0, 24)}`;
+}
+
+/** 页面签名：控件结构指纹集合排序拼接（去重）。纯文本相同时，层级/布局不同仍判为新页面，避免 Tab/动态页漏页。 */
 function pageSignature(nodes: RawNode[]): string {
-  return [...new Set(nodes.map((n) => (n.text || n.desc).trim()).filter(Boolean))].sort().join('|');
+  return [...new Set(nodes.map(controlFingerprint).filter(Boolean))].sort().join('|');
 }
 
 /** 检测「超出屏幕」的大控件/动画区域（bounds 任一边越出屏幕即视为未完整可见）。 */

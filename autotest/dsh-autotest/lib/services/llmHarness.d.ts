@@ -5,13 +5,38 @@ export interface LlmTextInput {
     temperature?: number;
     maxTokens?: number;
     timeoutMs?: number;
+    meta?: {
+        taskId?: number;
+        spanId?: string;
+        kind?: string;
+    };
 }
-export type LlmCall = (input: LlmTextInput) => Promise<string>;
-/** 最近一次实际使用的 provider/model（供执行器写入任务轨迹展示） */
-export declare const lastLlmCall: {
+export interface LlmResult {
+    text: string;
     provider: string;
     model: string;
-};
+    latencyMs: number;
+    attempts: number;
+    taskId?: number;
+    spanId?: string;
+    kind?: string;
+}
+export type LlmCall = (input: LlmTextInput) => Promise<LlmResult>;
+/** 统一埋点钩子（agent_events 表写入由 events.ts 注入，避免循环依赖）。 */
+export interface LlmTraceEvent {
+    taskId?: number;
+    spanId?: string;
+    kind: string;
+    provider: string;
+    model: string;
+    latencyMs: number;
+    attempts: number;
+    promptChars: number;
+    outputChars: number;
+    status: 'ok' | 'error';
+    error?: string;
+}
+export declare function setLlmTraceHook(fn: ((e: LlmTraceEvent) => void) | null): void;
 /** 读取 DSH 设置（~/.dsh/settings.yaml）里的 agent-default-model，即 DSH 当前实际默认模型。 */
 export declare function readDshDefaultModel(): {
     provider: string;
@@ -25,5 +50,7 @@ export declare function readDshDefaultModel(): {
  * 确定性执行：只调用选定模型（最多 3 次重试），不跨模型切换。
  */
 export declare function makeLlm(ctx: Context): LlmCall;
+/** 原始 LLM 输出落盘（extractJson 彻底失败时），路径跟随 workspace，不写死绝对路径。 */
+export declare function writeRawPayload(text: string): void;
 /** 从 LLM 输出中提取 JSON（容忍 ```json 围栏与前后杂文） */
 export declare function extractJson<T>(text: string): T;

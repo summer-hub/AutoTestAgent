@@ -7,6 +7,11 @@ export const SETTING_DEFAULTS = {
     'agent.defaultModel': '',
     'agent.maxCasesPerTask': 20,
     'agent.caseReviewRounds': 2, // 用例生成自审进化轮次上限（0=关闭自审）
+    'agent.genPagesPerShard': 2, // 用例生成分片大小（每次 LLM 调用处理的页面数，1-6；越小越不易输出截断）
+    'agent.dryRunEnabled': true, // 生成后是否在设备上 dry-run 并把失败证据回灌优化（执行器为真）
+    'agent.dryRunMaxCases': 5, // 单次任务最多 dry-run 的用例数（真机执行慢，需限流）
+    'agent.dryRunPerStepTimeoutMs': 15000,
+    'agent.dryRunFailStreakStop': 2, // 连续失败多少步后停止该用例（界面已偏离，后续证据不可信）
     'exec.llmTemperature': 0.4,
     'exec.llmTimeoutMs': 180000,
     'exec.llmRatePerMin': 10, // 每用户每分钟 LLM 调用上限（任务/分析/追问）

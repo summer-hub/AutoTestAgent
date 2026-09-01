@@ -91,10 +91,17 @@ function py(s) {
     return s.replace(/\\/g, '\\\\').replace(/"/g, '\\"');
 }
 /** 单条步骤 → python 行（无法识别时生成注释，保证脚本语法始终合法）。 */
-function stepToPython(step) {
+function stepToPython(step, pkg) {
     const d = step.trim();
     if (!d)
         return [];
+    // 「打开应用」/「启动应用」：setup 只执行一次，用例中途需要回到首页时依赖此句式 → 显式重启应用
+    if (pkg && /^(?:打开|启动)\s*(?:应用|app)?$/i.test(d)) {
+        return [
+            `        self.driver.start_app(package_name="${py(pkg)}")`,
+            '        self.driver.wait(3)',
+        ];
+    }
     const mSec = d.match(/^等待\s*(?:约)?\s*(\d+(?:\.\d+)?)\s*秒?$/);
     if (mSec)
         return [`        self.driver.wait(${Math.max(1, Math.round(parseFloat(mSec[1])))})`];
@@ -109,6 +116,14 @@ function stepToPython(step) {
         return ['        self.driver.swipe(UiParam.UP, distance=60)'];
     if (/^下滑|^向下滑/.test(d))
         return ['        self.driver.swipe(UiParam.DOWN, distance=60)'];
+    // 二段式输入句式（与生成端 STEP_CONTRACT 契约对齐）：输入「内容」到「控件」
+    const inputTo = d.match(/^(?:输入|键入|填写)[:：]?\s*「(.+?)」(?:到|至|进入|在)\s*「(.+?)」/);
+    if (inputTo) {
+        return [
+            `        self.driver.input_text(BY.text("${py(cleanLabel(inputTo[2]).slice(0, 24))}"), "${py(inputTo[1].slice(0, 40))}")`,
+            '        self.driver.wait(1)',
+        ];
+    }
     const input = d.match(/^(?:输入|键入|填写)[:：]?\s*[「"]?(.+?)[」"]?$/);
     if (input && !input[1].includes('框')) {
         const kw = cleanLabel(pickKw(d.replace(/^(?:输入|键入|填写)/, '点击'))) || '输入框';
@@ -149,7 +164,7 @@ export function generateCaseScript(lib, c) {
     const pkg = py(lib.packageName || lib.name);
     const body = [];
     for (let i = 0; i < c.steps.length; i++) {
-        const lines = stepToPython(c.steps[i]);
+        const lines = stepToPython(c.steps[i], pkg);
         body.push(`        Step('${i + 1}. ${py(c.steps[i].slice(0, 50))}')`);
         body.push(...lines);
         body.push('');

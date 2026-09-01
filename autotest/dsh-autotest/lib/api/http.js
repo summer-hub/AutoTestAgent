@@ -987,7 +987,7 @@ ${(row.logs ?? '').slice(0, 4000) || '（无）'}
 
 用户的追问：${question}`;
         try {
-            const answer = (await llm({ system, user, temperature: 0.3, maxTokens: 800 })).trim();
+            const answer = (await llm({ system, user, temperature: 0.3, maxTokens: 800 })).text.trim();
             return { answer };
         }
         catch {

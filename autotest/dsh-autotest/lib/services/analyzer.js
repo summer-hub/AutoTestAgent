@@ -176,7 +176,7 @@ async function llmWithRetry(llm, input, tries = 5) {
     let lastErr;
     for (let i = 0; i < tries; i++) {
         try {
-            const text = await llm(input);
+            const { text } = await llm(input);
             if (text.trim())
                 return text;
             lastErr = new Error('LLM 返回为空');

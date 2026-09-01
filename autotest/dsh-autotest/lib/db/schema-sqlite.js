@@ -185,6 +185,27 @@ CREATE TABLE IF NOT EXISTS analyses (
   created_at TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_analyses_kind ON analyses(kind, granularity);
+
+CREATE TABLE IF NOT EXISTS agent_events (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  task_id INTEGER NULL,
+  span_id TEXT NOT NULL DEFAULT '',
+  parent_id TEXT NOT NULL DEFAULT '',
+  kind TEXT NOT NULL,
+  status TEXT NOT NULL DEFAULT 'ok',
+  provider TEXT NOT NULL DEFAULT '',
+  model TEXT NOT NULL DEFAULT '',
+  tokens_in INTEGER NULL,
+  tokens_out INTEGER NULL,
+  latency_ms INTEGER NULL,
+  prompt_chars INTEGER NULL,
+  output_chars INTEGER NULL,
+  detail TEXT NULL,
+  error TEXT NULL,
+  created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_agent_events_task ON agent_events(task_id, created_at);
+CREATE INDEX IF NOT EXISTS idx_agent_events_kind ON agent_events(kind, created_at);
 `;
 /** 建表语句拆分（better-sqlite3 exec 支持多语句，这里仍按分号拆便于逐条容错）。 */
 export function sqliteSchemaStatements() {

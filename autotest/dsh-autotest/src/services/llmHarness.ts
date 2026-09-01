@@ -6,6 +6,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { writeFileSync } from 'node:fs';
 import { getSetting } from './settings.js';
+import { workspaceDir } from './gitRepo.js';
 
 export interface LlmTextInput {
   system?: string;
@@ -13,12 +14,40 @@ export interface LlmTextInput {
   temperature?: number;
   maxTokens?: number;
   timeoutMs?: number;
+  meta?: { taskId?: number; spanId?: string; kind?: string };
 }
 
-export type LlmCall = (input: LlmTextInput) => Promise<string>;
+export interface LlmResult {
+  text: string;
+  provider: string;
+  model: string;
+  latencyMs: number;
+  attempts: number;
+  taskId?: number;
+  spanId?: string;
+  kind?: string;
+}
 
-/** 最近一次实际使用的 provider/model（供执行器写入任务轨迹展示） */
-export const lastLlmCall: { provider: string; model: string } = { provider: '', model: '' };
+export type LlmCall = (input: LlmTextInput) => Promise<LlmResult>;
+
+/** 统一埋点钩子（agent_events 表写入由 events.ts 注入，避免循环依赖）。 */
+export interface LlmTraceEvent {
+  taskId?: number;
+  spanId?: string;
+  kind: string;
+  provider: string;
+  model: string;
+  latencyMs: number;
+  attempts: number;
+  promptChars: number;
+  outputChars: number;
+  status: 'ok' | 'error';
+  error?: string;
+}
+let traceHook: ((e: LlmTraceEvent) => void) | null = null;
+export function setLlmTraceHook(fn: ((e: LlmTraceEvent) => void) | null): void {
+  traceHook = fn;
+}
 
 /** 读取 DSH 设置（~/.dsh/settings.yaml）里的 agent-default-model，即 DSH 当前实际默认模型。 */
 export function readDshDefaultModel(): { provider: string; model: string } | null {
@@ -45,7 +74,7 @@ export function readDshDefaultModel(): { provider: string; model: string } | nul
  * 确定性执行：只调用选定模型（最多 3 次重试），不跨模型切换。
  */
 export function makeLlm(ctx: Context): LlmCall {
-  return async (input: LlmTextInput): Promise<string> => {
+  return async (input: LlmTextInput): Promise<LlmResult> => {
     const providers = ctx.llm.listProviders();
     if (!providers || providers.length === 0) {
       throw new Error('DSH 未注册任何模型提供方（如 dsh-llm-deepseek），请检查 profile 配置');
@@ -78,10 +107,9 @@ export function makeLlm(ctx: Context): LlmCall {
         ? { provider: dshDefault.provider, model: dshDefault.model }
         : unique[0];
     let lastErr: unknown = new Error('LLM 返回为空');
+    const t0 = Date.now();
     for (let attempt = 0; attempt < 3; attempt++) {
       try {
-        lastLlmCall.provider = preferred.provider;
-        lastLlmCall.model = preferred.model;
         console.log(`[dsh-autotest] llm call: provider=${preferred.provider} model=${preferred.model} attempt=${attempt + 1}`);
         let text = '';
         for await (const chunk of ctx.llm.stream({
@@ -98,14 +126,51 @@ export function makeLlm(ctx: Context): LlmCall {
             throw new Error(chunk.reason.failure?.message ?? 'LLM 调用失败');
           }
         }
-        if (text.trim()) return text;
+        if (text.trim()) {
+          const latencyMs = Date.now() - t0;
+          traceHook?.({
+            taskId: input.meta?.taskId,
+            spanId: input.meta?.spanId,
+            kind: input.meta?.kind ?? 'llm_call',
+            provider: preferred.provider,
+            model: preferred.model,
+            latencyMs,
+            attempts: attempt + 1,
+            promptChars: (input.system?.length ?? 0) + input.user.length,
+            outputChars: text.length,
+            status: 'ok',
+          });
+          return { text, provider: preferred.provider, model: preferred.model, latencyMs, attempts: attempt + 1, taskId: input.meta?.taskId, spanId: input.meta?.spanId, kind: input.meta?.kind };
+        }
         lastErr = new Error('LLM 返回为空');
       } catch (e) {
         lastErr = e;
       }
     }
+    traceHook?.({
+      taskId: input.meta?.taskId,
+      spanId: input.meta?.spanId,
+      kind: input.meta?.kind ?? 'llm_call',
+      provider: preferred.provider,
+      model: preferred.model,
+      latencyMs: Date.now() - t0,
+      attempts: 3,
+      promptChars: (input.system?.length ?? 0) + input.user.length,
+      outputChars: 0,
+      status: 'error',
+      error: lastErr instanceof Error ? lastErr.message : String(lastErr),
+    });
     throw new Error(`模型 ${preferred.provider}/${preferred.model} 连续失败：${lastErr instanceof Error ? lastErr.message : String(lastErr)}`);
   };
+}
+
+/** 原始 LLM 输出落盘（extractJson 彻底失败时），路径跟随 workspace，不写死绝对路径。 */
+export function writeRawPayload(text: string): void {
+  try {
+    const dir = workspaceDir();
+    const file = `${dir}/llm-raw.json`;
+    writeFileSync(file, text, 'utf8');
+  } catch { /* 落盘失败不阻塞 */ }
 }
 
 /** 从 LLM 输出中提取 JSON（容忍 ```json 围栏与前后杂文） */
@@ -140,9 +205,7 @@ export function extractJson<T>(text: string): T {
         if (objects.length > 0) {
           return (objects.length === 1 ? objects[0] : objects) as T;
         }
-        try {
-          writeFileSync('D:/code/HarmonyProject/20260604/AutoTestAgent/autotest/dsh-autotest/data/llm-raw.json', t, 'utf8');
-        } catch { /* 落盘失败不阻塞 */ }
+        writeRawPayload(t);
         console.error('[llmHarness] extractJson failed:', (finalErr as Error).message);
         throw finalErr;
       }

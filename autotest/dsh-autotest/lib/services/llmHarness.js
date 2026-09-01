@@ -4,8 +4,11 @@ import os from 'node:os';
 import path from 'node:path';
 import { writeFileSync } from 'node:fs';
 import { getSetting } from './settings.js';
-/** 最近一次实际使用的 provider/model（供执行器写入任务轨迹展示） */
-export const lastLlmCall = { provider: '', model: '' };
+import { workspaceDir } from './gitRepo.js';
+let traceHook = null;
+export function setLlmTraceHook(fn) {
+    traceHook = fn;
+}
 /** 读取 DSH 设置（~/.dsh/settings.yaml）里的 agent-default-model，即 DSH 当前实际默认模型。 */
 export function readDshDefaultModel() {
     const home = process.env.DSH_HOME || path.join(os.homedir(), '.dsh');
@@ -69,10 +72,9 @@ export function makeLlm(ctx) {
                 ? { provider: dshDefault.provider, model: dshDefault.model }
                 : unique[0];
         let lastErr = new Error('LLM 返回为空');
+        const t0 = Date.now();
         for (let attempt = 0; attempt < 3; attempt++) {
             try {
-                lastLlmCall.provider = preferred.provider;
-                lastLlmCall.model = preferred.model;
                 console.log(`[dsh-autotest] llm call: provider=${preferred.provider} model=${preferred.model} attempt=${attempt + 1}`);
                 let text = '';
                 for await (const chunk of ctx.llm.stream({
@@ -90,16 +92,52 @@ export function makeLlm(ctx) {
                         throw new Error(chunk.reason.failure?.message ?? 'LLM 调用失败');
                     }
                 }
-                if (text.trim())
-                    return text;
+                if (text.trim()) {
+                    const latencyMs = Date.now() - t0;
+                    traceHook?.({
+                        taskId: input.meta?.taskId,
+                        spanId: input.meta?.spanId,
+                        kind: input.meta?.kind ?? 'llm_call',
+                        provider: preferred.provider,
+                        model: preferred.model,
+                        latencyMs,
+                        attempts: attempt + 1,
+                        promptChars: (input.system?.length ?? 0) + input.user.length,
+                        outputChars: text.length,
+                        status: 'ok',
+                    });
+                    return { text, provider: preferred.provider, model: preferred.model, latencyMs, attempts: attempt + 1, taskId: input.meta?.taskId, spanId: input.meta?.spanId, kind: input.meta?.kind };
+                }
                 lastErr = new Error('LLM 返回为空');
             }
             catch (e) {
                 lastErr = e;
             }
         }
+        traceHook?.({
+            taskId: input.meta?.taskId,
+            spanId: input.meta?.spanId,
+            kind: input.meta?.kind ?? 'llm_call',
+            provider: preferred.provider,
+            model: preferred.model,
+            latencyMs: Date.now() - t0,
+            attempts: 3,
+            promptChars: (input.system?.length ?? 0) + input.user.length,
+            outputChars: 0,
+            status: 'error',
+            error: lastErr instanceof Error ? lastErr.message : String(lastErr),
+        });
         throw new Error(`模型 ${preferred.provider}/${preferred.model} 连续失败：${lastErr instanceof Error ? lastErr.message : String(lastErr)}`);
     };
+}
+/** 原始 LLM 输出落盘（extractJson 彻底失败时），路径跟随 workspace，不写死绝对路径。 */
+export function writeRawPayload(text) {
+    try {
+        const dir = workspaceDir();
+        const file = `${dir}/llm-raw.json`;
+        writeFileSync(file, text, 'utf8');
+    }
+    catch { /* 落盘失败不阻塞 */ }
 }
 /** 从 LLM 输出中提取 JSON（容忍 ```json 围栏与前后杂文） */
 export function extractJson(text) {
@@ -140,10 +178,7 @@ export function extractJson(text) {
                 if (objects.length > 0) {
                     return (objects.length === 1 ? objects[0] : objects);
                 }
-                try {
-                    writeFileSync('D:/code/HarmonyProject/20260604/AutoTestAgent/autotest/dsh-autotest/data/llm-raw.json', t, 'utf8');
-                }
-                catch { /* 落盘失败不阻塞 */ }
+                writeRawPayload(t);
                 console.error('[llmHarness] extractJson failed:', finalErr.message);
                 throw finalErr;
             }

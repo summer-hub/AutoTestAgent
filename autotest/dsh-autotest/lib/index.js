@@ -6,6 +6,7 @@ import { makeApiHandler } from './api/http.js';
 import { startScheduler } from './services/scheduler.js';
 import { makeStaticHandler } from './static.js';
 import { reconcileRepos } from './services/gitRepo.js';
+import { installLlmTracing } from './services/events.js';
 import { ensureAuthSchema, authDb } from './auth/db.js';
 import { createUser } from './auth/service.js';
 import { getSetting } from './services/settings.js';
@@ -17,6 +18,7 @@ export function apply(ctx) {
         try {
             setDbUrlProvider(() => String(getSetting('db.mysqlUrl', '') || '').trim() || defaultUrlProvider());
             await ensureReady();
+            installLlmTracing();
             // 启动对账：本地没有克隆目录的库，同步状态一律清空（迁移/拷贝旧库后不再显示过期记录）
             const changed = await reconcileRepos();
             if (changed > 0)

@@ -200,6 +200,28 @@ CREATE TABLE IF NOT EXISTS analyses (
   created_at VARCHAR(32) NOT NULL
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 CREATE INDEX idx_analyses_kind ON analyses(kind, granularity);
+
+-- 链路追踪事件（追加式：LLM 调用 / 遍历 op / dry-run 步骤等，全链 traceId 的地基）
+CREATE TABLE IF NOT EXISTS agent_events (
+  id BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+  task_id BIGINT UNSIGNED NULL,
+  span_id VARCHAR(64) NOT NULL DEFAULT '',
+  parent_id VARCHAR(64) NOT NULL DEFAULT '',
+  kind VARCHAR(64) NOT NULL,
+  status VARCHAR(16) NOT NULL DEFAULT 'ok',
+  provider VARCHAR(64) NOT NULL DEFAULT '',
+  model VARCHAR(128) NOT NULL DEFAULT '',
+  tokens_in INT NULL,
+  tokens_out INT NULL,
+  latency_ms INT NULL,
+  prompt_chars INT NULL,
+  output_chars INT NULL,
+  detail TEXT NULL,
+  error TEXT NULL,
+  created_at VARCHAR(32) NOT NULL
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+CREATE INDEX idx_agent_events_task ON agent_events(task_id, created_at);
+CREATE INDEX idx_agent_events_kind ON agent_events(kind, created_at);
 `;
 /** 建表语句拆分（MySQL 不允许一条 query 跑多语句）。 */
 export function schemaStatements() {

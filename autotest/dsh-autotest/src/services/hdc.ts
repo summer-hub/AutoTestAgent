@@ -124,6 +124,8 @@ interface UiNode {
   desc: string;
   x: number;
   y: number;
+  /** 控件类型（HarmonyOS: Text/Button/__Common__/XComponent…；Android: class 名） */
+  type?: string;
   /** 节点归属窗口的 bundleName（HarmonyOS dumpLayout JSON 才有，用于过滤系统状态栏） */
   bundle?: string;
   /** 完整 bounds（左上/右下），用于越界检测与可视化 */
@@ -184,6 +186,7 @@ export function parseNodes(dump: string, opts?: ParseNodesOpts): UiNode[] {
             desc,
             x: Math.round((Number(m[1]) + Number(m[3])) / 2),
             y: Math.round((Number(m[2]) + Number(m[4])) / 2),
+            type: String(a.type ?? '') || undefined,
             bundle: curBundle || undefined,
             bounds: { x1: Number(m[1]), y1: Number(m[2]), x2: Number(m[3]), y2: Number(m[4]) },
           });
@@ -199,16 +202,17 @@ export function parseNodes(dump: string, opts?: ParseNodesOpts): UiNode[] {
     }
   }
   // Android / OpenHarmony：uiautomator XML
-  const re = /<node[^>]*?text="([^"]*)"[^>]*?content-desc="([^"]*)"[^>]*?bounds="\[(\d+),(\d+)\]\[(\d+),(\d+)\]"/g;
+  const re = /<node[^>]*?text="([^"]*)"[^>]*?content-desc="([^"]*)"[^>]*?bounds="\[(\d+),(\d+)\]\[(\d+),(\d+)\]"[^>]*?class="([^"]*)"/g;
   let m: RegExpExecArray | null;
   while ((m = re.exec(text))) {
-    const [, text, desc, x1, y1, x2, y2] = m;
+    const [, text, desc, x1, y1, x2, y2, cls] = m;
     if (!text && !desc) continue;
     nodes.push({
       text,
       desc,
       x: Math.round((Number(x1) + Number(x2)) / 2),
       y: Math.round((Number(y1) + Number(y2)) / 2),
+      type: cls || undefined,
       bounds: { x1: Number(x1), y1: Number(y1), x2: Number(x2), y2: Number(y2) },
     });
   }
@@ -290,6 +294,21 @@ async function captureScreen(serial: string, localPath: string): Promise<string>
   }
 }
 
+/**
+ * 抓取设备最近 N 行 hilog（失败诊断用）。
+ * dry-run 的日志类断言失败时，模型需要看到「设备日志里实际有什么」才能判断是断言写错
+ * 还是功能真没生效——只给一句「未匹配到」等于没给证据。
+ */
+export async function tailHilog(serial: string, lines = 12): Promise<string[]> {
+  try {
+    const { stdout } = await runHdc(['-t', serial, 'shell', 'hilog', '-x'], 20000);
+    const all = stdout.split(/\r?\n/).map((l) => l.trim()).filter(Boolean);
+    return all.slice(-Math.max(1, Math.min(60, lines)));
+  } catch {
+    return [];
+  }
+}
+
 /** 验证 hilog 日志中出现关键字（用例预期结果里写明应打印的日志）。 */
 async function verifyHilog(serial: string, keyword: string): Promise<{ ok: boolean; log: string }> {
   try {
@@ -304,10 +323,14 @@ async function verifyHilog(serial: string, keyword: string): Promise<{ ok: boole
 }
 
 function pickKeyword(desc: string): string {
+  // 必须剥离「」引号：生成端 STEP_CONTRACT 要求步骤写成「点击「X」」，而界面文本本身不带引号，
+  // 不剥离会让关键词变成「「X」」，导致所有点击/验证步骤恒失败（dry-run 全军覆没）。
   return desc
     .replace(/^(点击|单击|选择|选中|确认|打开|启动|切换|滚动|长按|勾选|取消|删除|验证|检查|断言|校验)[:：\s]*/, '')
-    .replace(/[，。！？、,.!?；;]$/, '')
+    .replace(/[「」“"'，,。.！!？?；;、]/g, ' ')
     .replace(/^(?:按钮|选项|列表项|弹窗|输入框|下拉菜单|返回按钮|开关)/, '')
+    .replace(/\s+/g, ' ')
+    .trim()
     .slice(0, 12)
     .trim();
 }
@@ -356,6 +379,17 @@ async function runStep(serial: string, desc: string): Promise<{ ok: boolean; log
       return pass(`keyevent BACK：${out}`);
     }
     if (/^(输入|键入|填写)/.test(d)) {
+      // 二段式「输入「内容」到「控件」」：先定位目标控件聚焦，再输入内容
+      const two = d.match(/^(?:输入|键入|填写)\s*[「"](.+?)[」"]\s*(?:到|至|进入|在)\s*[「"](.+?)[」"]/);
+      if (two) {
+        const content = two[1]?.trim() ?? '';
+        const target = two[2]?.trim() ?? '';
+        if (!content) return fail(`无法解析输入内容：${d}`);
+        const node = target ? findKeyword(parseNodes(await uiDump(serial)), target) : undefined;
+        if (node) await tap(serial, node.x, node.y);
+        const out = await inputText(serial, content);
+        return pass(`输入「${content}」到「${target}」${node ? `@(${node.x},${node.y})` : '（未定位到目标控件，直接输入）'}：${out}`);
+      }
       const text = d.replace(/^(输入|键入|填写)[:：\s]*/, '').replace(/[「」“”"'，,。.]/g, ' ').trim();
       if (!text) return fail(`无法解析输入内容：${d}`);
       const out = await inputText(serial, text);
@@ -435,7 +469,8 @@ async function runStep(serial: string, desc: string): Promise<{ ok: boolean; log
   }
 }
 
-async function runStepWithTimeout(serial: string, desc: string, timeoutMs: number): Promise<{ ok: boolean; log: string; durationMs: number }> {
+/** 单步执行（带超时）。导出供 dryRun 逐步执行 —— 需在失败点抓取界面证据时不能用整批 executeCaseSteps。 */
+export async function runStepWithTimeout(serial: string, desc: string, timeoutMs: number): Promise<{ ok: boolean; log: string; durationMs: number }> {
   return Promise.race([
     runStep(serial, desc),
     sleep(timeoutMs).then(() => ({ ok: false, log: `步骤超时（>${Math.round(timeoutMs / 1000)}s）`, durationMs: timeoutMs })),
