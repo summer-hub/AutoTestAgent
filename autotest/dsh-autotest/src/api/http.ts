@@ -1335,6 +1335,73 @@ ${(row.logs ?? '').slice(0, 4000) || '（无）'}
     }
   }, { permission: 'case:read' });
 
+  // ---- 页面级覆盖报告：最近一次遍历的页面维度摘要 + 用例/脚本关联 ----
+  route('GET', '/explore/reports/:libraryId/summary', async ({ params }) => {
+    const db = getDb();
+    const lib = await db.prepare('SELECT id, name FROM libraries WHERE id = ?').get<{ id: number; name: string }>(Number(params.libraryId));
+    if (!lib) throw Object.assign(new Error('三方库不存在'), { statusCode: 404 });
+    const dir = exploreDirFor(lib.name);
+    if (!fs.existsSync(dir)) return { ok: true, report: null, pages: [], cases: [], stats: null };
+    const files = fs.readdirSync(dir).filter((f) => /^explore_\d+\.json$/.test(f)).sort().reverse();
+    if (files.length === 0) return { ok: true, report: null, pages: [], cases: [], stats: null };
+    const latest = files[0];
+    let report: ExploreResult;
+    try {
+      report = JSON.parse(fs.readFileSync(path.join(dir, latest), 'utf8')) as ExploreResult;
+    } catch {
+      return { ok: true, report: null, pages: [], cases: [], stats: null };
+    }
+    // 关联用例：读取该库全部 case_versions snapshot 的 pagePath（最近一次遍历生成的，来源 AI 生成）
+    const versionRows = await db.prepare(
+      `SELECT v.case_id, v.snapshot, c.case_no, c.name, c.script_status, c.status
+       FROM case_versions v JOIN cases c ON c.id = v.case_id
+       WHERE c.library_id = ? AND c.source = 'AI 生成'`,
+    ).all<{ case_id: number; snapshot: string; case_no: string; name: string; script_status: string; status: string }>(lib.id);
+    const caseByPath = new Map<string, Array<{ caseId: number; caseNo: string; name: string; scriptStatus: string; status: string }>>();
+    for (const v of versionRows) {
+      try {
+        const snap = JSON.parse(v.snapshot) as { pagePath?: string };
+        const pp = String(snap.pagePath ?? '');
+        if (!pp) continue;
+        if (!caseByPath.has(pp)) caseByPath.set(pp, []);
+        caseByPath.get(pp)!.push({ caseId: v.case_id, caseNo: v.case_no, name: v.name, scriptStatus: v.script_status, status: v.status });
+      } catch { /* 忽略坏快照 */ }
+    }
+    const pages = (report.pages ?? []).map((p) => {
+      const pathStr = p.path.join(' → ');
+      const linked = caseByPath.get(pathStr) ?? [];
+      return {
+        path: p.path,
+        pathStr,
+        controls: p.controls.map((c) => ({ text: (c.text || c.desc).trim().slice(0, 24), hasText: Boolean((c.text || c.desc).trim()) })),
+        controlCount: p.controls.length,
+        rich: p.controls.length > 8 || (p.scrolls ?? 0) > 0,
+        animation: Boolean(p.animation),
+        swipes: p.swipes,
+        screen: p.screen,
+        note: p.note,
+        cases: linked,
+        caseCount: linked.length,
+        scriptBound: linked.filter((c) => c.scriptStatus === '已绑定').length,
+      };
+    });
+    const totalCases = pages.reduce((a, p) => a + p.caseCount, 0);
+    const totalBound = pages.reduce((a, p) => a + p.scriptBound, 0);
+    const stats = {
+      report: latest,
+      generatedAt: (() => { const m = latest.match(/_(\d+)\.json$/); return m ? new Date(Number(m[1])).toLocaleString('zh-CN') : ''; })(),
+      totalPages: pages.length,
+      richPages: pages.filter((p) => p.rich).length,
+      animationPages: pages.filter((p) => p.animation).length,
+      swipeAdjustedPages: pages.filter((p) => p.swipes > 0).length,
+      totalCases,
+      scriptBound: totalBound,
+      coverage: pages.length > 0 ? Math.round((pages.filter((p) => p.caseCount > 0).length / pages.length) * 100) : 0,
+      scriptCoverage: totalCases > 0 ? Math.round((totalBound / totalCases) * 100) : 0,
+    };
+    return { ok: true, report: latest, pages, stats };
+  }, { permission: 'case:read' });
+
   // ---- 链路追踪事件查询（agent_events，按任务/类型过滤，全链 traceId 观测） ----
   route('GET', '/events', async ({ query }) => {
     const taskId = Number(query.get('taskId')) || undefined;

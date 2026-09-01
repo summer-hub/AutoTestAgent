@@ -23,6 +23,8 @@ export default function TasksPage() {
   const [libPrompt, setLibPrompt] = useState('');
   const [libSaving, setLibSaving] = useState(false);
   const [traceView, setTraceView] = useState<Task | null>(null);
+  const [traceTab, setTraceTab] = useState<'trace' | 'events'>('trace');
+  const [eventsData, setEventsData] = useState<Array<Record<string, unknown>> | null>(null);
   const [opsView, setOpsView] = useState<null | { libId: number; title: string }>(null);
   const [opsData, setOpsData] = useState<null | { file: string; ops: Array<{ at: string; action: string; detail?: string }> }>(null);
   const [opsQ, setOpsQ] = useState('');
@@ -184,7 +186,7 @@ export default function TasksPage() {
                   <span className="link" style={{ fontSize: 12 }} onClick={() => void openOps(t.libraryId!, `${t.title} · 真机操作轨迹`)}>📋 操作日志</span>
                 )}
                 {(t.trace?.length ?? 0) > 0 && (
-                  <span className="link" style={{ fontSize: 12 }} onClick={() => setTraceView(t)}>查看轨迹</span>
+                  <span className="link" style={{ fontSize: 12 }} onClick={() => { setTraceTab('trace'); setEventsData(null); setTraceView(t); void api.events(t.id).then((r) => setEventsData(r.rows)).catch(() => setEventsData([])); }}>查看轨迹</span>
                 )}
                 {t.status === 'failed' && <button className="btn sm" onClick={() => retry(t.id)}>重试</button>}
                 <span className="link" style={{ fontSize: 12, color: 'var(--red)' }} onClick={() => void removeTask(t)}>删除</span>
@@ -201,11 +203,18 @@ export default function TasksPage() {
             <div style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '14px 18px', borderBottom: '1px solid var(--border)' }}>
               <span style={{ fontSize: 15, fontWeight: 600 }}>🤖 {traceView.taskNo} · {traceView.title} 执行轨迹</span>
               <span className={`tag ${traceView.status === 'done' ? 'green' : traceView.status === 'failed' ? 'red' : 'blue'}`}>{traceView.status}</span>
+              <span style={{ marginLeft: 12, display: 'flex', gap: 4 }}>
+                {(['trace', 'events'] as const).map((t) => (
+                  <button key={t} className={`btn sm ${traceTab === t ? 'primary' : ''}`} style={{ padding: '3px 10px' }} onClick={() => setTraceTab(t)}>
+                    {t === 'trace' ? '执行轨迹' : `事件时间线${eventsData ? `（${eventsData.length}）` : ''}`}
+                  </button>
+                ))}
+              </span>
               <div style={{ flex: 1 }} />
               <button className="s-header x" onClick={() => setTraceView(null)} style={{ width: 28, height: 28, borderRadius: 28, border: 'none', background: 'none', color: 'var(--text2)', cursor: 'pointer', fontSize: 14 }}>✕</button>
             </div>
             <div style={{ flex: 1, minHeight: 0, overflowY: 'auto', padding: '16px 18px', display: 'flex', flexDirection: 'column', gap: 10 }}>
-              {traceView.trace && traceView.trace.length > 0 ? traceView.trace.map((e) => (
+              {traceTab === 'trace' && traceView.trace && traceView.trace.length > 0 ? traceView.trace.map((e) => (
                 <div key={e.seq} style={{ display: 'flex', gap: 10 }}>
                   <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', flexShrink: 0 }}>
                     <span style={{ width: 22, height: 22, borderRadius: '50%', background: 'var(--accent-dim)', color: 'var(--accent2)', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 11, fontWeight: 600 }}>{e.seq}</span>
@@ -221,7 +230,46 @@ export default function TasksPage() {
                     )}
                   </div>
                 </div>
-              )) : <div className="muted" style={{ fontSize: 12.5 }}>该任务暂无轨迹记录</div>}
+              )) : traceTab === 'trace' ? <div className="muted" style={{ fontSize: 12.5 }}>该任务暂无轨迹记录</div> : null}
+              {traceTab === 'events' && (
+                eventsData === null ? (
+                  <div className="loading">加载事件时间线…</div>
+                ) : eventsData.length === 0 ? (
+                  <div className="muted" style={{ fontSize: 12.5 }}>该任务暂无埋点事件（agent_events）</div>
+                ) : (
+                  eventsData.map((ev, i) => {
+                    const kind = String(ev.kind ?? '');
+                    const status = String(ev.status ?? 'ok');
+                    const icon = kind.startsWith('llm') ? '🤖' : kind === 'explore_op' ? '📡' : kind.startsWith('dry_run') ? '🧪' : '📌';
+                    return (
+                      <div key={i} style={{ display: 'flex', gap: 10 }}>
+                        <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', flexShrink: 0 }}>
+                          <span style={{ width: 24, height: 24, borderRadius: '50%', background: status === 'error' ? 'var(--red-dim, rgba(255,80,80,.15))' : 'var(--accent-dim)', color: status === 'error' ? 'var(--red)' : 'var(--accent2)', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 11 }}>{icon}</span>
+                          {i < eventsData.length - 1 && <span style={{ width: 2, flex: 1, background: 'var(--border2)' }} />}
+                        </div>
+                        <div style={{ flex: 1, minWidth: 0, paddingBottom: 4 }}>
+                          <div style={{ fontSize: 12.3, color: 'var(--text2)' }}>
+                            <b style={{ color: 'var(--text)' }}>{kind}</b>
+                            <span className={`tag ${status === 'error' ? 'red' : 'green'}`} style={{ marginLeft: 6 }}>{status}</span>
+                            <span className="muted" style={{ fontSize: 11, marginLeft: 8 }}>{String(ev.created_at ?? '').slice(0, 19)}</span>
+                          </div>
+                          <div className="muted" style={{ fontSize: 11.5, marginTop: 3 }}>
+                            {String(ev.model ?? '') && <span>{ev.model} · </span>}
+                            {ev.latency_ms !== null && ev.latency_ms !== undefined && <span>延迟 {ev.latency_ms}ms · </span>}
+                            {ev.tokens_in !== null && ev.tokens_in !== undefined && <span>入 {ev.tokens_in} / 出 {ev.tokens_out ?? 0} tokens · </span>}
+                            {ev.span_id ? <span className="mono">span {String(ev.span_id).slice(0, 28)}</span> : null}
+                          </div>
+                          {ev.detail ? (
+                            <pre className="mono" style={{ marginTop: 5, fontSize: 11.2, lineHeight: 1.6, whiteSpace: 'pre-wrap', wordBreak: 'break-word', background: 'var(--bg2)', border: '1px solid var(--border)', borderRadius: 8, padding: '7px 9px', maxHeight: 110, overflowY: 'auto', color: 'var(--text2)' }}>{String(ev.detail)}</pre>
+                          ) : ev.error ? (
+                            <div style={{ fontSize: 11.3, color: 'var(--red)', marginTop: 4 }}>⚠️ {String(ev.error).slice(0, 240)}</div>
+                          ) : null}
+                        </div>
+                      </div>
+                    );
+                  })
+                )
+              )}
             </div>
           </div>
         </div>

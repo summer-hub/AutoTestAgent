@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState, type CSSProperties } from 'react';
+import { Fragment, useCallback, useEffect, useRef, useState, type CSSProperties } from 'react';
 import type { CaseSource, CaseVersion, Library, Page, TestCase } from 'shared';
 import { api } from '../api';
 
@@ -46,6 +46,25 @@ export default function CasesPage({ me }: { me?: { permissions?: string[] } | nu
   const [detail, setDetail] = useState<TestCase | null>(null);
   const [caseForm, setCaseForm] = useState<null | { mode: 'create' } | { mode: 'edit'; case: TestCase }>(null);
   const [savingCase, setSavingCase] = useState(false);
+  // 真机遍历覆盖报告
+  const [sumOpen, setSumOpen] = useState(false);
+  const [sumData, setSumData] = useState<Awaited<ReturnType<typeof api.exploreSummary>> | null>(null);
+  const [sumExpanded, setSumExpanded] = useState<string | null>(null);
+  const [sumLoading, setSumLoading] = useState(false);
+
+  const openSummary = async () => {
+    if (curLib === null) return;
+    setSumOpen(true);
+    setSumLoading(true);
+    setSumData(null);
+    try {
+      setSumData(await api.exploreSummary(curLib));
+    } catch (e) {
+      setError(String((e as Error).message));
+    } finally {
+      setSumLoading(false);
+    }
+  };
 
   // 行内操作：转脚本 / AI优化（按用例 id 标记 busy）
   const [rowBusy, setRowBusy] = useState<{ id: number; kind: 'script' | 'optimize' } | null>(null);
@@ -331,6 +350,7 @@ export default function CasesPage({ me }: { me?: { permissions?: string[] } | nu
             <button className="btn sm" disabled={curLib === null} onClick={onExport}>⬇ 导出 Excel</button>
             <button className="btn sm" disabled={curLib === null} onClick={() => fileRef.current?.click()}>⬆ 导入 Excel</button>
             <button className="btn sm primary" disabled={curLib === null} onClick={() => setCaseForm({ mode: 'create' })}>＋ 新增用例</button>
+            <button className="btn sm" disabled={curLib === null} onClick={() => void openSummary()} title="最近一次真机遍历的页面级覆盖报告">📡 遍历报告</button>
             {importMsg && <span className="muted" style={{ fontSize: 11.5 }}>{importMsg}</span>}
             {optMsg && <span className="tag blue" style={{ fontSize: 11.5 }}>{optMsg}</span>}
             <span className="muted" style={{ fontSize: 11.5, marginLeft: 'auto' }}>
@@ -612,6 +632,100 @@ export default function CasesPage({ me }: { me?: { permissions?: string[] } | nu
           onClose={() => setCaseForm(null)}
           onSave={(f) => void saveCaseForm(f)}
         />
+      )}
+
+      {sumOpen && (
+        <div className="s-overlay show">
+          <div className="s-mask" onClick={() => setSumOpen(false)} />
+          <div style={{ position: 'relative', zIndex: 1, width: 880, maxWidth: 'calc(100vw - 40px)', maxHeight: 'calc(100vh - 40px)', background: 'var(--panel)', border: '1px solid var(--border2)', borderRadius: 16, boxShadow: '0 24px 80px rgba(0,0,0,.55)', display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '14px 18px', borderBottom: '1px solid var(--border)' }}>
+              <span style={{ fontSize: 15, fontWeight: 600 }}>📡 真机遍历 · 页面级覆盖报告</span>
+              {sumData?.stats && <span className="muted" style={{ fontSize: 12 }}>{sumData.stats.generatedAt}</span>}
+              <div style={{ flex: 1 }} />
+              <button className="s-header x" onClick={() => setSumOpen(false)} style={{ width: 28, height: 28, borderRadius: 28, border: 'none', background: 'none', color: 'var(--text2)', cursor: 'pointer', fontSize: 14 }}>✕</button>
+            </div>
+            <div style={{ flex: 1, minHeight: 0, overflowY: 'auto', padding: '16px 18px' }}>
+              {sumLoading && <div className="loading">加载覆盖报告…</div>}
+              {!sumLoading && !sumData?.stats && (
+                <div className="muted" style={{ fontSize: 12.5, padding: 24, textAlign: 'center' }}>
+                  该库暂无遍历报告。在任务页发起「真机遍历生成用例」任务，完成后这里会展示页面级覆盖情况。
+                </div>
+              )}
+              {!sumLoading && sumData?.stats && (
+                <>
+                  <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(120px, 1fr))', gap: 10, marginBottom: 16 }}>
+                    {([
+                      ['页面数', sumData.stats.totalPages],
+                      ['富页面', sumData.stats.richPages],
+                      ['动画页', sumData.stats.animationPages],
+                      ['越界适配', sumData.stats.swipeAdjustedPages],
+                      ['生成用例', sumData.stats.totalCases],
+                      ['绑定脚本', sumData.stats.scriptBound],
+                      ['页面覆盖', `${sumData.stats.coverage}%`],
+                      ['脚本覆盖', `${sumData.stats.scriptCoverage}%`],
+                    ] as Array<[string, string | number]>).map(([label, v]) => (
+                      <div key={label} className="card" style={{ padding: '10px 12px', textAlign: 'center' }}>
+                        <div style={{ fontSize: 18, fontWeight: 700, color: 'var(--accent2)' }}>{v}</div>
+                        <div className="muted" style={{ fontSize: 11.5, marginTop: 2 }}>{label}</div>
+                      </div>
+                    ))}
+                  </div>
+                  <table style={{ width: '100%', fontSize: 12.5 }}>
+                    <thead>
+                      <tr>
+                        <th>页面路径</th>
+                        <th>控件</th>
+                        <th>动画</th>
+                        <th>滑动</th>
+                        <th>用例</th>
+                        <th>脚本</th>
+                        <th>状态</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {sumData.pages.map((p) => (
+                        <Fragment key={p.pathStr}>
+                          <tr style={{ cursor: 'pointer', borderTop: '1px solid var(--border)' }} onClick={() => setSumExpanded(sumExpanded === p.pathStr ? null : p.pathStr)}>
+                            <td style={{ padding: '7px 4px' }}>{p.pathStr}</td>
+                            <td>{p.controlCount}</td>
+                            <td>{p.animation ? '🟢' : '—'}</td>
+                            <td>{p.swipes > 0 ? `${p.swipes} 次` : '—'}</td>
+                            <td>{p.caseCount}</td>
+                            <td>{p.scriptBound}/{p.caseCount}</td>
+                            <td className="muted">{p.note}</td>
+                          </tr>
+                          {sumExpanded === p.pathStr && (
+                            <tr>
+                              <td colSpan={7} style={{ padding: '10px 12px', background: 'var(--bg2)', borderRadius: 8 }}>
+                                <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 14 }}>
+                                  <div>
+                                    <div style={{ fontSize: 11.5, fontWeight: 600, marginBottom: 6 }}>关联用例（{p.caseCount}）</div>
+                                    {p.cases.length === 0 && <span className="muted" style={{ fontSize: 11.5 }}>该页尚未生成用例</span>}
+                                    {p.cases.map((c) => (
+                                      <div key={c.caseId} style={{ fontSize: 11.8, marginBottom: 3 }}>
+                                        <span className="mono" style={{ color: 'var(--accent2)' }}>{c.caseNo}</span>{' '}
+                                        {c.name}
+                                        <span className={`tag ${c.scriptStatus === '已绑定' ? 'green' : 'gray'}`} style={{ marginLeft: 6 }}>{c.scriptStatus}</span>
+                                      </div>
+                                    ))}
+                                  </div>
+                                  <div>
+                                    <div style={{ fontSize: 11.5, fontWeight: 600, marginBottom: 6 }}>状态</div>
+                                    <div className="muted" style={{ fontSize: 11.8, lineHeight: 1.7 }}>{p.note}</div>
+                                  </div>
+                                </div>
+                              </td>
+                            </tr>
+                          )}
+                        </Fragment>
+                      ))}
+                    </tbody>
+                  </table>
+                </>
+              )}
+            </div>
+          </div>
+        </div>
       )}
     </>
   );

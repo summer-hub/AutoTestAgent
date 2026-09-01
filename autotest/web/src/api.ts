@@ -223,6 +223,42 @@ export const api = {
     req<{ items: ExploreReportMeta[]; dir: string }>(`${API_BASE}/explore/reports/${libraryId}`),
   exploreReportContent: (libraryId: number, name: string) =>
     req<ExploreResult>(`${API_BASE}/explore/reports/${libraryId}/content?name=${encodeURIComponent(name)}`),
+  exploreSummary: (libraryId: number) =>
+    req<{
+      ok: boolean;
+      report: string | null;
+      pages: Array<{
+        path: string[];
+        pathStr: string;
+        controlCount: number;
+        rich: boolean;
+        animation: boolean;
+        swipes: number;
+        note: string;
+        cases: Array<{ caseId: number; caseNo: string; name: string; scriptStatus: string; status: string }>;
+        caseCount: number;
+        scriptBound: number;
+      }>;
+      stats: {
+        report: string;
+        generatedAt: string;
+        totalPages: number;
+        richPages: number;
+        animationPages: number;
+        swipeAdjustedPages: number;
+        totalCases: number;
+        scriptBound: number;
+        coverage: number;
+        scriptCoverage: number;
+      } | null;
+    }>(`${API_BASE}/explore/reports/${libraryId}/summary`),
+  events: (taskId?: number, kind?: string, limit = 200) => {
+    const qs = new URLSearchParams();
+    if (taskId) qs.set('taskId', String(taskId));
+    if (kind) qs.set('kind', kind);
+    qs.set('limit', String(limit));
+    return req<{ ok: boolean; rows: Array<Record<string, unknown>> }>(`${API_BASE}/events?${qs}`);
+  },
 
   // Prompt 模板
   prompts: () => req<Prompt[]>(`${API_BASE}/prompts`),
