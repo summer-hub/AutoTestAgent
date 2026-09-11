@@ -1,4 +1,3 @@
-import crypto from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 import { defaultUrlProvider, ensureReady, setDbUrlProvider } from './db/connection.js';
 import { makeLlm } from './services/llmHarness.js';
@@ -7,13 +6,11 @@ import { startScheduler } from './services/scheduler.js';
 import { makeStaticHandler } from './static.js';
 import { reconcileRepos } from './services/gitRepo.js';
 import { installLlmTracing } from './services/events.js';
-import { ensureAuthSchema, authDb } from './auth/db.js';
-import { createUser } from './auth/service.js';
 import { getSetting } from './services/settings.js';
 export const name = 'dsh-autotest';
 export const inject = ['webServer', 'llm'];
 export function apply(ctx) {
-    // 1. 初始化引导（异步）：MySQL 连接串 → 业务表 + settings → 对账 → auth 表 + admin
+    // 1. 初始化引导（异步）：MySQL 连接串 → 业务表 + settings → 对账
     void (async () => {
         try {
             setDbUrlProvider(() => String(getSetting('db.mysqlUrl', '') || '').trim() || defaultUrlProvider());
@@ -30,19 +27,6 @@ export function apply(ctx) {
             }
             catch (e) {
                 console.error('[dsh-autotest] 调度器启动失败：', e.message);
-            }
-            // 认证库初始化（跟随业务库引擎：MySQL 或 SQLite 本地降级）：建表 + 角色权限种子 + 首启创建 admin
-            await ensureAuthSchema();
-            const adb = await authDb();
-            const [uRows] = await adb.query('SELECT COUNT(*) AS n FROM auth_users');
-            if (uRows[0].n === 0) {
-                const pw = String(getSetting('auth.bootstrapPassword', '') || '').trim()
-                    || crypto.randomBytes(6).toString('base64url');
-                await createUser('admin', pw, ['admin']);
-                console.log('[dsh-autotest] 已创建初始管理员：admin / ' + pw + '（请尽快登录后修改密码）');
-            }
-            else {
-                console.log('[dsh-autotest] 认证库就绪（用户已存在）');
             }
         }
         catch (e) {

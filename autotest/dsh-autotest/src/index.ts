@@ -5,7 +5,6 @@
 //  - AI 任务经 ctx.llm（模型配置全部来自 DSH 设置）
 //  - 定时计划经内置 node-cron 调度
 import { Context } from '@deepseek-ai/cordis';
-import crypto from 'node:crypto';
 import fs from 'node:fs';
 // 引入类型声明：把 webServer 挂到 Context（dsh-host-webserver 的 declare module）
 import type WebServer from '@deepseek-ai/dsh-host-webserver';
@@ -17,8 +16,6 @@ import { startScheduler } from './services/scheduler.js';
 import { makeStaticHandler } from './static.js';
 import { refreshPackageInfo, reconcileRepos, repoDirFor } from './services/gitRepo.js';
 import { installLlmTracing } from './services/events.js';
-import { ensureAuthSchema, authDb } from './auth/db.js';
-import { createUser } from './auth/service.js';
 import { getSetting } from './services/settings.js';
 
 declare module '@deepseek-ai/cordis' {
@@ -31,7 +28,7 @@ export const name = 'dsh-autotest';
 export const inject = ['webServer', 'llm'] as const;
 
 export function apply(ctx: Context): void {
-  // 1. 初始化引导（异步）：MySQL 连接串 → 业务表 + settings → 对账 → auth 表 + admin
+  // 1. 初始化引导（异步）：MySQL 连接串 → 业务表 + settings → 对账
   void (async () => {
     try {
       setDbUrlProvider(() => String(getSetting('db.mysqlUrl', '') || '').trim() || defaultUrlProvider());
@@ -46,18 +43,6 @@ export function apply(ctx: Context): void {
         await startScheduler();
       } catch (e) {
         console.error('[dsh-autotest] 调度器启动失败：', (e as Error).message);
-      }
-      // 认证库初始化（跟随业务库引擎：MySQL 或 SQLite 本地降级）：建表 + 角色权限种子 + 首启创建 admin
-      await ensureAuthSchema();
-      const adb = await authDb();
-      const [uRows] = await adb.query('SELECT COUNT(*) AS n FROM auth_users') as [Array<{ n: number }>, unknown];
-      if (uRows[0].n === 0) {
-        const pw = String(getSetting('auth.bootstrapPassword', '') || '').trim()
-          || crypto.randomBytes(6).toString('base64url');
-        await createUser('admin', pw, ['admin']);
-        console.log('[dsh-autotest] 已创建初始管理员：admin / ' + pw + '（请尽快登录后修改密码）');
-      } else {
-        console.log('[dsh-autotest] 认证库就绪（用户已存在）');
       }
     } catch (e) {
       console.error('[dsh-autotest] 初始化失败：', (e as Error).message);

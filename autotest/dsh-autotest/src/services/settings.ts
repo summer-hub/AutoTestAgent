@@ -35,13 +35,8 @@ export const SETTING_DEFAULTS: Record<string, unknown> = {
   'explore.systemBundles': 'com.ohos.sceneboard,com.huawei.systemui,com.ohos.systemui,com.android.systemui',
   'exec.scriptMode': 'script',
   'exec.schedulerEnabled': true,   // 多节点部署时仅主节点开启调度器（防定时计划/统计预热重复执行）
-  // ---- 多用户 / 服务器化 ----
+  // ---- 服务器化 ----
   'db.mysqlUrl': '',
-  'auth.jwtSecret': '',
-  'auth.bootstrapPassword': '',
-  'auth.inviteOnly': true,
-  'auth.accessTtlSec': 604800,   // 登录有效期 7 天（免频繁掉线）
-  'auth.refreshTtlDays': 30,
 };
 
 export type SettingValue = string | number | boolean | null;

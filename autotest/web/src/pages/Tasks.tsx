@@ -254,9 +254,9 @@ export default function TasksPage() {
                             <span className="muted" style={{ fontSize: 11, marginLeft: 8 }}>{String(ev.created_at ?? '').slice(0, 19)}</span>
                           </div>
                           <div className="muted" style={{ fontSize: 11.5, marginTop: 3 }}>
-                            {String(ev.model ?? '') && <span>{ev.model} · </span>}
-                            {ev.latency_ms !== null && ev.latency_ms !== undefined && <span>延迟 {ev.latency_ms}ms · </span>}
-                            {ev.tokens_in !== null && ev.tokens_in !== undefined && <span>入 {ev.tokens_in} / 出 {ev.tokens_out ?? 0} tokens · </span>}
+                            {String(ev.model ?? '') && <span>{String(ev.model)} · </span>}
+                            {ev.latency_ms !== null && ev.latency_ms !== undefined && <span>延迟 {String(ev.latency_ms)}ms · </span>}
+                            {ev.tokens_in !== null && ev.tokens_in !== undefined && <span>入 {String(ev.tokens_in)} / 出 {String(ev.tokens_out ?? 0)} tokens · </span>}
                             {ev.span_id ? <span className="mono">span {String(ev.span_id).slice(0, 28)}</span> : null}
                           </div>
                           {ev.detail ? (

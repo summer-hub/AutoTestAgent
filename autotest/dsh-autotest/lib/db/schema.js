@@ -1,6 +1,5 @@
 // ============================================================
 // AutoTest 平台 — 业务库 Schema（MySQL 8，服务器化）
-//  - 认证表（auth_*）在 src/auth/db.ts
 //  - 时间戳由应用层写入 ISO-8601 字符串（VARCHAR(32)）
 //  - MySQL 8 TEXT 列不允许 DEFAULT，带默认值的用 VARCHAR
 //  - 用例主表预留 cases_0..15 分片（repository 层路由），当前单表

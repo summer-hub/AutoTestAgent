@@ -96,27 +96,16 @@ Invoke-RestMethod http://localhost:3080/api/autotest/health
 - **多次扫描**：每次「拉取并分析 PR / 用例更新分析」都会生成一个新的扫描轮次（`round`，如 `R-<时间戳>-<随机数>`），旧轮次记录保留、按轮次分组展示，可「删除本轮」或「清空该库」。
 - **换仓库互不影响**：所有分析记录按三方库（`library_id`）隔离，切换/更换仓库只影响该库自己的记录。
 
-### 多用户（阶段 0：认证 + 权限）
+### 数据库上服务器（MySQL）
 
-认证与业务数据都已放在服务器 MySQL（`auth_*` 表 + `libraries/cases/tasks/...` 业务表）；Redis 作缓存。
+业务数据放服务器 MySQL（`libraries/cases/tasks/...` 业务表）；Redis 作缓存。无需账号登录，打开即用。
 
 ```powershell
-# 1. 系统配置里填好（或直接改 ~/.dsh/profiles/web/node_modules/dsh-autotest/data/autotest.db 的 settings 表）：
-#    db.mysqlUrl   = mysql://用户:密码@127.0.0.1:3306/autotest   （库需已创建，启动自动建 auth_* 表）
+# 系统配置里填好（或直接改 ~/.dsh/profiles/web/node_modules/dsh-autotest/data/autotest.db 的 settings 表）：
+#    db.mysqlUrl   = mysql://用户:密码@127.0.0.1:3306/autotest   （库需已创建，启动自动建表）
 #    data.redisUrl = redis://127.0.0.1:6379
 #    data.redisCache = true
-
-# 2. 重启 DSH，启动日志会打印初始管理员账号：
-#    [dsh-autotest] 已创建初始管理员：admin / <随机密码>
-
-# 3. 打开 AutoTest 平台会先显示登录页；用 admin 登录后，在「用户管理」页：
-#    - 新建用户并指定角色（管理员/组长/测试工程师/只读访客）
-#    - 生成邀请码给新同事注册（注册即自动登录，初始角色 viewer）
-#    - 给 CI/脚本生成 API Key（Bearer sk_xxx，可吊销）
-#    - 查看审计日志（登录/建号/改密/增删改记录）
 ```
-
-角色权限：`admin`（全量+用户/审计）、`manager`（管理业务+设备，不可管用户）、`engineer`（写用例/跑任务/执行）、`viewer`（只读）。所有业务 API 均需登录；未带 token 返回 401，越权返回 403。
 
 ### 业务库迁移到 MySQL（阶段 1）
 

@@ -39,7 +39,7 @@ caddy reload --config Caddyfile     # 热加载（caddy 服务运行中）
 
 - `https://域名/` → DSH Web 界面（AutoTest 侧边栏入口）
 - `https://域名/autotest-web/*` → AutoTest 嵌入前端
-- `https://域名/api/autotest/*` → AutoTest 业务 API（登录/用例/任务/分析等）
+- `https://域名/api/autotest/*` → AutoTest 业务 API（用例/任务/分析等）
 - DSH 自身 API/WebSocket 也在同一入口下
 
 无需按路径拆分，整体转发即可。

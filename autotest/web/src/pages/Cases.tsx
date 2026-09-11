@@ -20,9 +20,7 @@ function renderChangeNote(note: string | null): React.ReactNode {
   return n;
 }
 
-export default function CasesPage({ me }: { me?: { permissions?: string[] } | null } = {}) {
-  // case:delete 权限缺失（工程师/访客）时隐藏删除入口，避免 403 困惑
-  const canDelete = me?.permissions ? me.permissions.includes('case:delete') : true;
+export default function CasesPage() {
   const [libs, setLibs] = useState<Page<Library> | null>(null);
   const [libQ, setLibQ] = useState('');
   const [curLib, setCurLib] = useState<number | null>(null);
@@ -369,7 +367,7 @@ export default function CasesPage({ me }: { me?: { permissions?: string[] } | nu
               {(['通过', '失败', '待确认', '未执行'] as const).map((st) => (
                 <button key={st} className="btn sm" disabled={batchBusy} onClick={() => void batchStatus(st)}>{st}</button>
               ))}
-              {canDelete && <button className="btn sm" style={{ color: 'var(--red)' }} disabled={batchBusy} onClick={() => void batchDelete()}>🗑 批量删除</button>}
+              <button className="btn sm" style={{ color: 'var(--red)' }} disabled={batchBusy} onClick={() => void batchDelete()}>🗑 批量删除</button>
               <button className="btn sm ghost" onClick={() => setSel(new Set())}>取消选择</button>
             </div>
           )}
@@ -418,12 +416,8 @@ export default function CasesPage({ me }: { me?: { permissions?: string[] } | nu
                       {rowBusy?.id === c.id && rowBusy.kind === 'optimize'
                         ? <span className="muted">AI 优化中…</span>
                         : <span className="link" style={{ color: 'var(--accent2)' }} title="用例优化 Agent：保持测试意图，提升真实性与可验证性，版本自动迭代并标注【AI优化】" onClick={() => void optimizeCase(c)}>✨ AI优化</span>}
-                      {canDelete && (
-                        <>
-                          <span style={{ margin: '0 6px', color: 'var(--text3)' }}>·</span>
-                          <span className="link" style={{ color: 'var(--red)' }} onClick={() => void deleteCase(c)}>删除</span>
-                        </>
-                      )}
+                      <span style={{ margin: '0 6px', color: 'var(--text3)' }}>·</span>
+                      <span className="link" style={{ color: 'var(--red)' }} onClick={() => void deleteCase(c)}>删除</span>
                     </td>
                   </tr>
                 ))}
