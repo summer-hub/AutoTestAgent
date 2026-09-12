@@ -32,8 +32,15 @@ export interface ApiSymbol {
      * 覆盖矩阵需要它，所以单独存一列而不是只塞进签名文本里。
      */
     methods: string[];
-    /** 说明这条记录的签名有多可信 */
-    detailLevel: 'full' | 'params' | 'name-only';
+    /**
+     * 说明这条记录的签名有多可信：
+     *   full      —— 定位到定义体，且拿到了参数或方法（签名可用）
+     *   decl-only —— 定位到定义体，但只读到一行声明（如 `var scan = {`）：名字可信、签名不完整
+     *   name-only —— 没定位到定义体（如只存在于 .d.ts 的类型）：签名不可信，不要拿它生成用例
+     * 这三档必须分开：把"类有 16 个方法但构造参数为空"判成 name-only，
+     * 会让"签名不可信"这个风险标记在 16 个符号里误报 14 个，噪音把真问题淹没。
+     */
+    detailLevel: 'full' | 'decl-only' | 'name-only';
     docRefs: string[];
     /** 该符号是从哪个模块说明符解析过来的（排查用） */
     via: string;

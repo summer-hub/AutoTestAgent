@@ -522,16 +522,21 @@ export function extractDefinition(source, name) {
             const head = source.slice(m.index, Math.min(source.length, m.index + 400));
             return finish(m.index, 'class', head.split('{')[0].replace(/\s+/g, ' ').trim(), '', '');
         }
-        const arrow = after.indexOf('=>');
-        const fnIdx = after.indexOf('function');
+        // 只看**这一条赋值语句**的范围（到 `;` 或换行），避免把后面无关代码里的 function 也算进来
+        const stmtEnd = after.search(/[;\n]/);
+        const window = after.slice(0, stmtEnd < 0 ? 200 : Math.min(stmtEnd, 400));
+        const arrow = window.indexOf('=>');
+        const fnIdx = window.indexOf('function');
+        // 打包产物的常见形态是 `var X = (exports.X = function X(...) {...})`：
+        // 函数关键字离 `=` 可能有几十个字符，用固定小窗口会漏判，于是参数丢失、类被判成常量
         if (arrow >= 0 && (fnIdx < 0 || arrow < fnIdx)) {
-            const parenIdx = after.indexOf('(');
+            const parenIdx = window.indexOf('(');
             if (parenIdx >= 0 && parenIdx < arrow) {
                 const { paramsRaw, retType, sig } = readSignature(source, m.index + parenIdx);
                 return finish(m.index, 'function', sig || `${name} = (${paramsRaw}) =>`, paramsRaw, retType);
             }
         }
-        if (fnIdx >= 0 && fnIdx < 40) {
+        if (fnIdx >= 0) {
             const absFn = m.index + fnIdx;
             const parenIdx = masked.indexOf('(', absFn);
             const { paramsRaw, retType, sig } = readSignature(source, parenIdx);
@@ -625,11 +630,18 @@ function readSignature(source, parenIdx) {
     const sig = (source.slice(parenIdx, end + 1) + (retType ? `: ${retType}` : '')).replace(/\s+/g, ' ').trim();
     return { paramsRaw, retType, sig };
 }
-/** 类的方法清单（原型方法与 class 体内的方法声明）。 */
+/**
+ * 类的方法清单。
+ *
+ * 只收**函数赋值**（`X.prototype.foo = function () {}` / `= () => {}`），
+ * 不收属性赋值（`X.prototype.customFormats = {}`、`= 0`）—— 那是字段不是方法。
+ * 这一点很要紧：方法清单会被当成"这个类可测的单元"喂给用例生成 Agent，
+ * 把字段当方法会让它写出"调用 customFormats() "这种根本不存在的东西。
+ */
 function collectMethods(masked, name) {
     const esc = name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
     const out = new Set();
-    for (const m of masked.matchAll(new RegExp(`\\b${esc}\\.prototype\\.([\\w$]+)\\s*=`, 'g')))
+    for (const m of masked.matchAll(new RegExp(`\\b${esc}\\.prototype\\.([\\w$]+)\\s*=\\s*(?:async\\s+)?(?:function\\b|\\()`, 'g')))
         out.add(m[1]);
     return [...out];
 }
@@ -690,7 +702,8 @@ export function collectSymbolsFromEntry(libDir, entryAbs, opts = {}) {
                 sourceLine: detail.found && detail.line > 0 ? detail.line : e.line,
                 // 类型导出不携带运行时方法：同名运行时对象的方法不属于这个类型符号
                 methods: e.typeOnly ? [] : detail.methods,
-                detailLevel: detail.params.length > 0 ? 'full' : detail.found ? 'name-only' : 'name-only',
+                detailLevel: !detail.found ? 'name-only'
+                    : (detail.params.length > 0 || detail.methods.length > 0 || /[(=]/.test(detail.signature)) ? 'full' : 'decl-only',
                 docRefs: [],
                 via: via + (e.spec ? ` → ${e.spec}` : ''),
             };
@@ -1008,10 +1021,10 @@ export async function persistExtraction(libraryId, version, result) {
         await db.prepare('DELETE FROM demo_assets WHERE library_id = ? AND library_version = ?').run(libraryId, ver);
         for (const s of result.symbols) {
             await db.prepare(`INSERT INTO api_symbols
-        (library_id, library_version, name, kind, signature, params_json, returns_json, throws_json,
+        (library_id, library_version, name, kind, signature, detail_level, params_json, returns_json, throws_json,
          since_version, deprecated, source_file, source_line, methods_json, doc_refs, created_at, updated_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
-                .run(libraryId, ver, s.name, s.kind, s.signature, JSON.stringify(s.params), JSON.stringify(s.returns), JSON.stringify(s.throws), s.sinceVersion, s.deprecated ? 1 : 0, s.sourceFile, s.sourceLine, JSON.stringify(s.methods), JSON.stringify(s.docRefs), t, t);
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+                .run(libraryId, ver, s.name, s.kind, s.signature, s.detailLevel, JSON.stringify(s.params), JSON.stringify(s.returns), JSON.stringify(s.throws), s.sinceVersion, s.deprecated ? 1 : 0, s.sourceFile, s.sourceLine, JSON.stringify(s.methods), JSON.stringify(s.docRefs), t, t);
         }
         for (const a of result.demoAssets) {
             await db.prepare(`INSERT INTO demo_assets
@@ -1064,7 +1077,7 @@ export async function loadStoredSymbols(libraryId, version) {
                 sourceFile: String(r.source_file ?? ''),
                 sourceLine: Number(r.source_line ?? 0),
                 methods: JSON.parse(String(r.methods_json || '[]')),
-                detailLevel: JSON.parse(String(r.params_json || '[]')).length > 0 ? 'full' : 'name-only',
+                detailLevel: String(r.detail_level ?? 'name-only'),
                 docRefs: JSON.parse(String(r.doc_refs || '[]')),
                 via: '',
                 demoCallCount: stat?.demo ?? 0,

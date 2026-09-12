@@ -5,6 +5,56 @@ import type { Analysis, CaseVersion, DetectBundleResult, Device, Execution, Expl
 // 独立版默认 /api（Vite 代理到 3280）。
 const API_BASE: string = (import.meta.env.VITE_API_BASE as string | undefined) ?? '/api';
 
+/** P3 覆盖矩阵的返回结构（构建与查询共用）。 */
+export interface CoveragePayload {
+  libraryId: number;
+  libraryName?: string;
+  version: string;
+  rows: number;
+  summary: {
+    total: number; covered: number; partial: number; notCovered: number; blocked: number;
+    apiCoverage: number; scenarioCoverage: number; byRisk: Record<string, number>;
+  };
+  matrix: Array<{
+    symbolId: number; symbolName: string; kind: string;
+    status: 'covered' | 'partial' | 'not_covered' | 'blocked';
+    statusReason: string; riskFlags: string[];
+    scenarioFit: { happy: boolean; empty: boolean; boundary: boolean; bigdata: boolean };
+    deviceReachable: boolean;
+    evidence: {
+      demoCall?: { pagePath: string; sourceFile: string; sourceLine: number; snippet: string };
+      testCallCount: number; traversalReport: string; deviceControls: string[]; devicePagePath: string;
+      caseNos: string[]; negativeCaseNos: string[];
+      paramPoints: Array<{ pagePath: string; name: string; sourceFile: string; sourceLine: number }>;
+    };
+  }>;
+}
+
+
+/** P4 用例计划的返回结构。 */
+export interface CasePlanPayload {
+  libraryId: number; name: string; version: string;
+  summary: {
+    symbols: number; planned: number;
+    byScenario: Record<string, number>;
+    byPriority: Record<string, number>;
+    byKind: Record<string, number>;
+    skippedSymbols: Array<{ name: string; kind: string; reason: string }>;
+    perSymbolBreakdown: Array<{ name: string; happy: number; empty: number; boundary: number; bigdata: number }>;
+  };
+  perSymbol: Array<{
+    symbolId: number; name: string; kind: string; triggers: number; planned: number;
+    fit: Record<string, boolean>; reasons: Record<string, string>;
+    negExtra: { empty: number; boundary: number; reasons: string[] };
+  }>;
+  sampling: { budget: number; selected: number; skipped: number; report: string };
+  plans: Array<{
+    symbolId: number; symbolName: string; symbolKind: string;
+    scenario: string; priority: string; title: string; purpose: string; because: string;
+    triggerPage: string; triggerControl: string; inputPlan: string; assertionPlan: string;
+    needsPatchHint: string;
+  }>;
+}
 
 async function req<T>(url: string, init?: RequestInit): Promise<T> {
   const headers: Record<string, string> = { 'Content-Type': 'application/json' };
@@ -74,6 +124,22 @@ export const api = {
     }>;
     demoAssets: Array<{ kind: string; name: string; pagePath: string; sourceFile: string; sourceLine: number; snippet: string; mutability: string }>;
   }>(`${API_BASE}/libraries/${id}/api-symbols${version ? `?version=${encodeURIComponent(version)}` : ''}`),
+  // P3 覆盖矩阵
+  buildCoverageMatrix: (id: number) => req<CoveragePayload>(`${API_BASE}/libraries/${id}/coverage-matrix`, { method: 'POST' }),
+  coverageMatrix: (id: number, f: { status?: string; risk?: string } = {}) => {
+    const qs = new URLSearchParams();
+    if (f.status) qs.set('status', f.status);
+    if (f.risk) qs.set('risk', f.risk);
+    const q = qs.toString();
+    return req<CoveragePayload>(`${API_BASE}/libraries/${id}/coverage-matrix${q ? `?${q}` : ''}`);
+  },
+  exportCoverageMatrix: (id: number, format: 'md' | 'csv') =>
+    req<{ file: string; format: string; rows: number; summary: CoveragePayload['summary']; preview: string }>(
+      `${API_BASE}/libraries/${id}/coverage-matrix/export`, { method: 'POST', body: JSON.stringify({ format }) }),
+  // P4 用例计划（dry-run：不调 LLM、不写用例，先看数量报告）
+  casePlan: (id: number, b: { budget?: number } = {}) => req<CasePlanPayload>(`${API_BASE}/libraries/${id}/case-plan`, {
+    method: 'POST', body: JSON.stringify(b),
+  }),
 
   // 用例
   cases: (libraryId: number, params: { page?: number; pageSize?: number; q?: string; source?: string; status?: string; ver?: string } = {}) => {

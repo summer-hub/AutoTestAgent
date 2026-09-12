@@ -128,6 +128,7 @@ export type TaskType =
   | 'update_repo'    // 更新仓库代码
   | 'write_cases'    // 编写测试用例
   | 'explore_cases'  // 真机遍历生成用例（遍历数据 → 用例生成 Agent 优化）
+  | 'matrix_cases'   // 覆盖矩阵驱动生成用例（四类场景，LLM 只负责把计划写成用例）
   | 'update_cases'   // 更新测试用例
   | 'to_script';     // 用例转自动化脚本
 

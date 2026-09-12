@@ -33,6 +33,8 @@ CREATE TABLE IF NOT EXISTS api_symbols (
   name VARCHAR(255) NOT NULL,
   kind VARCHAR(32) NOT NULL,
   signature MEDIUMTEXT NOT NULL,
+  -- 签名可信度：full 定位到定义体且拿到参数或方法 / decl-only 只定位到一行声明 / name-only 没定位到定义体
+  detail_level VARCHAR(16) NOT NULL DEFAULT 'name-only',
   params_json MEDIUMTEXT NOT NULL,
   returns_json MEDIUMTEXT NOT NULL,
   throws_json MEDIUMTEXT NOT NULL,
@@ -66,6 +68,24 @@ CREATE TABLE IF NOT EXISTS demo_assets (
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 CREATE INDEX idx_demo_assets_lib ON demo_assets(library_id);
 
+-- 覆盖矩阵：接口 × demo × 控件 × 场景适用性（P3 的产物）
+CREATE TABLE IF NOT EXISTS coverage_matrix (
+  id BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+  library_id BIGINT UNSIGNED NOT NULL,
+  symbol_id BIGINT UNSIGNED NOT NULL,
+  demo_asset_id BIGINT UNSIGNED NULL,
+  control_ref VARCHAR(255) NOT NULL DEFAULT '',
+  page_path VARCHAR(512) NOT NULL DEFAULT '',
+  status VARCHAR(24) NOT NULL,
+  status_reason VARCHAR(255) NOT NULL DEFAULT '',
+  risk_flags MEDIUMTEXT NOT NULL,
+  evidence_json MEDIUMTEXT NOT NULL,
+  scenario_fit MEDIUMTEXT NOT NULL,
+  created_at VARCHAR(32) NOT NULL,
+  UNIQUE KEY uk_coverage (library_id, symbol_id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+CREATE INDEX idx_coverage_lib ON coverage_matrix(library_id, status);
+
 -- 用例主表（生产可拆 cases_0..cases_15，library_id % 16 路由）
 CREATE TABLE IF NOT EXISTS cases (
   id BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
@@ -80,6 +100,9 @@ CREATE TABLE IF NOT EXISTS cases (
   script_status VARCHAR(16) NOT NULL DEFAULT '未绑定',
   dts_url VARCHAR(512) NOT NULL DEFAULT '',
   current_version INT NOT NULL DEFAULT 1,
+  api_symbol_id BIGINT UNSIGNED NULL,
+  scenario_kind VARCHAR(16) NOT NULL DEFAULT 'happy',
+  priority VARCHAR(4) NOT NULL DEFAULT 'P1',
   created_at VARCHAR(32) NOT NULL,
   updated_at VARCHAR(32) NOT NULL,
   UNIQUE KEY uk_cases_lib_no (library_id, case_no)

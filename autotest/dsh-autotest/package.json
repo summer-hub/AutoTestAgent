@@ -39,8 +39,10 @@
     "verify:repo-paths": "node scripts/verify-repo-paths.mjs",
     "verify:sheet": "node scripts/verify-library-sheet.mjs",
     "verify:api-extract": "node scripts/verify-api-extract.mjs",
+    "verify:coverage": "node scripts/verify-coverage-matrix.mjs",
+    "verify:case-plan": "node scripts/verify-case-plan.mjs",
     "verify:contract": "npm run build && node scripts/verify-step-contract.mjs",
-    "verify:all": "npm run build && npm run verify:data && npm run verify:api && npm run verify:explorer && npm run verify:repo-paths && npm run verify:sheet && npm run verify:api-extract && node scripts/verify-step-contract.mjs",
+    "verify:all": "npm run build && npm run verify:data && npm run verify:api && npm run verify:explorer && npm run verify:repo-paths && npm run verify:sheet && npm run verify:api-extract && npm run verify:coverage && npm run verify:case-plan && node scripts/verify-step-contract.mjs",
     "db:init": "tsx src/db/init.ts",
     "db:seed": "tsx src/db/seed.ts"
   },

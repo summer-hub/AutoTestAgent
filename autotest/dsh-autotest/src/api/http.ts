@@ -27,6 +27,8 @@ import { hypiumProjectDir, writeCaseScript, ensureHypiumProject } from '../servi
 import { listEvents } from '../services/events.js';
 import { exportLibrariesSheet, resolveSheetPath, syncLibrariesFromSheet } from '../services/librarySheet.js';
 import { loadStoredSymbols, runApiExtraction } from '../services/apiExtract.js';
+import { buildCoverageMatrix, loadCoverageMatrix, renderMatrixCsv, renderMatrixMarkdown } from '../services/coverageMatrix.js';
+import { planLibraryCases, samplePlan } from '../services/casePlan.js';
 import { detectPython, runHypiumModule } from '../services/hypiumRunner.js';
 
 // ---------- mini router ----------
@@ -435,6 +437,71 @@ function defineRoutes(llm: LlmCall): void {
         sourceLine: a.source_line, snippet: a.snippet, mutability: a.mutability,
       })),
     };
+  });
+
+  // ---- P4：矩阵驱动用例计划（dry-run，不调 LLM、不写用例）----
+  //
+  // 先看数量报告再决定要不要花 token 生成：报告里每条都带"为什么会有这条"，
+  // 以及"哪些符号被判为不可测所以不生成"。抽样（预算裁剪）也在这里显式报出。
+  route('POST', '/libraries/:id/case-plan', async ({ params, body }) => {
+    const id = Number(params.id);
+    const lib = await getDb().prepare('SELECT id, name FROM libraries WHERE id = ?').get<{ id: number; name: string }>(id);
+    if (!lib) throw Object.assign(new Error('库不存在'), { statusCode: 404 });
+    const b = (body ?? {}) as { budget?: number; maxTriggersPerSymbol?: number; maxCasesPerSymbol?: number };
+    const plan = await planLibraryCases(id, {
+      maxTriggersPerSymbol: b.maxTriggersPerSymbol ?? (Number(getSetting('explore.matrixMaxTriggers', 3)) || 3),
+      maxCasesPerSymbol: b.maxCasesPerSymbol ?? (Number(getSetting('explore.matrixMaxCasesPerSymbol', 12)) || 12),
+    });
+    const budget = b.budget === undefined ? 0 : Number(b.budget);
+    const sampled = budget > 0 ? samplePlan(plan.plans, budget) : { selected: plan.plans, skipped: [], report: `共 ${plan.plans.length} 条，未设预算（全部纳入）` };
+    return {
+      libraryId: id, name: lib.name, version: plan.version,
+      summary: plan.summary,
+      perSymbol: plan.perSymbol.map((p) => ({
+        symbolId: p.symbolId, name: p.name, kind: p.kind, triggers: p.triggers, planned: p.planned,
+        fit: p.applicability.fit, reasons: p.applicability.reasons, negExtra: p.negExtra,
+      })),
+      sampling: { budget, selected: sampled.selected.length, skipped: sampled.skipped.length, report: sampled.report },
+      plans: sampled.selected,
+    };
+  });
+
+  // ---- P3：覆盖矩阵（接口 × demo × 真机控件 × 用例）----
+  route('POST', '/libraries/:id/coverage-matrix', async ({ params }) => {
+    const id = Number(params.id);
+    const r = await buildCoverageMatrix(id);
+    console.log(`[autotest] 覆盖矩阵 #${id} ${r.libraryName}：${r.rows} 行 · covered ${r.summary.covered} / partial ${r.summary.partial} / not_covered ${r.summary.notCovered} / blocked ${r.summary.blocked}`);
+    return {
+      libraryId: r.libraryId, libraryName: r.libraryName, version: r.version, rows: r.rows,
+      summary: r.summary, matrix: r.matrix,
+    };
+  });
+
+  route('GET', '/libraries/:id/coverage-matrix', async ({ params, query }) => {
+    const id = Number(params.id);
+    const row = await getDb().prepare('SELECT id FROM libraries WHERE id = ?').get<{ id: number }>(id);
+    if (!row) throw Object.assign(new Error('库不存在'), { statusCode: 404 });
+    const r = await loadCoverageMatrix(id, {
+      status: query.get('status') ?? undefined,
+      risk: query.get('risk') ?? undefined,
+    });
+    return { libraryId: id, version: r.version, summary: r.summary, rows: r.rows.length, matrix: r.rows };
+  });
+
+  route('POST', '/libraries/:id/coverage-matrix/export', async ({ params, body }) => {
+    const id = Number(params.id);
+    const lib = await getDb().prepare('SELECT id, name FROM libraries WHERE id = ?').get<{ id: number; name: string }>(id);
+    if (!lib) throw Object.assign(new Error('库不存在'), { statusCode: 404 });
+    const format = String((body as { format?: string } | undefined)?.format ?? 'md').toLowerCase() === 'csv' ? 'csv' : 'md';
+    const r = await loadCoverageMatrix(id);
+    if (r.rows.length === 0) throw Object.assign(new Error('该库还没有覆盖矩阵，请先构建。'), { statusCode: 400 });
+    const dir = path.join(workspaceDir(), 'coverage', lib.name.replace(/[^\w.-]/g, '_'));
+    fs.mkdirSync(dir, { recursive: true });
+    const file = path.join(dir, format === 'csv' ? '覆盖矩阵.csv' : '覆盖矩阵.md');
+    const content = format === 'csv' ? renderMatrixCsv(r.rows) : renderMatrixMarkdown(lib.name, r.version, r.rows, r.summary);
+    fs.writeFileSync(file, content, 'utf8');
+    console.log(`[autotest] 覆盖矩阵导出 #${id} ${lib.name} → ${file}（${r.rows.length} 行）`);
+    return { file, format, rows: r.rows.length, summary: r.summary, preview: content.slice(0, 1200) };
   });
 
   // ---- 库管理：新增 / 修改（含包名）/ 删除 ----

@@ -13,10 +13,11 @@ import SettingsPage from './pages/Settings';
 import ScriptsPage from './pages/Scripts';
 import LibrariesPage from './pages/Libraries';
 import ApiPage from './pages/Api';
+import CoveragePage from './pages/Coverage';
 import SettingsModal from './components/SettingsModal';
 import { ErrorBoundary } from './components/ErrorBoundary';
 
-export type PageKey = 'home' | 'tasks' | 'libraries' | 'api' | 'cases' | 'scripts' | 'plans' | 'analysis' | 'attribution' | 'debug' | 'devices' | 'prompts' | 'settings';
+export type PageKey = 'home' | 'tasks' | 'libraries' | 'api' | 'coverage' | 'cases' | 'scripts' | 'plans' | 'analysis' | 'attribution' | 'debug' | 'devices' | 'prompts' | 'settings';
 
 const NAV: Array<{ group: string; items: Array<{ key: PageKey; icon: string; label: string; badge?: string }> }> = [
   {
@@ -31,6 +32,7 @@ const NAV: Array<{ group: string; items: Array<{ key: PageKey; icon: string; lab
     items: [
       { key: 'libraries', icon: '📚', label: '库管理' },
       { key: 'api', icon: '🔌', label: '接口清单' },
+      { key: 'coverage', icon: '🧭', label: '覆盖矩阵' },
       { key: 'cases', icon: '🧪', label: '测试用例' },
       { key: 'scripts', icon: '🤖', label: '自动化脚本' },
     ],
@@ -55,7 +57,7 @@ const NAV: Array<{ group: string; items: Array<{ key: PageKey; icon: string; lab
 ];
 
 const TITLES: Record<PageKey, string> = {
-  home: '首页', tasks: '任务管理', libraries: '库管理', api: '接口清单', cases: '测试用例', scripts: '自动化脚本', plans: '执行计划', analysis: '数据分析',
+  home: '首页', tasks: '任务管理', libraries: '库管理', api: '接口清单', coverage: '覆盖矩阵', cases: '测试用例', scripts: '自动化脚本', plans: '执行计划', analysis: '数据分析',
   attribution: '归因分析', debug: '调试会话', devices: '设备管理', prompts: 'Prompt 管理', settings: '系统配置',
 };
 
@@ -126,6 +128,7 @@ export default function App() {
       {page === 'tasks' && <TasksPage />}
       {page === 'libraries' && <LibrariesPage />}
       {page === 'api' && <ApiPage />}
+      {page === 'coverage' && <CoveragePage />}
       {page === 'cases' && <CasesPage />}
       {page === 'scripts' && <ScriptsPage />}
       {page === 'plans' && <PlansPage />}

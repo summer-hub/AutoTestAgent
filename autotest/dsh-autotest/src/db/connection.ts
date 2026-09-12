@@ -300,6 +300,7 @@ export async function ensureReady(): Promise<void> {
         // 列迁移（新版本补列）：PRAGMA table_info 检查后 ALTER
       for (const [table, col] of [
         ['libraries', 'package_name'], ['libraries', 'main_ability'], ['libraries', 'repo_subpath'],
+        ['cases', 'api_symbol_id'], ['cases', 'scenario_kind'], ['cases', 'priority'], ['api_symbols', 'detail_level'],
         ['plans', 'script_mode'], ['plans', 'error'], ['plans', 'progress'], ['plans', 'progress_note'],
         ['tasks', 'trace_id'], ['executions', 'trace_id'], ['executions_archive', 'trace_id'],
       ] as Array<[string, string]>) {
@@ -310,6 +311,10 @@ export async function ensureReady(): Promise<void> {
               'libraries:package_name': "ALTER TABLE libraries ADD COLUMN package_name TEXT NOT NULL DEFAULT ''",
               'libraries:main_ability': "ALTER TABLE libraries ADD COLUMN main_ability TEXT NOT NULL DEFAULT ''",
               'libraries:repo_subpath': "ALTER TABLE libraries ADD COLUMN repo_subpath TEXT NOT NULL DEFAULT ''",
+              'cases:api_symbol_id': 'ALTER TABLE cases ADD COLUMN api_symbol_id INTEGER NULL',
+              'cases:scenario_kind': "ALTER TABLE cases ADD COLUMN scenario_kind TEXT NOT NULL DEFAULT 'happy'",
+              'api_symbols:detail_level': "ALTER TABLE api_symbols ADD COLUMN detail_level TEXT NOT NULL DEFAULT 'name-only'",
+              'cases:priority': "ALTER TABLE cases ADD COLUMN priority TEXT NOT NULL DEFAULT 'P1'",
               'plans:script_mode': "ALTER TABLE plans ADD COLUMN script_mode TEXT NOT NULL DEFAULT ''",
               'plans:error': "ALTER TABLE plans ADD COLUMN error TEXT NOT NULL DEFAULT ''",
               'plans:progress': 'ALTER TABLE plans ADD COLUMN progress INTEGER NOT NULL DEFAULT 0',
@@ -350,6 +355,10 @@ export async function ensureReady(): Promise<void> {
         ['libraries', 'package_name', "ALTER TABLE libraries ADD COLUMN package_name VARCHAR(128) NOT NULL DEFAULT ''"],
         ['libraries', 'main_ability', "ALTER TABLE libraries ADD COLUMN main_ability VARCHAR(255) NOT NULL DEFAULT ''"],
         ['libraries', 'repo_subpath', "ALTER TABLE libraries ADD COLUMN repo_subpath VARCHAR(512) NOT NULL DEFAULT ''"],
+        ['cases', 'api_symbol_id', 'ALTER TABLE cases ADD COLUMN api_symbol_id BIGINT UNSIGNED NULL'],
+        ['cases', 'scenario_kind', "ALTER TABLE cases ADD COLUMN scenario_kind VARCHAR(16) NOT NULL DEFAULT 'happy'"],
+        ['api_symbols', 'detail_level', "ALTER TABLE api_symbols ADD COLUMN detail_level VARCHAR(16) NOT NULL DEFAULT 'name-only'"],
+        ['cases', 'priority', "ALTER TABLE cases ADD COLUMN priority VARCHAR(4) NOT NULL DEFAULT 'P1'"],
         ['executions_archive', 'trace_id', "ALTER TABLE executions_archive ADD COLUMN trace_id VARCHAR(64) NOT NULL DEFAULT ''"],
         ['plans', 'script_mode', "ALTER TABLE plans ADD COLUMN script_mode VARCHAR(16) NOT NULL DEFAULT ''"],
         ['plans', 'error', "ALTER TABLE plans ADD COLUMN error VARCHAR(500) NOT NULL DEFAULT ''"],

@@ -13,6 +13,8 @@ import { exploreApp, ensureDeviceOnline, saveExploreReport } from './uiExplorer.
 import { hypiumProjectDir, writeCaseScript } from './hypiumGen.js';
 import { dryRunCase, mergeFailureBriefs } from './dryRun.js';
 import { guessBundleFor, listTargets } from './hdc.js';
+import { planLibraryCases, samplePlan } from './casePlan.js';
+import { buildCoverageMatrix } from './coverageMatrix.js';
 // ---------- 定向用例设计（write_cases）辅助 ----------
 const normKey = (s) => s.toLowerCase().replace(/[\s_\-./\\()（）]/g, '');
 /** 从任务输入提取关键词（中英文词元）。 */
@@ -120,6 +122,8 @@ async function execute(task, llm) {
             return await updateCases(task, lib, llm);
         case 'to_script':
             return await toScript(task, lib, llm);
+        case 'matrix_cases':
+            return await matrixCases(task, lib, llm);
         default:
             throw new Error(`未知任务类型：${task.type}`);
     }
@@ -421,14 +425,15 @@ async function insertDraftCases(libraryId, rows, note, maxOverride) {
         const maxCases = maxOverride ?? getSetting('agent.maxCasesPerTask', 20);
         for (const r of rows.slice(0, maxCases)) {
             const caseNo = `C-AI-${String(count.n + ++n).padStart(3, '0')}`;
-            const res = await db.prepare(`INSERT INTO cases (library_id, case_no, name, source, precondition, steps, expected, status, script_status, current_version, created_at, updated_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, '待确认', '未绑定', 1, ?, ?)`).run(libraryId, caseNo, r.name, r.source || 'AI 生成', r.precondition, JSON.stringify(r.steps), r.expected, t, t);
+            const res = await db.prepare(`INSERT INTO cases (library_id, case_no, name, source, precondition, steps, expected, status, script_status, current_version, api_symbol_id, scenario_kind, priority, created_at, updated_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, '待确认', '未绑定', 1, ?, ?, ?, ?, ?)`).run(libraryId, caseNo, r.name, r.source || 'AI 生成', r.precondition, JSON.stringify(r.steps), r.expected, r.apiSymbolId ?? null, r.scenarioKind ?? 'happy', r.priority ?? 'P1', t, t);
             const caseId = Number(res.lastInsertRowid);
             await db.prepare(`INSERT INTO case_versions (case_id, version, snapshot, change_note, author, author_type, created_at)
         VALUES (?, 1, ?, ?, 'AI 用例生成 Agent', 'ai', ?)`).run(caseId, JSON.stringify({
                 id: caseId, libraryId, caseNo, name: r.name, source: r.source || 'AI 生成',
                 precondition: r.precondition, steps: r.steps, expected: r.expected,
                 pagePath: r.pagePath ?? '', // 溯源：本用例来自哪个遍历页面（优化 Agent 据此定向取上下文）
+                apiSymbolId: r.apiSymbolId ?? null, scenarioKind: r.scenarioKind ?? 'happy', priority: r.priority ?? 'P1',
                 status: '待确认', scriptStatus: '未绑定', currentVersion: 1, createdAt: t, updatedAt: t,
             }), note, t);
             created.push({ id: caseId, caseNo, name: r.name, steps: r.steps });
@@ -1035,6 +1040,108 @@ ${changeCtx}
     await traceTask(task.id, '写入用例库', `更新 ${updated} 条用例（版本自动递增）`);
     return `AI 已更新 ${updated} 条用例（版本自动递增，时间线完整）。`;
 }
+/**
+ * P4：矩阵驱动用例生成。
+ *
+ * 与 explore_cases 的本质区别：**生成什么由覆盖矩阵 + 适用性规则决定，不由 LLM 自由发挥**。
+ * LLM 只负责把每条计划写成具体可执行、带断言意图的用例；"该不该有这条、该有几条"
+ * 已经由 casePlan 的纯函数算好了（那里可离线核对）。
+ *
+ * 顺带把开源闭环做上：生成后重建覆盖矩阵，任务轨迹里给出覆盖率的前后对比 ——
+ * 否则"生成了 20 条用例"和"覆盖了多少接口"之间没有可见的联系。
+ */
+async function matrixCases(task, lib, llm) {
+    const db = getDb();
+    await traceTask(task.id, '读取覆盖矩阵与适用性', `库 ${lib.name}`);
+    const plan = await planLibraryCases(lib.id, {
+        maxTriggersPerSymbol: Number(getSetting('explore.matrixMaxTriggers', 3)) || 3,
+        maxCasesPerSymbol: Number(getSetting('explore.matrixMaxCasesPerSymbol', 12)) || 12,
+    });
+    const budget = Math.max(1, Number(getSetting('agent.maxCasesPerTask', 20)) || 20);
+    const sampled = samplePlan(plan.plans, budget);
+    await traceTask(task.id, '数量报告（可解释）', [
+        `导出符号 ${plan.summary.symbols} 个 → 计划 ${plan.summary.planned} 条`,
+        `场景分布：${Object.entries(plan.summary.byScenario).map(([k, v]) => `${k} ${v}`).join(' · ')}`,
+        `优先级：${Object.entries(plan.summary.byPriority).map(([k, v]) => `${k} ${v}`).join(' · ')}`,
+        sampled.report,
+        plan.summary.skippedSymbols.length > 0 ? `不可测被跳过 ${plan.summary.skippedSymbols.length} 个符号（类型/废弃）` : '',
+    ].filter(Boolean).join('\n'));
+    if (sampled.selected.length === 0)
+        return '没有可生成的用例计划（所有符号都被判定为不可测）。';
+    // 按符号分片调用：每片独立、单片失败只重试该片，避免一次超长调用被截断
+    const bySymbol = new Map();
+    for (const c of sampled.selected) {
+        const list = bySymbol.get(c.symbolId) ?? [];
+        list.push(c);
+        bySymbol.set(c.symbolId, list);
+    }
+    const shards = [...bySymbol.entries()];
+    await traceTask(task.id, '开始生成', `${shards.length} 个符号 · ${sampled.selected.length} 条用例`);
+    const drafts = [];
+    const failures = [];
+    for (const [symbolId, cases] of shards) {
+        const first = cases[0];
+        const symName = first.symbolName;
+        try {
+            const res = await llmJson(llm, {
+                system: MATRIX_CASE_SYSTEM,
+                user: `【本次要覆盖的接口】\n${symName}（${first.symbolKind}）\n` +
+                    `【已算好的用例计划（逐条写出来，不要增删维度）】\n` +
+                    cases.map((c, i) => `${i + 1}. [${c.priority}/${c.scenario}] ${c.title}\n   目的：${c.purpose}\n   依据：${c.because}\n   输入设计：${c.inputPlan}\n   断言要点：${c.assertionPlan}\n   触发入口：${c.triggerPage || '（demo 中无现成入口）'}${c.triggerControl ? ` · 控件「${c.triggerControl}」` : ''}\n   可测性初判：${c.needsPatchHint}`).join('\n'),
+                meta: { taskId: task.id, spanId: `matrix_cases:${symName}`, kind: 'matrix_cases' },
+            });
+            const rows = Array.isArray(res.data?.cases) ? res.data.cases : [];
+            if (rows.length === 0) {
+                failures.push(`${symName}：模型未返回用例`);
+                continue;
+            }
+            rows.slice(0, cases.length).forEach((r, i) => {
+                const planRow = cases[Math.min(i, cases.length - 1)];
+                const steps = Array.isArray(r.steps) ? r.steps.map(String).filter(Boolean) : [];
+                if (steps.length === 0) {
+                    failures.push(`${symName}#${i + 1}：步骤为空，已丢弃（不做假用例）`);
+                    return;
+                }
+                drafts.push({
+                    name: String(r.name || planRow.title).slice(0, 120),
+                    source: 'AI 生成',
+                    precondition: String(r.precondition || `已启动 demo 并进入 ${planRow.triggerPage || '相关页面'}`),
+                    steps,
+                    expected: String(r.expected || planRow.assertionPlan),
+                    pagePath: planRow.triggerPage,
+                    apiSymbolId: symbolId, scenarioKind: planRow.scenario, priority: planRow.priority,
+                });
+            });
+        }
+        catch (e) {
+            failures.push(`${symName}：${e.message.slice(0, 120)}`);
+        }
+    }
+    if (failures.length > 0)
+        await traceTask(task.id, '生成中的问题', failures.slice(0, 20).join('\n'));
+    const before = await buildCoverageMatrix(lib.id);
+    const created = await insertDraftCases(lib.id, drafts, `P4 矩阵驱动生成（库版本 ${plan.version}）`, budget);
+    await db.prepare('UPDATE tasks SET progress = 70, updated_at = ? WHERE id = ?').run(now(), task.id);
+    const after = await buildCoverageMatrix(lib.id);
+    await traceTask(task.id, '覆盖率变化（生成前 → 生成后）', [
+        `接口覆盖率 ${before.summary.apiCoverage}% → ${after.summary.apiCoverage}%`,
+        `已覆盖 ${before.summary.covered} → ${after.summary.covered} · 部分覆盖 ${before.summary.partial} → ${after.summary.partial}`,
+        `未覆盖 ${before.summary.notCovered} → ${after.summary.notCovered}`,
+    ].join('\n'));
+    return [
+        `矩阵驱动生成完成：入库 ${created.length} 条用例（计划 ${sampled.selected.length} 条，其中 ${sampled.skipped.length} 条因预算未生成）`,
+        `接口覆盖率 ${before.summary.apiCoverage}% → ${after.summary.apiCoverage}%`,
+        failures.length > 0 ? `有 ${failures.length} 个符号/条目未成功（见轨迹"生成中的问题"）` : '',
+    ].filter(Boolean).join('；');
+}
+const MATRIX_CASE_SYSTEM = `你是鸿蒙三方库的真机测试用例设计者。你会拿到「一条接口符号 + 已经算好的用例计划」。
+纪律（违反即作废）：
+1. 严格按计划逐条输出，**不要增删场景维度**：计划里有几条就输出几条，顺序一致；
+2. 每条用例的步骤必须是**真机可操作的句式**：打开应用 / 点击「X」/ 输入「X」到「Y」/ 等待 N 秒 / 上滑 / 返回 / 验证「X」；
+3. 断言必须写清**可核对的结果**（界面上出现什么文本、返回什么值），禁止写"功能正常"这类无法核对的预期；
+4. 用例名要能看出接口与场景（如「Validator · 边界异常：传入非法 schema 抛出 SchemaError」）；
+5. 若计划标注「demo 中无现成入口」，步骤里要说明需要先补齐入口，不要假装能直接跑。
+只输出 JSON：{"cases":[{"name":"...","precondition":"...","steps":["..."],"expected":"..."}]}`;
 async function toScript(task, lib, llm) {
     void llm; // 确定性模板生成，不消耗 token
     const db = getDb();

@@ -29,6 +29,7 @@ CREATE TABLE IF NOT EXISTS api_symbols (
   name TEXT NOT NULL,
   kind TEXT NOT NULL,
   signature TEXT NOT NULL,
+  detail_level TEXT NOT NULL DEFAULT 'name-only',
   params_json TEXT NOT NULL,
   returns_json TEXT NOT NULL,
   throws_json TEXT NOT NULL,
@@ -61,6 +62,24 @@ CREATE TABLE IF NOT EXISTS demo_assets (
 );
 CREATE INDEX IF NOT EXISTS idx_demo_assets_lib ON demo_assets(library_id);
 
+-- 覆盖矩阵：接口 × demo × 控件 × 场景适用性（P3 的产物，也是"覆盖够不够"的唯一可证伪答案）
+CREATE TABLE IF NOT EXISTS coverage_matrix (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  library_id INTEGER NOT NULL,
+  symbol_id INTEGER NOT NULL,
+  demo_asset_id INTEGER NULL,
+  control_ref TEXT NOT NULL DEFAULT '',
+  page_path TEXT NOT NULL DEFAULT '',
+  status TEXT NOT NULL,
+  status_reason TEXT NOT NULL DEFAULT '',
+  risk_flags TEXT NOT NULL,
+  evidence_json TEXT NOT NULL,
+  scenario_fit TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  UNIQUE (library_id, symbol_id)
+);
+CREATE INDEX IF NOT EXISTS idx_coverage_lib ON coverage_matrix(library_id, status);
+
 CREATE TABLE IF NOT EXISTS cases (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   library_id INTEGER NOT NULL,
@@ -74,6 +93,12 @@ CREATE TABLE IF NOT EXISTS cases (
   script_status TEXT NOT NULL DEFAULT '未绑定',
   dts_url TEXT NOT NULL DEFAULT '',
   current_version INTEGER NOT NULL DEFAULT 1,
+  -- 用例 ↔ 接口符号的溯源（P3 覆盖矩阵要回答"这个接口有没有用例"）
+  api_symbol_id INTEGER NULL,
+  -- 场景维度：happy 正向 / empty 空值 / boundary 边界异常 / bigdata 大数据
+  scenario_kind TEXT NOT NULL DEFAULT 'happy',
+  -- 优先级：P0 正向必跑 / P1 关键负向 / P2 长尾（执行计划按它抽样，抽样必须显式报告）
+  priority TEXT NOT NULL DEFAULT 'P1',
   created_at TEXT NOT NULL,
   updated_at TEXT NOT NULL,
   UNIQUE (library_id, case_no)

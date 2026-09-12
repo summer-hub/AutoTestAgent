@@ -362,6 +362,58 @@ console.log('\n— P2 接口面提取 —');
   await raw('DELETE', `/api/autotest/libraries/${id}?force=1`);
 }
 
+// ---------- P4：用例计划（dry-run） ----------
+console.log('\n— P4 用例计划 —');
+{
+  const created = await raw('POST', '/api/autotest/libraries', {
+    headers: { 'Content-Type': 'application/json' },
+    body: { name: 'verify-plan-lib', repoUrl: 'https://gitcode.com/ohos-verify/plan.git' },
+  });
+  const id = created.json?.id;
+
+  const noSymbols = await raw('POST', `/api/autotest/libraries/${id}/case-plan`, {
+    headers: { 'Content-Type': 'application/json' }, body: {},
+  });
+  check(noSymbols.status === 400 && /接口清单/.test(noSymbols.json?.error ?? ''),
+    '没有接口清单时用例计划返回 400 且提示先采集（不是空计划糊弄过去）', `status=${noSymbols.status} msg=${noSymbols.json?.error}`);
+
+  const missing = await raw('POST', '/api/autotest/libraries/999999/case-plan', {
+    headers: { 'Content-Type': 'application/json' }, body: {},
+  });
+  check(missing.status === 404, '不存在的库返回 404', `status=${missing.status}`);
+  await raw('DELETE', `/api/autotest/libraries/${id}?force=1`);
+}
+
+// ---------- P3：覆盖矩阵 ----------
+//
+// 自检环境没有真实仓库，所以矩阵构建会因"没有接口清单"被拒；这里验的是
+// **拒绝要说清下一步做什么**，以及空状态与导出保护。
+console.log('\n— P3 覆盖矩阵 —');
+{
+  const created = await raw('POST', '/api/autotest/libraries', {
+    headers: { 'Content-Type': 'application/json' },
+    body: { name: 'verify-matrix-lib', repoUrl: 'https://gitcode.com/ohos-verify/matrix.git' },
+  });
+  const id = created.json?.id;
+
+  const noSymbols = await raw('POST', `/api/autotest/libraries/${id}/coverage-matrix`);
+  check(noSymbols.status === 400 && /接口清单/.test(noSymbols.json?.error ?? ''),
+    '没有接口清单时构建矩阵返回 400 且提示先采集接口', `status=${noSymbols.status} msg=${noSymbols.json?.error}`);
+
+  const emptyQuery = await raw('GET', `/api/autotest/libraries/${id}/coverage-matrix`);
+  check(emptyQuery.status === 200 && emptyQuery.json?.matrix?.length === 0 && emptyQuery.json?.summary?.total === 0,
+    '未构建过时查询返回空矩阵而不是报错', `status=${emptyQuery.status}`);
+
+  const emptyExport = await raw('POST', `/api/autotest/libraries/${id}/coverage-matrix/export`, {
+    headers: { 'Content-Type': 'application/json' }, body: { format: 'csv' },
+  });
+  check(emptyExport.status === 400, '空矩阵导出被拒（不生成空文件让人误以为有内容）', `status=${emptyExport.status}`);
+
+  const missing = await raw('GET', '/api/autotest/libraries/999999/coverage-matrix');
+  check(missing.status === 404, '不存在的库查询矩阵返回 404', `status=${missing.status}`);
+  await raw('DELETE', `/api/autotest/libraries/${id}?force=1`);
+}
+
 // ---------- Prompt 模板（对应前端"新建模板必然 404"的回归） ----------
 console.log('\n— Prompt 模板 —');
 const newPrompt = await raw('POST', '/api/autotest/prompts', {

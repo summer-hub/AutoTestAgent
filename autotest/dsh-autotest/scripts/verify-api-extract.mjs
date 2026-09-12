@@ -163,9 +163,35 @@ Validator.prototype.validate = function validate(instance, schema) { return null
   eq(d4.methods, ['addSchema', 'validate'], '类的方法清单（原型方法）被收集');
   check(d4.signature.includes('new Validator'), '类签名渲染为 new X(...)', d4.signature);
 
+  // ★ 原型上的**属性**不是方法：方法清单会被喂给用例 Agent 当"可测单元"，
+  // 把 customFormats 这类字段当方法会让它写出"调用 customFormats()"这种不存在的东西
+  const withProps = extractDefinition(`var Validator = function Validator() {};
+Validator.prototype.customFormats = {};
+Validator.prototype.schemas = 0;
+Validator.prototype.validate = function validate(a) { return a; };
+Validator.prototype.check = async (x) => x;`, 'Validator');
+  eq(withProps.methods, ['validate', 'check'], '★ 原型属性（customFormats/schemas）不算方法，只收函数赋值');
+
   // 找不到就诚实返回 found=false，不编造
   const none = extractDefinition(ts, 'NotExistAnywhere');
   check(none.found === false && none.signature === '' && none.params.length === 0, '找不到定义体时 found=false 且不编造签名');
+
+  // ★ 打包产物最常见的形态：`var X = (exports.X = function X(msg, schema) {...})`
+  // 函数关键字离 `=` 有几十个字符，用固定小窗口会漏判 → 参数丢失、类被判成常量
+  const wrapped = `var SchemaError = (exports.SchemaError = function SchemaError(msg, schema) {
+  this.message = msg;
+});
+SchemaError.prototype.toString = function toString() { return this.message; };`;
+  const d5 = extractDefinition(wrapped, 'SchemaError');
+  eq(d5.params.map((p) => p.name), ['msg', 'schema'], '★ 带 exports 包裹的赋值函数表达式能读出参数');
+  check(d5.kind === 'class', '★ 带原型方法的包裹赋值判为 class', d5.kind);
+  const plain = extractDefinition('var helper = function helper(a, b) { return a; };', 'helper');
+  eq(plain.params.map((p) => p.name), ['a', 'b'], '普通赋值函数表达式参数正确');
+  eq(plain.kind, 'function', '无原型方法的赋值函数判为 function');
+  eq(plain.line, 1, '行号正确');
+  // 赋值语句结束后面的函数不属于它
+  const later = extractDefinition('var cfg = { a: 1 };\nfunction other() {}', 'cfg');
+  check(later.kind === 'const' && later.params.length === 0, '赋值语句之后的函数不会被算进这个常量');
 }
 
 // ---------- 5. 导出语句解析 ----------
