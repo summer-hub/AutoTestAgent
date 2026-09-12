@@ -55,6 +55,13 @@ const TITLES: Record<PageKey, string> = {
   attribution: '归因分析', debug: '调试会话', devices: '设备管理', prompts: 'Prompt 管理', settings: '系统配置',
 };
 
+/** 页面 → 所属分组（面包屑第一段，如「智能分析 / 执行计划」）。 */
+const GROUP_OF: Record<PageKey, string> = (() => {
+  const m = {} as Record<PageKey, string>;
+  for (const g of NAV) for (const it of g.items) m[it.key] = g.group;
+  return m;
+})();
+
 // 嵌入 DSH GUI 时由构建注入 VITE_EMBED=1：隐藏独立侧边栏/顶栏，改用紧凑导航；
 // 模型管理不再提供自建入口（直接复用 DSH 设置 → 模型）。
 const EMBED = import.meta.env.VITE_EMBED === '1';
@@ -72,6 +79,14 @@ export default function App() {
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [backend, setBackend] = useState<{ version: string; db: string } | null>(null);
   const [booting, setBooting] = useState(true);
+  // 嵌入模式的手动收起状态（只影响导航轨宽度）；用 localStorage 记住，刷新后保持
+  const [navCollapsed, setNavCollapsed] = useState<boolean>(() => {
+    try { return localStorage.getItem('autotest.navCollapsed') === '1'; } catch { return false; }
+  });
+
+  useEffect(() => {
+    try { localStorage.setItem('autotest.navCollapsed', navCollapsed ? '1' : '0'); } catch { /* 忽略（隐私模式等） */ }
+  }, [navCollapsed]);
 
   const goto = (p: PageKey) => {
     setPage(p);
@@ -118,35 +133,60 @@ export default function App() {
   );
 
   if (EMBED) {
+    // 嵌入 DSH 主区的布局：左侧导航栏 + 右侧页面详情（面包屑 + 内容）。
+    // 导航支持手动收起为图标轨道（窄宽度下由 CSS 媒体查询自动收起）。
     return (
-      <div className="app embed">
-        <header className="embed-top">
+      <div className={`app embed ${navCollapsed ? 'nav-collapsed' : ''}`}>
+        <aside className="embed-side">
           <div className="embed-brand">
             <span className="embed-logo">A</span>
-            <span>AutoTest 平台</span>
-            <span className="embed-brand-sub">鸿蒙三方库自动化测试</span>
+            <span className="embed-brand-text">
+              <span className="embed-brand-name">AutoTest 平台</span>
+              <span className="embed-brand-sub">鸿蒙三方库自动化测试</span>
+            </span>
           </div>
           <nav className="embed-nav">
-            {NAV.map((g) =>
-              g.items.map((it) => (
-                <button
-                  key={it.key}
-                  type="button"
-                  className={`embed-nav-item ${page === it.key ? 'active' : ''}`}
-                  onClick={() => goto(it.key)}
-                >
-                  <span className="ico">{it.icon}</span>
-                  {it.label}
-                </button>
-              )),
-            )}
+            {NAV.map((g) => (
+              <div key={g.group} className="embed-nav-group">
+                <div className="embed-nav-group-title">{g.group}</div>
+                {g.items.map((it) => (
+                  <button
+                    key={it.key}
+                    type="button"
+                    title={it.label}
+                    className={`embed-nav-item ${page === it.key ? 'active' : ''}`}
+                    onClick={() => goto(it.key)}
+                  >
+                    <span className="ico">{it.icon}</span>
+                    <span className="lbl">{it.label}</span>
+                  </button>
+                ))}
+              </div>
+            ))}
           </nav>
-          <div className="tb-spacer" />
-          <div className="tb-pill" title={backend ? `后端版本 ${backend.version} · ${backend.db}` : '加载中'}>
-            <span className="dot green" /> {backend ? `v${backend.version} · ${backend.db}` : '连接中'}
+          <div className="embed-side-foot">
+            <span className="tb-pill" title={backend ? `后端版本 ${backend.version} · ${backend.db}` : '加载中'}>
+              <span className="dot green" /> {backend ? `v${backend.version} · ${backend.db}` : '连接中'}
+            </span>
+            <button
+              type="button"
+              className="embed-collapse"
+              aria-label={navCollapsed ? '展开导航' : '收起导航'}
+              title={navCollapsed ? '展开导航' : '收起导航'}
+              onClick={() => setNavCollapsed((v) => !v)}
+            >
+              {navCollapsed ? '»' : '«'}
+            </button>
           </div>
-        </header>
-        <div className="embed-content">{renderPage()}</div>
+        </aside>
+        <main className="embed-main">
+          <nav className="embed-crumb" aria-label="当前位置">
+            <span className="crumb-group">{GROUP_OF[page]}</span>
+            <span className="crumb-sep">/</span>
+            <b>{TITLES[page]}</b>
+          </nav>
+          <div className="embed-content">{renderPage()}</div>
+        </main>
       </div>
     );
   }

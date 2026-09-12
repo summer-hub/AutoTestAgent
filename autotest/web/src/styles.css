@@ -196,19 +196,60 @@ tr:hover td { background: var(--panel2); }
 .set-trigger { display: flex; align-items: center; gap: 9px; padding: 8px 10px; border-radius: 10px; cursor: pointer; color: var(--text2); font-size: 13px; margin: 2px 6px 4px; }
 .set-trigger:hover { background: var(--panel); }
 
-/* ---- 嵌入 DSH GUI 模式（VITE_EMBED=1）---- */
-.app.embed { height: 100%; flex-direction: column; }
-.embed-top { flex: none; display: flex; align-items: center; gap: 10px; min-height: 48px; padding: 8px 14px; background: var(--bg2); border-bottom: 1px solid var(--border); flex-wrap: wrap; }
-.app.embed .tb-spacer { flex: 0; }
-.embed-brand { display: flex; align-items: center; gap: 8px; font-size: 13.5px; font-weight: 600; white-space: nowrap; }
-.embed-logo { width: 24px; height: 24px; border-radius: 6px; background: linear-gradient(135deg, #4176e6, #5686fe); display: inline-flex; align-items: center; justify-content: center; font-size: 12px; font-weight: 700; color: #fff; }
-.embed-brand-sub { font-size: 11px; color: var(--text3); font-weight: 400; }
-.embed-nav { display: flex; align-items: center; gap: 4px; flex: 1; min-width: 0; flex-wrap: wrap; max-height: 108px; overflow-y: auto; }
-.embed-nav-item { display: inline-flex; align-items: center; gap: 5px; padding: 5px 9px; border: none; border-radius: 8px; background: transparent; color: var(--text2); font-size: 12.5px; cursor: pointer; white-space: nowrap; font-family: inherit; }
+/* ---- 嵌入 DSH GUI 模式（VITE_EMBED=1）：左导航 + 右内容 ---- */
+.app.embed { height: 100%; flex-direction: row; min-height: 0; }
+.embed-side { width: 176px; min-width: 176px; display: flex; flex-direction: column; background: var(--bg2); border-right: 1px solid var(--border); }
+.embed-brand { flex: none; display: flex; align-items: center; gap: 8px; padding: 12px 12px 10px; border-bottom: 1px solid var(--border); }
+.embed-logo { width: 24px; height: 24px; border-radius: 6px; background: linear-gradient(135deg, #4176e6, #5686fe); display: inline-flex; align-items: center; justify-content: center; font-size: 12px; font-weight: 700; color: #fff; flex: none; }
+.embed-brand-text { display: flex; flex-direction: column; min-width: 0; }
+.embed-brand-name { font-size: 13px; font-weight: 600; white-space: nowrap; }
+.embed-brand-sub { font-size: 10.5px; color: var(--text3); font-weight: 400; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.embed-nav { flex: 1; min-height: 0; overflow-y: auto; padding: 8px 8px 12px; }
+.embed-nav-group + .embed-nav-group { margin-top: 4px; }
+.embed-nav-group-title { font-size: 10.5px; color: var(--text3); padding: 8px 8px 4px; letter-spacing: .06em; }
+.embed-nav-item { position: relative; display: flex; align-items: center; gap: 8px; width: 100%; padding: 7px 9px; margin-bottom: 1px; border: none; border-radius: 8px; background: transparent; color: var(--text2); font-size: 12.5px; cursor: pointer; white-space: nowrap; font-family: inherit; text-align: left; }
 .embed-nav-item:hover { background: var(--panel); }
 .embed-nav-item.active { background: var(--accent-dim); color: var(--accent2); font-weight: 600; }
-.embed-nav-item .ico { width: auto; font-size: 13px; }
-.embed-content { flex: 1; min-height: 0; overflow-y: auto; padding: 16px 18px 32px; }
+.embed-nav-item.active::before { content: ''; position: absolute; left: -8px; top: 20%; bottom: 20%; width: 3px; border-radius: 3px; background: var(--accent); }
+.embed-nav-item .ico { width: 16px; text-align: center; font-size: 13.5px; flex: none; }
+.embed-nav-item .lbl { overflow: hidden; text-overflow: ellipsis; }
+.embed-side-foot { flex: none; display: flex; align-items: center; gap: 6px; padding: 8px 10px 10px; border-top: 1px solid var(--border); }
+.embed-side-foot .tb-pill { flex: 1; min-width: 0; justify-content: center; font-size: 11.5px; padding: 4px 8px; overflow: hidden; }
+.embed-collapse { flex: none; width: 26px; height: 26px; display: inline-flex; align-items: center; justify-content: center; border: 1px solid var(--border2); border-radius: 7px; background: var(--panel); color: var(--text3); cursor: pointer; font-size: 13px; line-height: 1; font-family: inherit; }
+.embed-collapse:hover { color: var(--accent2); border-color: var(--accent); }
+.embed-main { flex: 1; min-width: 0; display: flex; flex-direction: column; }
+/* 面包屑：窄宽度下也能一眼看出当前在哪一页 */
+.embed-crumb { flex: none; display: flex; align-items: center; gap: 6px; height: 34px; padding: 0 18px; background: var(--bg2); border-bottom: 1px solid var(--border); font-size: 12px; color: var(--text3); }
+.embed-crumb .crumb-sep { opacity: .6; }
+.embed-crumb b { color: var(--text); font-weight: 600; }
+.embed-content { flex: 1; min-height: 0; overflow-y: auto; padding: 14px 18px 32px; }
+
+/* 手动收起：与窄宽度自动收起同样是 56px 图标轨道 */
+.app.embed.nav-collapsed .embed-side { width: 56px; min-width: 56px; }
+.app.embed.nav-collapsed .embed-brand { justify-content: center; padding: 12px 6px; }
+.app.embed.nav-collapsed .embed-brand-text,
+.app.embed.nav-collapsed .embed-nav-group-title,
+.app.embed.nav-collapsed .embed-nav-item .lbl,
+.app.embed.nav-collapsed .embed-side-foot .tb-pill { display: none; }
+.app.embed.nav-collapsed .embed-nav { padding: 8px 6px; }
+.app.embed.nav-collapsed .embed-nav-item { justify-content: center; padding: 8px 0; }
+.app.embed.nav-collapsed .embed-nav-item.active::before { left: -6px; }
+.app.embed.nav-collapsed .embed-side-foot { justify-content: center; padding: 8px 6px 10px; }
+
+/* 主区被压窄时（DSH 侧栏展开 + 小窗口）：强制图标轨道。
+   这里同时隐藏折叠按钮 —— 此时展开也没有空间，留着会变成一个点了没反应的死按钮。 */
+@media (max-width: 560px) {
+  .embed-side { width: 56px; min-width: 56px; }
+  .embed-brand { justify-content: center; padding: 12px 6px; }
+  .embed-brand-text, .embed-nav-group-title, .embed-nav-item .lbl,
+  .embed-side-foot .tb-pill, .embed-collapse { display: none; }
+  .embed-nav { padding: 8px 6px; }
+  .embed-nav-item { justify-content: center; padding: 8px 0; }
+  .embed-nav-item.active::before { left: -6px; }
+  .embed-side-foot { justify-content: center; padding: 8px 6px 10px; }
+  .embed-crumb { padding: 0 12px; }
+  .embed-content { padding: 12px 12px 28px; }
+}
 .switch { width: 36px; height: 20px; border-radius: 12px; background: var(--panel3); position: relative; cursor: pointer; transition: .2s; flex-shrink: 0; }
 .switch.on { background: var(--accent); }
 .switch::after { content: ''; position: absolute; width: 14px; height: 14px; border-radius: 50%; background: #fff; top: 3px; left: 3px; transition: .2s; }

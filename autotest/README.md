@@ -93,14 +93,14 @@ cd dsh-autotest && npm pack                # 产出 dsh-autotest-<version>.tgz
 ```jsonc
 // ~/.dsh/profiles/<name>/package.json
 // 版本号与 dsh-autotest/package.json 的 version 保持一致（CI 会校验 tag 与版本一致）
-"dsh-autotest": "https://github.com/summer-hub/AutoTestAgent/releases/download/v0.1.57/dsh-autotest-0.1.57.tgz"
+"dsh-autotest": "https://github.com/summer-hub/AutoTestAgent/releases/download/v0.1.58/dsh-autotest-0.1.58.tgz"
 ```
 
 仓库已配好 GitHub Actions（打 `v*` tag 自动构建并发布 Release + tarball）。发布前会跑类型检查、三套自检、`lib/` 产物一致性与 tag/版本一致性校验：
 
 ```bash
 # 先改 dsh-autotest/package.json 的 version，并 npm run build:plugin 提交产物，再打 tag
-git tag v0.1.57 && git push origin v0.1.57
+git tag v0.1.58 && git push origin v0.1.58
 ```
 
 ## 目录结构
@@ -178,7 +178,7 @@ Redis 缓存与连接池已落地；分表路由层存在但未启用（当前 S
 - **LLM 稳健性**：`ctx.llm` 选定模型后最多重试 3 次（**不跨模型切换**，行为确定性优先）；输出 JSON 做围栏剥离/换行/尾逗号容错，解析失败会把错误回灌模型修复一次；驱动分片生成的解析错误保存在**调用局部变量**里（并发分片之间不会互相污染）；LLM 不可用时降级为规则分析（source=fallback）。
 - **系统配置**：Settings 页读写 settings 表的配置键（工作区/单任务用例上限/LLM 温度与超时/计划抽样/Redis 与缓存 TTL/遍历参数/MySQL 连接串），保存立即生效。**敏感键（MySQL/Redis 连接串）出参只回传打码值**，且掩码原样回传会被识别为"不改动"，不会覆盖真实凭据。
 - **缓存与连接池**：内存 LRU（配置 `data.redisUrl` + `data.redisCache` 后自动切 Redis），写路径在**写库成功之后**按前缀失效（含单条用例键）；MySQL 连接池；`repository.ts` 的 `library_id % 16` 分表路由层**已预留但未启用**（`caseTableFor()` 恒返回 `cases`），压测脚本 `node scripts/stress.mjs` 用于冷/热缓存对比。
-- **前端插件化（步骤 2）**：`dsh-autotest` 增加 client 半边（`dsh.client.platform: web` + `./client` 导出），浏览器侧 DOM 注入侧边栏入口 + 主区 iframe（挂 `/autotest-web/`）；嵌入模式隐藏独立侧边栏，模型管理直接复用 DSH 设置（设置 → 模型）。
+- **前端插件化（步骤 2）**：`dsh-autotest` 增加 client 半边（`dsh.client.platform: web` + `./client` 导出），浏览器侧 DOM 注入侧边栏入口 + 主区 iframe（挂 `/autotest-web/`）。**嵌入布局为「左侧导航 + 右侧内容」**：左侧 176px 导航按分组竖排 11 个入口（可手动收起为 56px 图标轨道，状态记在 localStorage；窗口窄于 560px 时自动收起并隐藏折叠按钮），右侧顶部是「分组 / 当前页」面包屑、下方是页面详情。模型管理直接复用 DSH 设置（设置 → 模型）。
 
 ## 自检（提交前 / CI 门禁）
 
