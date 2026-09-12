@@ -124,6 +124,8 @@ CREATE INDEX idx_executions_case ON executions(case_id);
 CREATE INDEX idx_executions_status ON executions(status);
 
 -- 执行归档（旧记录按月归档，主表保持小；由 scheduler 每日触发）
+-- ⚠️ 列必须与 executions 一一对应：归档用列名显式 INSERT..SELECT，
+--    缺列会直接报错（历史上漏过 trace_id，导致归档静默失效）。
 CREATE TABLE IF NOT EXISTS executions_archive (
   id BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
   plan_id BIGINT UNSIGNED NULL,
@@ -132,6 +134,7 @@ CREATE TABLE IF NOT EXISTS executions_archive (
   device_id BIGINT UNSIGNED NULL,
   status VARCHAR(16) NOT NULL DEFAULT 'pending',
   steps MEDIUMTEXT NOT NULL,
+  trace_id VARCHAR(64) NOT NULL DEFAULT '',
   thinking MEDIUMTEXT NULL,
   logs MEDIUMTEXT NULL,
   started_at VARCHAR(32) NULL,

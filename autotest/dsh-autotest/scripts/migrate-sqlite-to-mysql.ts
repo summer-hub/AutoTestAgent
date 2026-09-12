@@ -1,4 +1,4 @@
-// 一次性迁移脚本：SQLite（data/autotest.db）→ MySQL（db.mysqlUrl / AUTOTEST_MYSQL_URL）
+// 一次性迁移脚本：SQLite（data/autotest.sqlite3）→ MySQL（db.mysqlUrl / AUTOTEST_MYSQL_URL）
 // 用法：npx tsx scripts/migrate-sqlite-to-mysql.ts
 // 步骤：建业务表（幂等）→ 按依赖序批量迁移 → 行数校验
 import fs from 'node:fs';
@@ -9,23 +9,41 @@ import mysql from 'mysql2/promise';
 import { schemaStatements } from '../src/db/schema.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const DB_PATH = process.env.AUTOTEST_SQLITE_DB || path.resolve(__dirname, '../data/autotest.db');
+// 库文件名必须是 autotest.sqlite3（与 db/sqlite.ts 一致）。
+// 历史坑：这里曾写成 autotest.db，better-sqlite3 会"热心地"新建一个空库，
+// 于是脚本报"每张表 0 行（跳过）"并正常退出 —— 看起来迁移成功，实际什么都没搬。
+const DB_PATH = process.env.AUTOTEST_SQLITE_DB || path.resolve(__dirname, '../data/autotest.sqlite3');
 const MYSQL_URL = process.env.AUTOTEST_MYSQL_URL || 'mysql://root:123456@127.0.0.1:3306/autotest';
 
 const TABLES = [
   'libraries', 'cases', 'case_versions', 'tasks', 'plans',
-  'executions', 'devices', 'prompts', 'models', 'analyses', 'settings',
+  'executions', 'executions_archive', 'devices', 'prompts', 'models', 'analyses',
+  'agent_events', 'settings',
 ];
 
 async function main(): Promise<void> {
   if (!fs.existsSync(DB_PATH)) throw new Error(`SQLite 数据库不存在：${DB_PATH}`);
   const src = new Database(DB_PATH, { readonly: true });
+  // 源库体检：空库/错库时必须直接失败。否则每张表都是"0 行（跳过）"，
+  // 脚本会以退出码 0 结束，看起来迁移成功、实际一行没搬。
+  const srcTables = (src.prepare(`SELECT name FROM sqlite_master WHERE type = 'table'`).all() as Array<{ name: string }>).map((r) => r.name);
+  const missing = TABLES.filter((t) => !srcTables.includes(t));
+  const srcLibs = srcTables.includes('libraries')
+    ? (src.prepare('SELECT COUNT(*) AS n FROM libraries').get() as { n: number }).n
+    : 0;
+  if (missing.length === TABLES.length || srcLibs === 0) {
+    throw new Error(
+      `源库看起来不是有效的 AutoTest 业务库：${DB_PATH}\n` +
+      `  表数 ${srcTables.length}、libraries ${srcLibs} 行、缺失表 ${missing.join(', ') || '无'}\n` +
+      `  请确认路径（默认 data/autotest.sqlite3），或用 AUTOTEST_SQLITE_DB 指定。`,
+    );
+  }
   const pool = mysql.createPool({
     uri: MYSQL_URL, waitForConnections: true, connectionLimit: 8,
     charset: 'utf8mb4', timezone: 'Z', dateStrings: true, supportBigNumbers: true,
   });
 
-  console.log(`[migrate] SQLite: ${DB_PATH}`);
+  console.log(`[migrate] SQLite: ${DB_PATH}（${srcTables.length} 张表 / libraries ${srcLibs} 行）`);
   console.log(`[migrate] MySQL: ${MYSQL_URL}`);
 
   // 1. 建业务表（幂等）

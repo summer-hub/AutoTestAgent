@@ -9,12 +9,13 @@ import { caseTableFor, shardOf, shardStats } from '../db/repository.js';
 import type { LlmCall } from '../services/llmHarness.js';
 import { runTask, optimizeCaseById } from '../services/executor.js';
 import { executePlan } from '../services/planExecutor.js';
-import { registerScheduledPlan } from '../services/scheduler.js';
+import { registerScheduledPlan, unregisterScheduledPlan } from '../services/scheduler.js';
 import {
   analyzeAttribution, analyzeCaseUpdates, analyzePrChanges, fetchPr, fetchPrs, fetchPrsFromGit, parseRepoPath,
   type GitCodePr, type LibraryRow,
 } from '../services/analyzer.js';
-import { getAllSettings, getSetting, setSetting, type SettingValue } from '../services/settings.js';
+import { getAllSettings, getSetting, maskSettingValue, SECRET_SETTING_KEYS, setSetting, type SettingValue } from '../services/settings.js';
+import { isMaskedSecret, maskSecret, resolveSecretInput } from '../services/secrets.js';
 import { cacheDel, cacheGet, cacheSet } from '../services/cache.js';
 import { readDshDefaultModel } from '../services/llmHarness.js';
 import { autoScanDevices } from '../services/deviceScanner.js';
@@ -79,21 +80,138 @@ async function withCache<T>(key: string, fn: () => T | Promise<T>): Promise<T> {
   return value;
 }
 
+/**
+ * 用例写路径统一失效。
+ * ⚠️ 必须在"写库成功之后"调用：写在写库之前时，并发读会把旧值重新回填进缓存，
+ * 造成 TTL 内的脏读（改完仍看到旧内容、删完仍能看到该用例）。
+ */
+function invalidateCaseCaches(opts: { libCounts?: boolean } = {}): void {
+  void cacheDel('cases');
+  void cacheDel('stats');
+  if (opts.libCounts !== false) { void cacheDel('lib'); void cacheDel('libs'); }
+}
+
+/** 请求体上限：Excel 导入走 base64 JSON，正常远小于此；无上限时单个请求即可打爆内存。 */
+const MAX_BODY_BYTES = 2 * 1024 * 1024;
+
+/** 解析 JSON 请求体：限制大小、校验 Content-Type、坏 JSON 明确报错（不再静默变成 {}）。 */
 function readBody(req: IncomingMessage): Promise<any> {
-  return new Promise((resolve) => {
+  return new Promise((resolve, reject) => {
+    const ctype = String(req.headers['content-type'] ?? '').split(';')[0].trim().toLowerCase();
+    if (ctype && ctype !== 'application/json') {
+      reject(Object.assign(new Error(`不支持的 Content-Type：${ctype}（仅接受 application/json）`), { statusCode: 415 }));
+      return;
+    }
     const chunks: Buffer[] = [];
-    req.on('data', (c) => chunks.push(c as Buffer));
-    req.on('end', () => {
-      if (chunks.length === 0) return resolve({});
-      try { resolve(JSON.parse(Buffer.concat(chunks).toString('utf-8'))); } catch { resolve({}); }
+    let size = 0;
+    let overflow = 0;              // 超限后仍继续收到的字节数（只计数、不缓冲）
+    let settled = false;
+    const settle = (fn: () => void): void => { if (!settled) { settled = true; fn(); } };
+    req.on('data', (c: Buffer) => {
+      if (settled) return;
+      // 超限后不再缓冲，但把剩余数据读完，好让客户端能正常读到 413
+      // （立刻 pause/destroy 会让客户端看到 ECONNRESET，拿不到错误原因）
+      if (overflow > 0 || size + c.length > MAX_BODY_BYTES) {
+        overflow += c.length;
+        chunks.length = 0;
+        // 硬上限：防慢速灌水长期占住连接
+        if (overflow > MAX_BODY_BYTES * 8) {
+          req.destroy();
+          settle(() => reject(Object.assign(
+            new Error(`请求体过大（超过 ${Math.round(MAX_BODY_BYTES / 1024 / 1024)}MB）`), { statusCode: 413 },
+          )));
+        }
+        return;
+      }
+      size += c.length;
+      chunks.push(c);
     });
-    req.on('error', () => resolve({}));
+    req.on('end', () => settle(() => {
+      if (overflow > 0) {
+        reject(Object.assign(new Error(`请求体过大（超过 ${Math.round(MAX_BODY_BYTES / 1024 / 1024)}MB）`), { statusCode: 413 }));
+        return;
+      }
+      if (chunks.length === 0) { resolve({}); return; }
+      try { resolve(JSON.parse(Buffer.concat(chunks).toString('utf-8'))); }
+      catch { reject(Object.assign(new Error('请求体不是合法 JSON（已拒绝，避免按空对象继续写库）'), { statusCode: 400 })); }
+    }));
+    // 客户端中途断开：必须让 Promise 落地，否则 handler 永久挂起、连接与闭包常驻
+    req.on('aborted', () => settle(() => reject(Object.assign(new Error('客户端提前断开连接'), { statusCode: 400 }))));
+    req.on('error', (e) => settle(() => reject(e)));
   });
+}
+
+/**
+ * 同源闸门。
+ * 本 API 无鉴权且挂在 127.0.0.1，浏览器里的任意网页都能发"简单请求"触发副作用
+ * （不校验 Content-Type 时，<form enctype="text/plain"> 就能构造出合法 JSON body）。
+ * 这里拒绝跨站来源：带 Origin 且与 Host 不一致 → 403；Sec-Fetch-Site: cross-site 同理。
+ * 服务端/CLI/脚本调用不带 Origin，照常放行；确有跨源需要时用 AUTOTEST_ALLOW_CROSS_ORIGIN=1 关闭本闸门。
+ */
+function assertSameOrigin(req: IncomingMessage): void {
+  if (String(process.env.AUTOTEST_ALLOW_CROSS_ORIGIN || '') === '1') return;
+  const site = String(req.headers['sec-fetch-site'] ?? '').toLowerCase();
+  if (site === 'cross-site') {
+    throw Object.assign(new Error('拒绝跨站请求（Sec-Fetch-Site: cross-site）'), { statusCode: 403 });
+  }
+  const origin = req.headers.origin;
+  if (!origin) return;
+  if (origin === 'null') {
+    throw Object.assign(new Error('拒绝来自不透明来源（Origin: null）的请求'), { statusCode: 403 });
+  }
+  let originHost = '';
+  try { originHost = new URL(origin).host; } catch { originHost = ''; }
+  const reqHost = String(req.headers.host ?? '');
+  if (!originHost || originHost !== reqHost) {
+    throw Object.assign(new Error(`拒绝跨源请求：Origin=${origin} 与 Host=${reqHost} 不一致`), { statusCode: 403 });
+  }
 }
 
 function send(res: ServerResponse, status: number, data: unknown): void {
   res.writeHead(status, { 'Content-Type': 'application/json; charset=utf-8' });
   res.end(JSON.stringify(data));
+}
+
+/**
+ * 整数查询参数钳制（必须同时给上下限）。
+ *  - 缺省（null/undefined/''）要回落到默认值：`Number(null)` 是 0，若不先判空会被夹成下限 1，
+ *    于是"没传 limit"变成"只返回 1 条"。
+ *  - 只设上限也是个真实陷阱：SQLite 里 `LIMIT -1` 表示"无限制"，`?limit=-1` 会让整张表
+ *    （含 logs/thinking 大字段）一次性返回；MySQL 下同一请求则直接语法错误 500。
+ */
+function clampInt(raw: unknown, def: number, min: number, max: number): number {
+  if (raw === null || raw === undefined || raw === '') return def;
+  const n = Math.trunc(Number(raw));
+  if (!Number.isFinite(n)) return def;
+  return Math.min(max, Math.max(min, n));
+}
+
+/**
+ * 模型端点（baseUrl）校验。
+ * 连通性测试会携带 `Authorization: Bearer <apiKey>` 请求该地址，所以 baseUrl 是"把密钥送出去"的方向：
+ *  - 限定 http/https；
+ *  - 拒绝链路本地/云元数据地址（169.254.0.0/16 等）——经典凭据窃取目标；
+ *  - 环回与本网段刻意放行：本工具常见用法就是本机 ollama（种子里的 http://localhost:11434/v1），
+ *    一刀切封掉会直接废掉内置默认模型。跨站写入风险由 assertSameOrigin 闸门承担。
+ */
+function assertSafeModelBaseUrl(raw: unknown): string {
+  const s = String(raw ?? '').trim();
+  if (!s) throw Object.assign(new Error('baseUrl 必填'), { statusCode: 400 });
+  let u: URL;
+  try { u = new URL(s); } catch { throw Object.assign(new Error(`baseUrl 不是合法 URL：${s}`), { statusCode: 400 }); }
+  if (u.protocol !== 'http:' && u.protocol !== 'https:') {
+    throw Object.assign(new Error(`baseUrl 仅支持 http/https，收到 ${u.protocol}`), { statusCode: 400 });
+  }
+  const host = u.hostname.toLowerCase();
+  const blocked =
+    /^169\.254\./.test(host) ||
+    host === 'metadata.google.internal' ||
+    host === 'metadata' ||
+    host === '[fd00:ec2::254]';
+  if (blocked) {
+    throw Object.assign(new Error(`出于安全考虑，不允许把模型端点指向链路本地/元数据地址：${host}`), { statusCode: 400 });
+  }
+  return s;
 }
 
 function errorStatus(e: unknown): number {
@@ -106,6 +224,7 @@ export function makeApiHandler(llm: LlmCall): (req: IncomingMessage, res: Server
   return async (req, res) => {
     try {
       await ensureReady();
+      assertSameOrigin(req);
       const url = new URL(req.url ?? '/', 'http://localhost');
       const path = url.pathname.replace(/^\/api\/autotest/, '') || '/';
       const query = url.searchParams;
@@ -179,7 +298,12 @@ function defineRoutes(llm: LlmCall): void {
     }
     fs.mkdirSync(target, { recursive: true });
     const cmd = process.platform === 'win32' ? 'explorer' : process.platform === 'darwin' ? 'open' : 'xdg-open';
-    spawn(cmd, [target], { detached: true, stdio: 'ignore' }).unref();
+    // 必须挂 error 监听：ChildProcess 的 'error' 是事件而非 Promise，无人监听时会抛出未捕获异常，
+    // 直接干掉整个 DSH 宿主进程（headless Linux 上没有 xdg-open 时必现）。
+    // 该事件是异步的，此处只能记日志；目录本身已创建成功。
+    const child = spawn(cmd, [target], { detached: true, stdio: 'ignore' });
+    child.on('error', (e) => console.warn(`[dsh-autotest] 调起 ${cmd} 失败（目录已创建）：${(e as Error).message}`));
+    child.unref();
     return { ok: true, opened: target };
   });
 
@@ -188,8 +312,14 @@ function defineRoutes(llm: LlmCall): void {
   route('PUT', '/settings/:key', async ({ params, body }) => {
     const { value } = body as { value?: SettingValue };
     if (value === undefined) throw Object.assign(new Error('value 必填'), { statusCode: 400 });
-    setSetting(decodeURIComponent(params.key), value);
-    return { ok: true, key: decodeURIComponent(params.key), value };
+    // params.key 在路由层已经 decodeURIComponent 过一次，这里不能再解（含 % 的键会抛 URIError）
+    const key = params.key;
+    // 敏感键：如果客户端回传的是脱敏回显（••••），视为"不改动"，绝不能拿掩码覆盖真实凭据
+    if (SECRET_SETTING_KEYS[key] && isMaskedSecret(value)) {
+      return { ok: true, key, value: maskSettingValue(key, getSetting<SettingValue>(key, '')), unchanged: true };
+    }
+    setSetting(key, value);
+    return { ok: true, key, value: maskSettingValue(key, value) };
   });
 
   // ---- libraries ----
@@ -206,11 +336,16 @@ function defineRoutes(llm: LlmCall): void {
       const where = conds.length ? `WHERE ${conds.join(' AND ')}` : '';
       const order = cursor ? 'l.id DESC' : 'l.id';
       const total = (await db.prepare(`SELECT COUNT(*) AS n FROM libraries l ${where}`).get<{ n: number }>({ like, cursor }))?.n ?? 0;
+      // 有用例的库数：前端"用例库覆盖率"必须用全量聚合值。
+      // 它只能从 items 里数当页的（被 pageSize 上限截断），除以真实 total 会得出被低估的覆盖率。
+      const withCases = (await db.prepare(
+        `SELECT COUNT(*) AS n FROM libraries l ${where ? `${where} AND` : 'WHERE'} EXISTS (SELECT 1 FROM cases c WHERE c.library_id = l.id)`,
+      ).get<{ n: number }>({ like, cursor }))?.n ?? 0;
       const rows = await db.prepare(`
         SELECT l.*, (SELECT COUNT(*) FROM cases c WHERE c.library_id = l.id) AS case_count
         FROM libraries l ${where} ORDER BY ${order} LIMIT @limit OFFSET @offset`).all<Record<string, unknown>>({ like, cursor, limit: pageSize, offset: (page - 1) * pageSize });
       const nextCursor = rows.length > 0 ? Number((rows[rows.length - 1] as Record<string, unknown>).id) : null;
-      return { items: rows.map(mapLibrary), total, page, pageSize, nextCursor };
+      return { items: rows.map(mapLibrary), total, withCases, page, pageSize, nextCursor };
     }));
   });
 
@@ -301,7 +436,9 @@ function defineRoutes(llm: LlmCall): void {
   });
 
   route('GET', '/cases/:id', async ({ params }) => {
-    return withCache(`case:${params.id}`, async () => {
+    // 键名必须落在 'cases' 前缀下：写路径统一用 cacheDel('cases') 按前缀失效，
+    // 原来的 `case:<id>` 不匹配 'cases' 前缀，导致改/删之后 TTL 内仍返回旧值（甚至已删除的用例）。
+    return withCache(`cases:item:${params.id}`, async () => {
       const db = getDb();
       const row = await getCaseOr404(db, Number(params.id));
       const lib = await db.prepare('SELECT name FROM libraries WHERE id = ?').get<{ name: string }>(row.library_id);
@@ -320,10 +457,9 @@ function defineRoutes(llm: LlmCall): void {
     const b = body as { libraryId?: number; caseNo?: string; name?: string; source?: string; precondition?: string; steps?: string[]; expected?: string; dtsUrl?: string; status?: string };
     if (!b.libraryId || !b.caseNo || !b.name) throw Object.assign(new Error('libraryId / caseNo / name 必填'), { statusCode: 400 });
     const db = getDb();
-    void cacheDel('cases'); void cacheDel('stats'); void cacheDel('lib'); void cacheDel('libs');
     const t = now();
     const created = await db.transaction(async () => {
-      const steps = Array.isArray(b.steps) ? b.steps : [];
+      const steps = normalizeStepsInput(b.steps) ?? [];
       const res = await db.prepare(`INSERT INTO cases (library_id, case_no, name, source, precondition, steps, expected, status, script_status, dts_url, current_version, created_at, updated_at)
         VALUES (?, ?, ?, ?, ?, ?, ?, ?, '未绑定', ?, 1, ?, ?)`).run(
         b.libraryId, b.caseNo, b.name, b.source ?? '新需求引入', b.precondition ?? '', JSON.stringify(steps),
@@ -338,6 +474,7 @@ function defineRoutes(llm: LlmCall): void {
       }), t);
       return caseId;
     });
+    invalidateCaseCaches();
     return mapCase(await db.prepare('SELECT * FROM cases WHERE id = ?').get<Record<string, unknown>>(created) as Record<string, unknown>);
   });
 
@@ -348,16 +485,17 @@ function defineRoutes(llm: LlmCall): void {
       : [];
     if (ids.length === 0) throw Object.assign(new Error('ids 必填（非空数字数组）'), { statusCode: 400 });
     const db = getDb();
-    void cacheDel('cases'); void cacheDel('stats'); void cacheDel('lib'); void cacheDel('libs');
     const marks = ids.map(() => '?').join(',');
-    await db.transaction(async () => {
+    const deleted = await db.transaction(async () => {
       await db.prepare(`DELETE FROM case_versions WHERE case_id IN (${marks})`).run(...ids);
       await db.prepare(`DELETE FROM executions WHERE case_id IN (${marks})`).run(...ids);
       await db.prepare(`DELETE FROM analyses WHERE case_id IN (${marks})`).run(...ids);
       const r = await db.prepare(`DELETE FROM cases WHERE id IN (${marks})`).run(...ids);
       return r.changes;
     });
-    return { ok: true, deleted: ids.length };
+    invalidateCaseCaches();
+    // 返回真实删除行数，而不是"请求里带了多少个 id"（后者会把不存在的 id 也算成已删除）
+    return { ok: true, deleted };
   });
 
   route('PUT', '/cases/batch-status', async ({ body }) => {
@@ -367,16 +505,16 @@ function defineRoutes(llm: LlmCall): void {
     if (ids.length === 0) throw Object.assign(new Error('ids 必填（非空数字数组）'), { statusCode: 400 });
     if (!['通过', '失败', '待确认', '未执行'].includes(status)) throw Object.assign(new Error('status 非法'), { statusCode: 400 });
     const db = getDb();
-    void cacheDel('cases'); void cacheDel('stats');
     const marks = ids.map(() => '?').join(',');
     const r = await db.prepare(`UPDATE cases SET status = ?, updated_at = ? WHERE id IN (${marks})`).run(status, now(), ...ids);
+    invalidateCaseCaches({ libCounts: false });
     return { ok: true, updated: r.changes, status };
   });
 
   route('POST', '/cases/:id/optimize', async ({ params }) => {
     const id = Number(params.id);
     const r = await optimizeCaseById(id, llm);
-    void cacheDel('cases');
+    invalidateCaseCaches();
     return { ok: true, ...r };
   }, { llm: true });
 
@@ -431,7 +569,6 @@ function defineRoutes(llm: LlmCall): void {
     const id = Number(params.id);
     const b = body as Record<string, unknown>;
     const db = getDb();
-    void cacheDel('cases'); void cacheDel('stats'); void cacheDel('lib'); void cacheDel('libs');
     const row = await getCaseOr404(db, id);
     const t = now();
     const nextVersion = row.current_version + 1;
@@ -440,7 +577,9 @@ function defineRoutes(llm: LlmCall): void {
         id, libraryId: row.library_id, caseNo: row.case_no,
         name: (b.name as string) ?? row.name, source: (b.source as string) ?? row.source,
         precondition: (b.precondition as string) ?? row.precondition,
-        steps: (b.steps as string[]) ?? JSON.parse(row.steps),
+        // 必须校验数组：传入字符串会被原样落库，之后所有读取路径的 rawSteps.map() 都会抛
+        // TypeError，把整个库的用例列表打成 500（只能改库才能恢复）。
+        steps: normalizeStepsInput(b.steps) ?? parseStepsStored(row.steps),
         expected: (b.expected as string) ?? row.expected,
         status: (b.status as string) ?? row.status,
         scriptStatus: (b.scriptStatus as string) ?? row.script_status,
@@ -458,13 +597,13 @@ function defineRoutes(llm: LlmCall): void {
       );
       return snapshot;
     });
+    invalidateCaseCaches();
     return updated;
   });
 
   route('DELETE', '/cases/:id', async ({ params }) => {
     const id = Number(params.id);
     const db = getDb();
-    void cacheDel('cases'); void cacheDel('stats'); void cacheDel('lib'); void cacheDel('libs');
     const row = await getCaseOr404(db, id);
     await db.transaction(async () => {
       await db.prepare('DELETE FROM case_versions WHERE case_id = ?').run(id);
@@ -472,6 +611,7 @@ function defineRoutes(llm: LlmCall): void {
       await db.prepare('DELETE FROM analyses WHERE case_id = ?').run(id);
       await db.prepare('DELETE FROM cases WHERE id = ?').run(id);
     });
+    invalidateCaseCaches();
     return { ok: true, deletedCaseNo: row.case_no };
   });
 
@@ -480,7 +620,6 @@ function defineRoutes(llm: LlmCall): void {
     const target = Number((body as { version?: number }).version);
     if (!target) throw Object.assign(new Error('version 必填'), { statusCode: 400 });
     const db = getDb();
-    void cacheDel('cases'); void cacheDel('stats'); void cacheDel('lib'); void cacheDel('libs');
     const row = await getCaseOr404(db, id);
     const vrow = await db.prepare('SELECT * FROM case_versions WHERE case_id = ? AND version = ?').get<Record<string, unknown>>(id, target);
     if (!vrow) throw Object.assign(new Error(`版本 V${target} 不存在`), { statusCode: 404 });
@@ -497,6 +636,7 @@ function defineRoutes(llm: LlmCall): void {
         `回滚到 V${target}：内容恢复至该版本快照。`, (body as { author?: string }).author ?? '测试工程师', t,
       );
     });
+    invalidateCaseCaches();
     return { id, currentVersion: nextVersion, rolledBackTo: target, updatedAt: t };
   });
 
@@ -508,7 +648,6 @@ function defineRoutes(llm: LlmCall): void {
     const libraryId = Number(b.libraryId);
     if (!libraryId || !b.base64) throw Object.assign(new Error('libraryId / base64 必填'), { statusCode: 400 });
     const db = getDb();
-    void cacheDel('cases'); void cacheDel('stats'); void cacheDel('lib'); void cacheDel('libs');
     const lib = await db.prepare('SELECT id, name FROM libraries WHERE id = ?').get<{ id: number; name: string }>(libraryId);
     if (!lib) throw Object.assign(new Error('三方库不存在'), { statusCode: 404 });
 
@@ -529,7 +668,8 @@ function defineRoutes(llm: LlmCall): void {
         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?)`);
       const insertVer = db.prepare(`INSERT INTO case_versions (case_id, version, snapshot, change_note, author, author_type, created_at)
         VALUES (?, 1, ?, 'Excel 导入初始创建', 'Excel 导入', 'human', ?)`);
-      for (const row of raw) {
+      for (let ri = 0; ri < raw.length; ri++) {
+        const row = raw[ri];
         const norm = normalizeCaseRow(row);
         if (!norm.name) { skipped++; continue; }
         try {
@@ -546,10 +686,13 @@ function defineRoutes(llm: LlmCall): void {
           }), t);
           imported++;
         } catch (e) {
-          errors.push(`第 ${raw.indexOf(row) + 2} 行：${(e as Error).message}`);
+          // 用循环下标定位行号：原来对原数组做 indexOf 既是 O(n²)，
+          // 又会在存在重复行时永远指向第一处，报错行号不可信。
+          errors.push(`第 ${ri + 2} 行：${(e as Error).message}`);
         }
       }
     });
+    invalidateCaseCaches();
 
     return { imported, skipped, errors, libraryId, libraryName: lib.name, fileName: b.fileName ?? null };
   });
@@ -581,8 +724,11 @@ function defineRoutes(llm: LlmCall): void {
     if (!b.name || !b.baseUrl || !b.modelId) throw Object.assign(new Error('name / baseUrl / modelId 必填'), { statusCode: 400 });
     const db = getDb();
     const t = now();
+    // 新建时不存在"原值"，掩码视为空凭据（掩码只应出现在回显里）
+    const apiKey = isMaskedSecret(b.apiKey) ? '' : String(b.apiKey ?? '');
+    const baseUrl = assertSafeModelBaseUrl(b.baseUrl);
     const res = await db.prepare(`INSERT INTO models (name, provider, base_url, model_id, api_key, is_default, created_at, updated_at)
-      VALUES (?, ?, ?, ?, ?, 0, ?, ?)`).run(b.name, b.provider ?? 'custom', b.baseUrl, b.modelId, b.apiKey ?? '', t, t);
+      VALUES (?, ?, ?, ?, ?, 0, ?, ?)`).run(b.name, b.provider ?? 'custom', baseUrl, b.modelId, apiKey, t, t);
     return mapModel(await db.prepare('SELECT * FROM models WHERE id = ?').get<Record<string, unknown>>(Number(res.lastInsertRowid)) as Record<string, unknown>);
   });
 
@@ -592,9 +738,12 @@ function defineRoutes(llm: LlmCall): void {
     const db = getDb();
     const row = await getModelOr404(db, id);
     const t = now();
+    // 密钥字段：掩码回显 → 保持原值；显式空串 → 清空；其它 → 采用新值
+    const apiKey = resolveSecretInput(b.apiKey, String(row.api_key ?? ''));
+    const baseUrl = b.baseUrl === undefined ? String(row.base_url) : assertSafeModelBaseUrl(b.baseUrl);
     await db.prepare(`UPDATE models SET name=?, provider=?, base_url=?, model_id=?, api_key=?, is_default=?, updated_at=? WHERE id=?`).run(
-      (b.name as string) ?? row.name, (b.provider as string) ?? row.provider, (b.baseUrl as string) ?? row.base_url,
-      (b.modelId as string) ?? row.model_id, (b.apiKey as string) ?? row.api_key,
+      (b.name as string) ?? row.name, (b.provider as string) ?? row.provider, baseUrl,
+      (b.modelId as string) ?? row.model_id, apiKey,
       b.isDefault === undefined ? row.is_default : (b.isDefault ? 1 : 0), t, id,
     );
     if (b.isDefault) await db.prepare(`UPDATE models SET is_default = CASE WHEN id = ? THEN 1 ELSE 0 END`).run(id);
@@ -610,13 +759,15 @@ function defineRoutes(llm: LlmCall): void {
     return { ok: true };
   });
 
+  // 连通性测试会真实发起一次模型调用并携带凭据 → 计入 LLM 限流，且对存量 baseUrl 再做一次安全校验
   route('POST', '/models/:id/test', async ({ params }) => {
     const row = await getModelOr404(getDb(), Number(params.id));
     const cfg = { baseUrl: row.base_url, modelId: row.model_id, apiKey: row.api_key };
     if (!cfg.apiKey) return { ok: false, latencyMs: null, message: '未配置 API Key：请在设置中填写后重试' };
+    const baseUrl = assertSafeModelBaseUrl(cfg.baseUrl);
     const started = Date.now();
     try {
-      const url = cfg.baseUrl.replace(/\/+$/, '') + '/chat/completions';
+      const url = baseUrl.replace(/\/+$/, '') + '/chat/completions';
       const res = await fetch(url, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${cfg.apiKey}` },
@@ -632,7 +783,7 @@ function defineRoutes(llm: LlmCall): void {
     } catch (e) {
       return { ok: false, latencyMs: Date.now() - started, message: (e as Error).message };
     }
-  });
+  }, { llm: true });
 
   // ---- prompts ----
   route('GET', '/prompts', async () =>
@@ -706,9 +857,9 @@ function defineRoutes(llm: LlmCall): void {
     if (cursor) conds.push('id < @cursor');
     const where = conds.length ? `WHERE ${conds.join(' AND ')}` : '';
     const rows = await getDb().prepare(`SELECT * FROM tasks ${where} ORDER BY id DESC LIMIT 100`).all<Record<string, unknown>>(p);
-    const items = rows.map(mapTask);
-    (items as unknown as { nextCursor?: number | null }).nextCursor = rows.length > 0 ? Number((rows[rows.length - 1] as Record<string, unknown>).id) : null;
-    return items;
+    // 统一列表信封：nextCursor 必须放在对象上。挂在数组属性上会被 JSON.stringify 直接丢弃，
+    // 客户端永远拿不到游标，这类列表就只能看第一页（历史数据不可达）。
+    return { items: rows.map(mapTask), nextCursor: lastIdOf(rows) };
   });
 
   route('GET', '/tasks/:id', async ({ params }) => {
@@ -897,8 +1048,9 @@ function defineRoutes(llm: LlmCall): void {
       try { registerScheduledPlan(id, b.cron); } catch (e) { await db.prepare('DELETE FROM plans WHERE id = ?').run(id); throw e; }
     }
     if (b.type === 'immediate') {
-      await db.prepare(`UPDATE plans SET status='running', updated_at=? WHERE id=?`).run(t, id);
-      setImmediate(() => { executePlan(id).catch(() => {}); });
+      // 不在这里预置 running：占位交给 executePlan 的原子 UPDATE，避免"先置位再执行"中间
+      // 出现前端轮询到 running、而实际执行体还没起来的假状态
+      setImmediate(() => { executePlan(id).catch((e) => console.error(`[plan #${id}] 执行失败：`, (e as Error).message)); });
     }
     return mapPlan(await db.prepare('SELECT * FROM plans WHERE id = ?').get<Record<string, unknown>>(id) as Record<string, unknown>);
   });
@@ -906,15 +1058,22 @@ function defineRoutes(llm: LlmCall): void {
   route('POST', '/plans/:id/run', async ({ params }) => {
     const id = Number(params.id);
     const db = getDb();
-    const row = await db.prepare('SELECT * FROM plans WHERE id = ?').get(id);
+    const row = await db.prepare('SELECT * FROM plans WHERE id = ?').get<{ status?: string }>(id);
     if (!row) throw Object.assign(new Error('计划不存在'), { statusCode: 404 });
-    await db.prepare(`UPDATE plans SET status='running', updated_at=? WHERE id=?`).run(now(), id);
-    setImmediate(() => { executePlan(id).catch(() => {}); });
-    return { ok: true };
+    if (row.status === 'running') {
+      throw Object.assign(new Error('该计划正在执行中，请等待本次执行结束后再试'), { statusCode: 409 });
+    }
+    // 占位与终态由 executePlan 负责；这里不再"先置 running"，否则执行体覆盖异常会让状态永久卡住
+    setImmediate(() => { executePlan(id).catch((e) => console.error(`[plan #${id}] 执行失败：`, (e as Error).message)); });
+    return { ok: true, accepted: true };
   });
 
   route('DELETE', '/plans/:id', async ({ params }) => {
-    await getDb().prepare('DELETE FROM plans WHERE id = ?').run(Number(params.id));
+    const id = Number(params.id);
+    // 先停掉定时任务：否则计划行删了、cron 还在按周期触发 executePlan 并永久报错
+    unregisterScheduledPlan(id);
+    const r = await getDb().prepare('DELETE FROM plans WHERE id = ?').run(id);
+    if (!Number(r.changes)) throw Object.assign(new Error('计划不存在'), { statusCode: 404 });
     return { ok: true };
   });
 
@@ -922,7 +1081,7 @@ function defineRoutes(llm: LlmCall): void {
   route('GET', '/executions', async ({ query }) => {
     const planId = Number(query.get('planId')) || null;
     const status = query.get('status') ?? '';
-    const limit = Math.min(200, Number(query.get('limit')) || 50);
+    const limit = clampInt(query.get('limit'), 50, 1, 200);
     const cursor = Number(query.get('cursor')) || 0;
     const conds: string[] = [];
     const p: Record<string, unknown> = { limit, cursor };
@@ -937,9 +1096,7 @@ function defineRoutes(llm: LlmCall): void {
        LEFT JOIN libraries l ON l.id = e.library_id
        LEFT JOIN devices d ON d.id = e.device_id
        ${where} ORDER BY e.id DESC LIMIT @limit`).all<Record<string, unknown>>(p);
-    const items = rows.map(mapExecution);
-    (items as unknown as { nextCursor?: number | null }).nextCursor = rows.length > 0 ? Number((rows[rows.length - 1] as Record<string, unknown>).id) : null;
-    return items;
+    return { items: rows.map(mapExecution), nextCursor: lastIdOf(rows) };
   });
 
   route('GET', '/executions/:id', async ({ params }) => {
@@ -967,7 +1124,8 @@ function defineRoutes(llm: LlmCall): void {
        WHERE e.id = ?`).get<{ id: number; status: string; steps: string; thinking: string | null; logs: string | null; case_no: string; case_name: string; library_name: string }>(id);
     if (!row) throw Object.assign(new Error('执行记录不存在'), { statusCode: 404 });
 
-    const steps = JSON.parse(row.steps || '[]') as Array<{ seq: number; desc: string; status: string; log?: string; durationMs?: number | null }>;
+    // 执行轨迹同样宽容解析：单条脏数据不应让"追问"接口整体 500
+    const steps = parseStepsStored(row.steps) as Array<{ seq: number; desc: string; status: string; log?: string; durationMs?: number | null }>;
     const stepsText = steps.map((s) => `${s.seq}. [${s.status}] ${s.desc}${s.log ? `（${s.log}）` : ''}`).join('\n');
     const system = `你是 AutoTest 平台的调试分析助手。用户基于一次用例执行记录进行追问（为什么这样做、判定依据、失败根因、如何修复等）。
 要求：结合给出的执行轨迹、AI 思考过程与执行日志回答；用中文；简洁、直接、有依据；不超过 400 字；不要编造轨迹中不存在的信息。`;
@@ -1079,9 +1237,7 @@ ${(row.logs ?? '').slice(0, 4000) || '（无）'}
       if (cursor) conds.push('id < @cursor');
       const where = conds.length ? `WHERE ${conds.join(' AND ')}` : '';
       const rows = await getDb().prepare(`SELECT * FROM analyses ${where} ORDER BY id DESC LIMIT 100`).all<Record<string, unknown>>(p);
-      const items = rows.map(mapAnalysis);
-      (items as unknown as { nextCursor?: number | null }).nextCursor = rows.length > 0 ? Number((rows[rows.length - 1] as Record<string, unknown>).id) : null;
-      return items;
+      return { items: rows.map(mapAnalysis), nextCursor: lastIdOf(rows) };
     });
   });
 
@@ -1395,7 +1551,7 @@ ${(row.logs ?? '').slice(0, 4000) || '（无）'}
   route('GET', '/events', async ({ query }) => {
     const taskId = Number(query.get('taskId')) || undefined;
     const kind = query.get('kind') ?? undefined;
-    const limit = Math.min(500, Number(query.get('limit')) || 100);
+    const limit = clampInt(query.get('limit'), 100, 1, 500);
     return { ok: true, rows: await listEvents({ taskId, kind, limit }) };
   });
 }
@@ -1409,9 +1565,40 @@ function mapLibrary(row: Record<string, unknown>) {
     caseCount: row.case_count ?? 0, createdAt: row.created_at, updatedAt: row.updated_at,
   };
 }
+/** 列表信封的游标：取本页最后一条 id（keyset 分页传回 cursor 继续翻下一页）。 */
+function lastIdOf(rows: Array<Record<string, unknown>>): number | null {
+  return rows.length > 0 ? Number(rows[rows.length - 1].id) : null;
+}
+
+/** 入参 steps 归一化：只接受字符串数组；字段缺省返回 undefined（调用方回退到库中原值）。 */
+function normalizeStepsInput(raw: unknown): string[] | undefined {
+  if (raw === undefined) return undefined;
+  if (!Array.isArray(raw)) {
+    throw Object.assign(new Error('steps 必须是字符串数组'), { statusCode: 400 });
+  }
+  return raw.map((s) => (typeof s === 'string' ? s : String(s ?? ''))).filter((s) => s.trim() !== '');
+}
+
+/**
+ * 读取库中 steps：容忍历史脏数据（非 JSON / 非数组）。
+ * 旧版本曾把字符串 steps 原样落库，读取侧直接 .map() 会抛 TypeError，
+ * 导致该库的用例列表整体 500 —— 这里必须"读不炸"。
+ */
+function parseStepsStored(raw: unknown): unknown[] {
+  if (raw === null || raw === undefined) return [];
+  let parsed: unknown = raw;
+  if (typeof raw === 'string') {
+    try { parsed = JSON.parse(raw); } catch { return raw.trim() ? [raw] : []; }
+  }
+  if (Array.isArray(parsed)) return parsed;
+  if (typeof parsed === 'string') return parsed.trim() ? [parsed] : [];
+  return [];
+}
+
 function mapCase(row: Record<string, unknown>, libraryName?: string) {
-  const rawSteps = JSON.parse((row.steps as string) || '[]') as unknown[];
-  const steps = rawSteps.map((s) => (typeof s === 'string' ? s : String((s as { step?: unknown })?.step ?? (s as { text?: unknown })?.text ?? (s as { expected?: unknown })?.expected ?? ''))).filter(Boolean);
+  const steps = parseStepsStored(row.steps)
+    .map((s) => (typeof s === 'string' ? s : String((s as { step?: unknown })?.step ?? (s as { text?: unknown })?.text ?? (s as { expected?: unknown })?.expected ?? '')))
+    .filter(Boolean);
   return {
     id: row.id, libraryId: row.library_id, libraryName, caseNo: row.case_no, name: row.name,
     source: row.source, precondition: row.precondition, steps,
@@ -1427,9 +1614,12 @@ function mapVersion(row: Record<string, unknown>) {
   };
 }
 function mapModel(row: Record<string, unknown>) {
+  const rawKey = String(row.api_key ?? '');
   return {
     id: row.id, name: row.name, provider: row.provider, baseUrl: row.base_url, modelId: row.model_id,
-    apiKey: row.api_key, isDefault: row.is_default === 1, createdAt: row.created_at, updatedAt: row.updated_at,
+    // 只回传掩码，绝不回传明文凭据（无鉴权 API：明文等于泄漏）；hasApiKey 供前端显示"已配置/缺失"
+    apiKey: maskSecret(rawKey), hasApiKey: rawKey !== '',
+    isDefault: row.is_default === 1, createdAt: row.created_at, updatedAt: row.updated_at,
   };
 }
 function mapPrompt(row: Record<string, unknown>) {
@@ -1531,7 +1721,7 @@ function mapPlan(row: Record<string, unknown>) {
 function mapExecution(row: Record<string, unknown>) {
   return {
     id: row.id, planId: row.plan_id, caseId: row.case_id, libraryId: row.library_id, deviceId: row.device_id,
-    status: row.status, steps: JSON.parse((row.steps as string) || '[]'), thinking: row.thinking, logs: row.logs,
+    status: row.status, steps: parseStepsStored(row.steps), thinking: row.thinking, logs: row.logs,
     startedAt: row.started_at, finishedAt: row.finished_at,
     caseNo: row.case_no, caseName: row.case_name, libraryName: row.library_name, deviceSerial: row.device_serial,
   };

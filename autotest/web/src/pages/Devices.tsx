@@ -16,7 +16,7 @@ export default function DevicesPage() {
     setDetail(d);
     setDetailExecs([]);
     api.executions({ limit: 100 })
-      .then((items) => setDetailExecs(items.filter((e) => e.deviceSerial === d.serial).slice(0, 8)))
+      .then((r) => setDetailExecs(r.items.filter((e) => e.deviceSerial === d.serial).slice(0, 8)))
       .catch(() => {});
   };
 
@@ -26,8 +26,10 @@ export default function DevicesPage() {
     setError('');
     try {
       await api.scanDevices();
-      load();
-      const fresh = (await api.devices()).find((x) => x.id === detail.id);
+      // 一次拉取同时用于刷新列表与更新详情，别再 list + detail 各拉一遍
+      const list = await api.devices();
+      setDevices(list);
+      const fresh = list.find((x) => x.id === detail.id);
       if (fresh) setDetail(fresh);
     } catch (e) {
       setError(String((e as Error).message));
@@ -50,17 +52,18 @@ export default function DevicesPage() {
 
   const scan = async () => {
     setScanning(true);
+    setError('');
     setMsg('正在扫描局域网 / USB 设备…（hdc list targets）');
-    setTimeout(async () => {
-      try {
-        const r = await api.scanDevices();
-        setMsg(r.discovered
-          ? `识别完成：${r.device.serial}（${r.device.model}）· ${r.note ?? ''}（共 ${r.total} 台）`
-          : (r.note ?? '未发现新设备'));
-        load();
-      } catch (e) { setError((e as Error).message); }
-      setScanning(false);
-    }, 1200);
+    // 直接等待真实扫描：原来用 setTimeout(1200) 包了一层假延迟，
+    // 既让 1.2s 内离开页面的 setState 落到已卸载组件，也掩盖了真实耗时。
+    try {
+      const r = await api.scanDevices();
+      setMsg(r.discovered
+        ? `识别完成：${r.device.serial}（${r.device.model}）· ${r.note ?? ''}（共 ${r.total} 台）`
+        : (r.note ?? '未发现新设备'));
+      load();
+    } catch (e) { setError((e as Error).message); }
+    setScanning(false);
   };
 
   const connect = async (d: Device) => {

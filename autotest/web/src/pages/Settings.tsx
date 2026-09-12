@@ -21,7 +21,6 @@ const SECTIONS: Array<{ title: string; desc: string; fields: Array<{ key: string
   },
   {
     title: '执行计划', desc: '各类型计划的单次执行规模上限（防止误触发全量跑批）', fields: [
-      { key: 'exec.scriptMode', label: '脚本执行模式', type: 'text', hint: 'script（绑定脚本优先）/ step（始终用例步骤）' },
       { key: 'exec.planSampleFull', label: '全量计划抽样', type: 'number' },
       { key: 'exec.planSampleBatch', label: '批量计划抽样', type: 'number' },
       { key: 'exec.planSampleSingle', label: '单独计划抽样', type: 'number' },
@@ -36,11 +35,9 @@ const SECTIONS: Array<{ title: string; desc: string; fields: Array<{ key: string
     ],
   },
   {
-    title: '设备与执行', desc: '设备执行引擎', fields: [
-      { key: 'device.execEngine', label: '执行引擎', type: 'text' },
+    title: '设备与执行', desc: '真机识别与应用启动映射（执行一律走真机，无在线设备直接失败）', fields: [
       { key: 'device.autoScanInterval', label: '设备自动检测间隔（秒）', type: 'number', hint: '0=关闭；启动时立即检测一次，此后按间隔自动维护在线状态' },
       { key: 'device.appAbilities', label: '应用启动映射（JSON）', type: 'text', hint: '{"时钟":"com.xx/.MainAbility"}' },
-      { key: 'exec.scriptMode', label: '脚本执行模式', type: 'text', hint: 'script / step' },
     ],
   },
   {
@@ -69,7 +66,10 @@ export default function SettingsPage() {
   const [error, setError] = useState('');
   const [saving, setSaving] = useState(false);
   // 工作区辅助
-  const [wsInfo, setWsInfo] = useState<{ configured: boolean; effective: string } | null>(null);
+  const [wsInfo, setWsInfo] = useState<{ configured: boolean; effective: string; notice?: string | null } | null>(null);
+  // 从后端加载到的原始工作区值 —— 必须单独存：save() 里再读 values 拿到的是用户改后的值，
+  // 拿它自己跟自己比永远相等，"工作区变更后自动刷新"就成了永不触发的死代码。
+  const [loadedWorkspace, setLoadedWorkspace] = useState('');
 
   useEffect(() => {
     api.workspaceInfo().then(setWsInfo).catch(() => {});
@@ -81,6 +81,7 @@ export default function SettingsPage() {
         const map: Record<string, string | number | boolean> = {};
         for (const r of rows) if (r.value !== null) map[r.key] = r.value as string | number | boolean;
         setValues(map);
+        setLoadedWorkspace(String(map['app.workspace'] ?? '').trim());
         setLoaded(true);
       })
       .catch((e) => setError(String((e as Error).message)));
@@ -92,19 +93,20 @@ export default function SettingsPage() {
 
   const save = async () => {
     setSaving(true); setMsg(''); setError('');
-    const prevWorkspace = String(values['app.workspace'] ?? '').trim();
+    const newWorkspace = String(values['app.workspace'] ?? '').trim();
     try {
       for (const [key, value] of Object.entries(values)) {
+        if (value === '') continue;   // 被清空的字段视为"不改动"，避免写入空串/0
         await api.updateSetting(key, value);
       }
-      const newWorkspace = String(values['app.workspace'] ?? '').trim();
-      if (newWorkspace !== prevWorkspace) {
+      if (newWorkspace !== loadedWorkspace) {
         // 工作区变更：仓库/脚本/遍历报告全部换目录 → 整页刷新让所有页面立即读取新目录数据
         setMsg('配置已保存 · 检测到工作区路径变更，正在刷新全平台数据…');
         setTimeout(() => window.location.reload(), 900);
         return;
       }
       setMsg('配置已保存，立即生效');
+      setLoadedWorkspace(newWorkspace);
       load();
     } catch (e) {
       setError(String((e as Error).message));
@@ -167,7 +169,12 @@ export default function SettingsPage() {
                     className="input"
                     type={f.type}
                     value={String(values[f.key] ?? '')}
-                    onChange={(e) => setValues((v) => ({ ...v, [f.key]: f.type === 'number' ? Number(e.target.value) : e.target.value }))}
+                    onChange={(e) => setValues((v) => ({
+                      ...v,
+                      // 数字字段清空时保持空串，不要 Number('')=0 —— 否则"清空"会变成"写入 0"
+                      // （LLM 温度、抽样条数等被悄悄写成 0）；空值在保存时被跳过。
+                      [f.key]: f.type === 'number' ? (e.target.value === '' ? '' : Number(e.target.value)) : e.target.value,
+                    }))}
                   />
                 )}
                 {f.key === 'app.workspace' && (
@@ -180,6 +187,9 @@ export default function SettingsPage() {
                       <span className="muted" style={{ fontSize: 11, wordBreak: 'break-all' }}>
                         当前生效：{wsInfo.effective}{wsInfo.configured ? ' · 已配置' : ' · 未配置（回退启动目录，使用任务时会提示）'}
                       </span>
+                    )}
+                    {wsInfo?.notice && (
+                      <span className="s-notice" style={{ wordBreak: 'break-all' }}>{wsInfo.notice}</span>
                     )}
                   </>
                 )}

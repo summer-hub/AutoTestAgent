@@ -12,10 +12,11 @@ import { fileURLToPath } from 'node:url';
 import { defaultUrlProvider, ensureReady, getDb, setDbUrlProvider } from './db/connection.js';
 import { makeLlm } from './services/llmHarness.js';
 import { makeApiHandler } from './api/http.js';
-import { startScheduler } from './services/scheduler.js';
+import { startScheduler, stopAllSchedulers } from './services/scheduler.js';
 import { makeStaticHandler } from './static.js';
-import { refreshPackageInfo, reconcileRepos, repoDirFor } from './services/gitRepo.js';
+import { refreshPackageInfo, reconcileRepos, repoDirFor, workspaceNotice } from './services/gitRepo.js';
 import { installLlmTracing } from './services/events.js';
+import { reapOnStartup } from './services/reaper.js';
 import { getSetting } from './services/settings.js';
 
 declare module '@deepseek-ai/cordis' {
@@ -38,6 +39,15 @@ export function apply(ctx: Context): void {
       const changed = await reconcileRepos();
       if (changed > 0) console.log(`[dsh-autotest] 启动对账：${changed} 个库的同步状态已清空`);
       console.log('[dsh-autotest] 业务库对账完成');
+      // 工作区体检：未配置 / 沿用旧种子默认值时在日志里说清楚（不替使用者改数据）
+      const wsNotice = workspaceNotice();
+      if (wsNotice) console.warn(`[dsh-autotest] ${wsNotice}`);
+      // 启动清理：上一次进程遗留的 running 任务/计划标记为中断，避免前端永久转圈
+      try {
+        await reapOnStartup();
+      } catch (e) {
+        console.warn('[dsh-autotest] 启动清理失败：', (e as Error).message);
+      }
       // 定时执行计划调度（依赖业务表，须在初始化后注册）
       try {
         await startScheduler();
@@ -79,6 +89,9 @@ export function apply(ctx: Context): void {
     return () => {
       disposeRoute();
       disposeWeb();
+      // 定时计划 / 每日归档 / 每分钟预热 / 设备轮询都必须停掉：
+      // 不清理的话插件每次重载都会叠加一份后台任务（cron 与 interval 都是进程级句柄）
+      stopAllSchedulers();
       console.log('[dsh-autotest] 插件已卸载');
     };
   });

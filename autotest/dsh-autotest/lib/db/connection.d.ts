@@ -25,7 +25,10 @@ export interface DbFacade {
 export declare function getDb(): DbFacade;
 /** 执行多语句（按分号拆分，供 DDL / 迁移用）。 */
 export declare function exec(sql: string): Promise<void>;
-/** 事务：MySQL 从池取连接；SQLite 走 BEGIN/COMMIT（单连接同步执行，天然串行）。 */
+/**
+ * 事务：MySQL 从池取连接；SQLite 走「互斥锁 + BEGIN/COMMIT」（见文件顶部 sqliteTxStore 说明）。
+ * 嵌套调用语义：并入外层事务（内层不单独提交/回滚），避免 SQLite 自我死锁与 MySQL 连接池耗尽。
+ */
 export declare function transaction<T>(fn: () => Promise<T>): Promise<T>;
 /** 读路径（连接池/单文件库天然并发，直接走 facade）。 */
 export declare function withRead<T>(fn: (db: DbFacade) => Promise<T>): Promise<T>;

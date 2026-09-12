@@ -36,7 +36,10 @@ export function installLlmTracing() {
 /** 查询事件（观测用）。 */
 export async function listEvents(opts = {}) {
     const conds = [];
-    const p = { limit: Math.min(200, opts.limit ?? 50) };
+    // 上下限都要夹：SQLite 的 `LIMIT -1` 是"无限制"，只设上限会让负数参数全表返回
+    const raw = Number(opts.limit);
+    const limit = Number.isFinite(raw) ? Math.min(200, Math.max(1, Math.trunc(raw))) : 50;
+    const p = { limit };
     if (opts.taskId) {
         conds.push('task_id = @taskId');
         p.taskId = opts.taskId;

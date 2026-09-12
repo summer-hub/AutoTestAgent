@@ -12,6 +12,16 @@ export type CaseStatus = '通过' | '失败' | '待确认' | '未执行';
 /** 脚本绑定状态 */
 export type ScriptStatus = '已绑定' | '未绑定';
 
+/**
+ * 列表信封：items + keyset 游标。
+ * nextCursor 必须挂在对象上 —— 挂在数组属性上会被 JSON.stringify 丢弃，
+ * 客户端就永远拿不到游标、只能看第一页。
+ */
+export interface Paged<T> {
+  items: T[];
+  nextCursor: number | null;
+}
+
 /** 三方库 */
 export interface Library {
   id: number;
@@ -175,7 +185,8 @@ export interface ModelConfig {
   provider: 'deepseek' | 'openai' | 'ollama' | 'custom';
   baseUrl: string;             // https://api.deepseek.com/v1
   modelId: string;             // deepseek-chat
-  apiKey: string;              // 空 = 未配置（状态点红色）
+  apiKey: string;              // 只回传掩码（••••1234）；真实密钥永不下发，掩码原样回传视为"不改动"
+  hasApiKey: boolean;          // 是否已配置凭据 —— 状态点用它判断，不要用 apiKey 的真假
   isDefault: boolean;
   createdAt: string;
   updatedAt: string;
@@ -208,6 +219,10 @@ export interface Page<T> {
   total: number;
   page: number;
   pageSize: number;
+  /** 本页游标（keyset 分页用，取上一页最后一条的 id） */
+  nextCursor?: number | null;
+  /** 有用例的库数（/libraries 专用，供覆盖率 KPI 用全量聚合值而非当页 items） */
+  withCases?: number;
 }
 
 /** 仓库本地目录信息（repos API） */

@@ -2,6 +2,7 @@
 //  - 启动时 loadSettings() 全量加载进内存缓存，业务读取保持同步
 //  - setSetting 同步更新内存 + 异步写库
 import { dbMode, getDb, now } from '../db/connection.js';
+import { maskSecret, maskUrlPassword } from './secrets.js';
 
 export const SETTING_DEFAULTS: Record<string, unknown> = {
   'app.workspace': '',             // 工作区路径：留空 = 启动目录下的 workspace（使用时会提示去配置）
@@ -24,7 +25,6 @@ export const SETTING_DEFAULTS: Record<string, unknown> = {
   'data.redisUrl': '',
   'data.cacheTtlSeconds': 30,
   'data.shardCount': 16,
-  'device.execEngine': 'hdc',
   'device.appAbilities': '{}',
   'device.autoScanInterval': 30,   // 设备自动检测间隔（秒），0=关闭；启动时立即检测一次
   'explore.maxDepth': 2,             // 真机 UI 遍历：BFS 最大深度
@@ -33,7 +33,6 @@ export const SETTING_DEFAULTS: Record<string, unknown> = {
   'explore.maxSwipePerPage': 5,      // 真机 UI 遍历：单页为看全内容最多滑动次数
   'explore.statusBarFilter': true,   // 真机 UI 遍历：过滤状态栏/系统窗口控件（时钟等）
   'explore.systemBundles': 'com.ohos.sceneboard,com.huawei.systemui,com.ohos.systemui,com.android.systemui',
-  'exec.scriptMode': 'script',
   'exec.schedulerEnabled': true,   // 多节点部署时仅主节点开启调度器（防定时计划/统计预热重复执行）
   // ---- 服务器化 ----
   'db.mysqlUrl': '',
@@ -63,12 +62,31 @@ export function getSetting<T>(key: string, fallback?: T): T {
   return fallback ?? (SETTING_DEFAULTS[key] as T);
 }
 
-/** 批量读取配置（返回全部已知键）。 */
+/**
+ * 敏感配置键：接口出参必须脱敏（内部读取仍用 getSetting 拿真实值）。
+ * 'url' = 只给口令段打码，保留 host/db 可读性；'plain' = 整串打码只留末 4 位。
+ */
+export const SECRET_SETTING_KEYS: Record<string, 'url' | 'plain'> = {
+  'db.mysqlUrl': 'url',
+  'data.redisUrl': 'url',
+};
+
+/** 出参脱敏：按键类型打码，非敏感键原样返回。 */
+export function maskSettingValue(key: string, value: SettingValue): SettingValue {
+  const kind = SECRET_SETTING_KEYS[key];
+  if (!kind || value === null || value === undefined) return value;
+  const raw = String(value);
+  if (!raw) return value;
+  return kind === 'url' ? maskUrlPassword(raw) : maskSecret(raw);
+}
+
+/** 批量读取配置（返回全部已知键；敏感键已脱敏）。 */
 export function getAllSettings(): Array<{ key: string; value: SettingValue; updatedAt: string | null }> {
   return Object.keys(SETTING_DEFAULTS).map((key) => {
     const entry = cache?.get(key);
     if (!entry) return { key, value: SETTING_DEFAULTS[key] as SettingValue, updatedAt: null };
-    return { key, value: parseValue<SettingValue>(entry.value, SETTING_DEFAULTS[key] as SettingValue), updatedAt: entry.updatedAt };
+    const value = parseValue<SettingValue>(entry.value, SETTING_DEFAULTS[key] as SettingValue);
+    return { key, value: maskSettingValue(key, value), updatedAt: entry.updatedAt };
   });
 }
 

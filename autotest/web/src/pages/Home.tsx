@@ -25,7 +25,9 @@ export default function HomePage() {
     : '—';
 
   const totalLibs = libs?.total ?? 0;
-  const withCases = (libs?.items ?? []).filter((l) => (l.caseCount ?? 0) > 0).length;
+  // 分子必须是"全部库中有用例的库数"（后端聚合）。原来数的是当页 items 里 caseCount>0 的条数，
+  // 而 items 受 pageSize 上限截断（服务端最多 100），库数超过一页后覆盖率会被成倍低估。
+  const withCases = libs?.withCases ?? (libs?.items ?? []).filter((l) => (l.caseCount ?? 0) > 0).length;
   const coverage = totalLibs > 0 ? (withCases / totalLibs * 100).toFixed(1) : '—';
   const avgPerLib = overview && totalLibs > 0 ? (overview.total / totalLibs).toFixed(0) : '—';
   const runningPlans = plans.filter((p) => p.status === 'running').length;

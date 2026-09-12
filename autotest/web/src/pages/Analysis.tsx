@@ -36,12 +36,15 @@ export default function AnalysisPage() {
   }, []);
 
   const loadRows = useCallback((libraryId: number) => {
-    api.analyses({ kind: 'pr_analysis', libraryId }).then(setPrRows).catch(() => {});
-    api.analyses({ kind: 'case_update_analysis', libraryId }).then(setCaseRows).catch(() => {});
+    api.analyses({ kind: 'pr_analysis', libraryId }).then((r) => setPrRows(r.items)).catch(() => {});
+    api.analyses({ kind: 'case_update_analysis', libraryId }).then((r) => setCaseRows(r.items)).catch(() => {});
   }, []);
 
   useEffect(() => { loadLibs(); }, [loadLibs]);
   useEffect(() => { if (curLib !== null) loadRows(curLib); }, [curLib, loadRows]);
+  // 卸载时停掉进度轮询：分析要跑 30~120s，用户切页后原实现仍会每 800ms 打接口
+  // 并对已卸载组件 setState
+  useEffect(() => () => { if (pollRef.current) { clearInterval(pollRef.current); pollRef.current = null; } }, []);
 
   const openPrModal = async (kind: 'pr' | 'case') => {
     if (curLib === null) return;

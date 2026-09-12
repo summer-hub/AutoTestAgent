@@ -48,7 +48,7 @@ export default function TasksPage() {
   };
 
   const load = useCallback(() => {
-    api.tasks().then(setTasks).catch((e) => setError(String((e as Error).message)));
+    api.tasks().then((r) => setTasks(r.items)).catch((e) => setError(String((e as Error).message)));
   }, []);
 
   useEffect(() => {

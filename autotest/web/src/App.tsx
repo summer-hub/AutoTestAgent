@@ -21,7 +21,7 @@ const NAV: Array<{ group: string; items: Array<{ key: PageKey; icon: string; lab
     group: '工作台',
     items: [
       { key: 'home', icon: '🏠', label: '首页' },
-      { key: 'tasks', icon: '📋', label: '任务管理', badge: '5' },
+      { key: 'tasks', icon: '📋', label: '任务管理' },
     ],
   },
   {
@@ -60,9 +60,11 @@ const TITLES: Record<PageKey, string> = {
 const EMBED = import.meta.env.VITE_EMBED === '1';
 
 // 兼容 '#cases' 与 '#/cases' 两种 hash 写法（深链接 / DSH iframe 内嵌）
+// 必须用 Object.hasOwn：`h in TITLES` 会命中 Object.prototype 的继承键，
+// '#constructor' / '#toString' 之类会被当成合法页面 → page 变成非法值 → 内容区全白。
 const parseHash = (): PageKey => {
-  const h = location.hash.replace(/^#\/?/, '') as PageKey;
-  return h in TITLES ? h : 'home';
+  const h = location.hash.replace(/^#\/?/, '');
+  return Object.hasOwn(TITLES, h) ? (h as PageKey) : 'home';
 };
 
 export default function App() {
@@ -79,11 +81,13 @@ export default function App() {
   // hash 路由监听（必须位于任何条件 return 之前 —— Hooks 规则）
   useEffect(() => {
     const onHash = () => {
-      const h = location.hash.replace(/^#\/?/, '') as PageKey | 'settings';
-      if (h === 'settings') { setSettingsOpen(true); return; }
-      if (h in TITLES) setPage(h);
+      const h = location.hash.replace(/^#\/?/, '');
+      // `#settings` 就是「系统配置」页面本身。原先这里额外把设置弹窗也打开，
+      // 导致点侧栏「系统配置」时 SettingsPage 与 SettingsModal 叠加成两套界面；
+      // 弹窗现在只由侧栏底部「设置」按钮显式打开（不写 hash）。
+      if (Object.hasOwn(TITLES, h)) setPage(h as PageKey);
     };
-    if (location.hash.replace(/^#\/?/, '') === 'settings') setSettingsOpen(true);
+    onHash();
     window.addEventListener('hashchange', onHash);
     return () => window.removeEventListener('hashchange', onHash);
   }, []);

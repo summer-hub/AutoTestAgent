@@ -50,9 +50,26 @@ export function workspaceConfigured(): boolean {
   return !!String(getSetting('app.workspace', '') || '').trim();
 }
 
-/** 未配置工作区时的提示语（配置了返回 null）。 */
+/**
+ * 旧版本种子数据写死的开发机默认工作区。
+ * 命中它说明这条配置来自种子、而非使用者显式设置 —— 需要提示，但不能替使用者改数据
+ * （该目录下可能已经存在真实的 repos/ 与 hypium 工程，静默清空会让平台看起来"数据全没了"）。
+ */
+const LEGACY_SEEDED_WORKSPACE = 'D:\\autotest\\workspace';
+
+/** 路径归一化比较：忽略分隔符差异与大小写（Windows 路径不区分大小写）。 */
+function samePath(a: string, b: string): boolean {
+  const norm = (p: string): string => p.replace(/\//g, '\\').replace(/\\+$/, '').toLowerCase();
+  return norm(a) === norm(b);
+}
+
+/** 未配置工作区（或配置来自旧种子默认值）时的提示语；正常配置返回 null。 */
 export function workspaceNotice(): string | null {
-  if (workspaceConfigured()) return null;
+  const configured = String(getSetting('app.workspace', '') || '').trim();
+  if (configured && samePath(configured, LEGACY_SEEDED_WORKSPACE)) {
+    return `⚠️ 当前工作区 ${configured} 来自旧版本种子数据的默认值，并非你显式设置。若它不是你要的目录，请在「系统配置 → 工作区」改成实际路径（该目录下已有的仓库/脚本不会自动搬迁）。`;
+  }
+  if (configured) return null;
   return `⚠️ 未在「系统配置」中设置工作区路径，本次已临时使用启动目录下的 workspace：${workspaceDir()}。建议设置固定路径，避免更换启动目录后仓库/脚本/遍历报告分散丢失。`;
 }
 

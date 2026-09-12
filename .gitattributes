@@ -1,0 +1,15 @@
+# 统一行尾为 LF。
+# 原因：仓库提交了构建产物 lib/**，CI 会重建后与提交内容做一致性校验；
+# 若工作区因 core.autocrlf=true 检出成 CRLF，Vite 复制 index.html 时甚至会产生退化行尾
+# （\r\r\n），导致本地产物与 CI 产物不一致 —— 门禁假失败、且产物本身也不干净。
+* text=auto eol=lf
+
+# 二进制：禁止行尾/编码转换
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.webp binary
+*.ico binary
+*.zip binary
+*.tgz binary

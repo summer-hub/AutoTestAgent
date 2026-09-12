@@ -9,18 +9,26 @@ import { cacheDel } from './cache.js';
 let scanning = false;
 let lastScanAt = 0;
 
-/** 历史版本演示模式写入的假设备型号签名。 */
+/**
+ * 历史"演示模式"写入的模拟设备特征（见 0.1.47 之前的 /devices/scan 回退分支）：
+ *   serial = `HDC-` + 3~4 位十六进制（Generator 写死），model 从下方列表里随机取。
+ * 只按"型号名"匹配是危险的：'Mate X5' / 'Pura 70' / 'MatePad Pro' 都是真实在售机型名，
+ * 一旦某台真机的 const.product.model 恰好上报这些名字，就会在每次扫描后被删掉。
+ * 这里要求 serial 也符合模拟设备的生成格式（HDC- 前缀且总长 ≤ 8），真实设备（ALN-AL00 这类代号）不会被误伤。
+ */
 const SIMULATED_MODELS = ['Mate X5', 'Pura 70', 'nova 13', 'MatePad Pro', 'Pocket 2'];
 
-/** 清理历史模拟设备残留（按型号签名精确匹配，真实设备不受影响）。 */
+/** 清理历史模拟设备残留（serial 生成格式 + 型号双重匹配，真实设备不受影响）。 */
 export async function purgeSimulatedDevices(): Promise<number> {
   try {
     const marks = SIMULATED_MODELS.map(() => '?').join(',');
-    const r = await getDb().prepare(`DELETE FROM devices WHERE model IN (${marks})`).run(...SIMULATED_MODELS);
+    const r = await getDb().prepare(
+      `DELETE FROM devices WHERE serial LIKE 'HDC-%' AND length(serial) <= 8 AND model IN (${marks})`,
+    ).run(...SIMULATED_MODELS);
     const n = Number(r.changes) || 0;
     if (n > 0) {
       void cacheDel('devices');
-      console.warn(`[autotest] 已清理 ${n} 条历史模拟设备。若反复出现，说明仍有旧版本进程在运行并写入，请重启所有 DSH 宿主进程`);
+      console.warn(`[autotest] 已清理 ${n} 条历史模拟设备（serial 形如 HDC-XXX）。若反复出现，说明仍有旧版本进程在运行并写入，请重启所有 DSH 宿主进程`);
     }
     return n;
   } catch { return 0; }
@@ -75,16 +83,20 @@ export async function autoScanDevices(): Promise<{ ok: boolean; detected: number
   }
 }
 
-/** 启动入口：立即扫一次（含假设备清理）+ 周期 tick。 */
-export function startDeviceAutoScan(): void {
+/**
+ * 启动入口：立即扫一次（含假设备清理）+ 周期 tick。
+ * 返回 disposer —— 插件卸载/重载时必须清掉这个 interval，否则每重载一次就多一个后台轮询。
+ */
+export function startDeviceAutoScan(): () => void {
   void purgeSimulatedDevices();
   void autoScanDevices().then((r) => {
     if (r.ok && r.detected > 0) console.log(`[autotest] 设备自动检测：发现 ${r.detected} 台在线设备`);
   });
-  setInterval(() => {
+  const timer = setInterval(() => {
     const intervalSec = Math.max(0, Number(getSetting('device.autoScanInterval', 30)) || 0);
     if (intervalSec <= 0) return; // 0 = 关闭自动检测
     if (Date.now() - lastScanAt < intervalSec * 1000) return;
     autoScanDevices().catch(() => {});
   }, 5000);
+  return () => clearInterval(timer);
 }

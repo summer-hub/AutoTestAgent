@@ -123,6 +123,7 @@ CREATE TABLE IF NOT EXISTS executions_archive (
   device_id INTEGER NULL,
   status TEXT NOT NULL DEFAULT 'pending',
   steps TEXT NOT NULL,
+  trace_id TEXT NOT NULL DEFAULT '',
   thinking TEXT NULL,
   logs TEXT NULL,
   started_at TEXT NULL,

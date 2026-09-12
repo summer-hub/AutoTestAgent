@@ -117,6 +117,21 @@ tr:hover td { background: var(--panel2); }
 
 .loading { padding: 30px; text-align: center; color: var(--text3); font-size: 12.5px; }
 .error { padding: 14px; border: 1px solid var(--red-dim); background: var(--red-dim); color: var(--red); border-radius: 8px; font-size: 12.5px; margin-bottom: 12px; }
+/* .ok 与 .error 成对：多处用它渲染成功提示（如"配置已保存"），此前只有组合选择器 .s-cred.ok，
+   单独 .ok 没定义 → 成功提示是无色无底的字，与错误提示视觉不对称。 */
+.ok { padding: 14px; border: 1px solid var(--green-dim); background: var(--green-dim); color: var(--green); border-radius: 8px; font-size: 12.5px; margin-bottom: 12px; }
+/* 次要按钮（"取消选择"等）：弱化到无边框，避免与主操作抢视觉 */
+.btn.ghost { background: transparent; border-color: transparent; color: var(--text3); }
+.btn.ghost:hover { border-color: var(--border2); color: var(--text2); }
+/* 三列栅格：Prompts 页用它排模板卡片，未定义时会退化成单列 */
+.grid-3 { display: grid; grid-template-columns: repeat(auto-fill, minmax(240px, 1fr)); gap: 12px; }
+.bar { height: 7px; background: var(--panel3); border-radius: 4px; overflow: hidden; }
+.bar > div { height: 100%; background: var(--accent); border-radius: 4px; }
+/* 表格行内操作区与任务行：此前只在 JSX 里当类名用，没有对应样式 */
+.row-actions { display: flex; align-items: center; gap: 8px; justify-content: flex-end; }
+.task-row { display: flex; align-items: center; gap: 10px; padding: 10px 12px; border: 1px solid var(--border); border-radius: 10px; background: var(--bg2); margin-bottom: 8px; }
+.step { display: flex; gap: 8px; padding: 7px 0; border-bottom: 1px dashed var(--border); font-size: 12.3px; line-height: 1.6; }
+.step.active { background: var(--accent-dim); border-radius: 6px; padding-left: 6px; padding-right: 6px; }
 
 /* 版本时间线（抽屉） */
 .drawer-mask { display: none; position: fixed; inset: 0; z-index: 55; background: rgba(0, 0, 0, .5); justify-content: flex-end; }

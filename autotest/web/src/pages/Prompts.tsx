@@ -22,7 +22,9 @@ export default function PromptsPage() {
   const save = async () => {
     setError('');
     try {
-      if (editing) {
+      // 判 id 而不是判对象真值：新建用的是 { id: 0 } 哨兵对象，
+      // 只判 `if (editing)` 会走更新分支 → PUT /prompts/0 → 404，模板根本建不出来。
+      if (editing && editing.id > 0) {
         await api.updatePrompt(editing.id, form);
       } else {
         await api.addPrompt(form);

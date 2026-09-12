@@ -28,13 +28,58 @@ jobs:
         working-directory: autotest
         run: npm ci
 
+      - name: Install plugin deps
+        working-directory: autotest/dsh-autotest
+        run: npm ci
+
+      # ---- 质量门禁：先卡住再打包，避免把类型错误/回归发出去 ----
+
+      - name: Typecheck (web + plugin)
+        working-directory: autotest
+        run: npm run typecheck
+
+      - name: Data layer self-check（事务隔离 / 归档列 / 密钥脱敏 / 运行态清理）
+        working-directory: autotest/dsh-autotest
+        run: npm run build && npm run verify:data
+
+      - name: API guard self-check（同源闸门 / 体积上限 / 入参校验 / 缓存一致性）
+        working-directory: autotest/dsh-autotest
+        run: npm run verify:api
+
+      - name: Step contract self-check（句式映射 / guardrail，无设备自动跳过真机组）
+        working-directory: autotest/dsh-autotest
+        run: node scripts/verify-step-contract.mjs
+
       - name: Build embed frontend
         working-directory: autotest
         run: npm run build:embed
 
-      - name: Install & build plugin
+      - name: Build plugin
         working-directory: autotest/dsh-autotest
-        run: npm ci && npm run build
+        run: npm run build
+
+      # 仓库同时提交了 lib/ 产物（README 的 git 直装路径依赖它）。这里重建后校验一致性：
+      # 忘记重建就提交，会让"git 直装"的用户拿到与源码不符的旧构建。
+      - name: Verify committed lib/ matches sources
+        run: |
+          # --ignore-cr-at-eol：本门禁管的是"产物是否陈旧"，不该被 CRLF/LF 差异误伤
+          if ! git diff --quiet --ignore-cr-at-eol -- autotest/dsh-autotest/lib; then
+            echo "::error::autotest/dsh-autotest/lib 与源码不一致。请在本地执行 'npm run build:plugin' 后一并提交产物。"
+            git --no-pager diff --stat --ignore-cr-at-eol -- autotest/dsh-autotest/lib
+            exit 1
+          fi
+          echo "lib/ 产物与源码一致"
+
+      # tag 与 package.json 版本必须对齐：否则会出现 v0.1.60 的 Release 里装着 0.1.58 的 tgz
+      - name: Verify tag matches package version
+        run: |
+          PKG_VERSION=$(node -p "require('./autotest/dsh-autotest/package.json').version")
+          TAG_VERSION="${GITHUB_REF_NAME#v}"
+          if [ "$PKG_VERSION" != "$TAG_VERSION" ]; then
+            echo "::error::tag $GITHUB_REF_NAME 与 package.json 版本 $PKG_VERSION 不一致"
+            exit 1
+          fi
+          echo "版本一致：$PKG_VERSION"
 
       - name: Pack plugin tarball
         working-directory: autotest/dsh-autotest

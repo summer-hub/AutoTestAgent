@@ -16,9 +16,9 @@ export default function AttributionPage() {
 
   const load = useCallback(() => {
     api.executions({ status: 'failed', limit: 100 })
-      .then((r) => { setFailed(r); setSel(new Set()); })
+      .then((r) => { setFailed(r.items); setSel(new Set()); })
       .catch((e) => setError(String((e as Error).message)));
-    api.analyses({ kind: 'attribution' }).then(setRows).catch(() => {});
+    api.analyses({ kind: 'attribution' }).then((r) => setRows(r.items)).catch(() => {});
   }, []);
 
   useEffect(() => { load(); }, [load]);
@@ -65,7 +65,7 @@ export default function AttributionPage() {
         allLibraries: false,
       });
       setMsg(`${r.message}${r.source === 'fallback' ? '（规则降级，配置 DSH 模型后自动升级为 AI 归因）' : ''}`);
-      api.analyses({ kind: 'attribution' }).then(setRows).catch(() => {});
+      api.analyses({ kind: 'attribution' }).then((r) => setRows(r.items)).catch(() => {});
     } catch (e) {
       setError(String((e as Error).message));
     } finally {

@@ -151,7 +151,8 @@ export default function SettingsModal({ open, onClose }: { open: boolean; onClos
                   {models.map((m) => (
                     <div key={m.id} className="s-rowCard">
                       <div className="s-rowHead">
-                        <span className={`s-cred ${m.apiKey ? 'ok' : 'miss'}`} />
+                        {/* hasApiKey 是新后端的字段；兼容尚未重启的旧后端（那边 apiKey 是明文） */}
+                        <span className={`s-cred ${(m.hasApiKey ?? Boolean(m.apiKey)) ? 'ok' : 'miss'}`} />
                         <span className="s-rowName">{m.name}</span>
                         <span className="s-rowTag">{m.provider}</span>
                         {m.isDefault && <span className="s-rowTag" style={{ borderColor: 'var(--green)', color: 'var(--green)' }}>默认</span>}

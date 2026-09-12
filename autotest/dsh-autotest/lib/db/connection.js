@@ -29,6 +29,36 @@ export function defaultUrlProvider() {
 let urlProvider = defaultUrlProvider;
 let readyPromise = null;
 const txStore = new AsyncLocalStorage();
+// ---------- SQLite 事务互斥（隔离性修复） ----------
+// better-sqlite3 是「单连接 + 同步执行」：事务打开期间，别的并发请求发来的语句会落在同一条连接上，
+// 从而被卷进本事务并随它一起 COMMIT/ROLLBACK（事务隔离被击穿）；两个事务交叠还会抛
+// "cannot start a transaction within a transaction"。
+// 这里用一把异步互斥锁把 SQLite 事务串行化，并让「事务外的语句」等到事务结束再执行：
+//   - 事务进行中，只有事务自身（AsyncLocalStorage 标记）可以直接执行语句；
+//   - 因此不存在"语句被卷进别人事务"的窗口，也不存在嵌套 BEGIN。
+const sqliteTxStore = new AsyncLocalStorage();
+let sqliteTxOpen = false;
+let sqliteTxWaiters = [];
+/** 挂起直到当前事务释放（由调用方在 while 条件里同步检查，避免"检查—置位"被 await 拆开）。 */
+function sqliteIdleTick() {
+    return new Promise((resolve) => { sqliteTxWaiters.push(resolve); });
+}
+/**
+ * 抢占 SQLite 事务锁。
+ * 注意：循环条件的检查与 `sqliteTxOpen = true` 之间**不能有任何 await**，
+ * 否则会退化成"三个调用者都以为自己拿到了锁"，仍会打出嵌套 BEGIN。
+ */
+async function acquireSqliteTx() {
+    while (sqliteTxOpen)
+        await sqliteIdleTick();
+    sqliteTxOpen = true; // 与上面的条件检查处于同一同步块 → 原子
+}
+function releaseSqliteTx() {
+    sqliteTxOpen = false;
+    const waiters = sqliteTxWaiters.splice(0);
+    for (const w of waiters)
+        w();
+}
 let lockedMode = null;
 /** 当前数据库引擎：mysql（默认）| sqlite（未配置连接时本地降级）。ensureReady 后锁定。 */
 export function dbMode() {
@@ -81,6 +111,12 @@ function translateSqlite(s) {
 /** 统一查询入口：事务上下文内走事务连接，否则走引擎。 */
 async function query(sql, args) {
     if (dbMode() === 'sqlite') {
+        // 事务外发起的语句必须等当前事务结束：否则会落到同一条连接上被卷进别人的事务。
+        // 循环条件同步检查、退出后同步执行语句，中间不留 await 缺口。
+        if (sqliteTxStore.getStore() !== true) {
+            while (sqliteTxOpen)
+                await sqliteIdleTick();
+        }
         const s = translateSqlite(sql);
         const head = s.trimStart().slice(0, 6).toUpperCase();
         const stmt = sqlite().prepare(s);
@@ -145,22 +181,43 @@ export async function exec(sql) {
         await query(s, []);
     }
 }
-/** 事务：MySQL 从池取连接；SQLite 走 BEGIN/COMMIT（单连接同步执行，天然串行）。 */
+/**
+ * 事务：MySQL 从池取连接；SQLite 走「互斥锁 + BEGIN/COMMIT」（见文件顶部 sqliteTxStore 说明）。
+ * 嵌套调用语义：并入外层事务（内层不单独提交/回滚），避免 SQLite 自我死锁与 MySQL 连接池耗尽。
+ */
 export async function transaction(fn) {
     if (dbMode() === 'sqlite') {
-        sqlite().exec('BEGIN IMMEDIATE');
+        if (sqliteTxStore.getStore() === true) {
+            // 已在外层事务内：直接并入，保证不出现嵌套 BEGIN
+            return fn();
+        }
+        await acquireSqliteTx(); // 成功后即成为唯一持有者，后续非事务语句一律排队
+        let begun = false;
         try {
-            const r = await fn();
+            sqlite().exec('BEGIN IMMEDIATE');
+            begun = true;
+            const r = await sqliteTxStore.run(true, () => fn());
             sqlite().exec('COMMIT');
+            begun = false;
             return r;
         }
         catch (e) {
-            try {
-                sqlite().exec('ROLLBACK');
+            if (begun) {
+                try {
+                    sqlite().exec('ROLLBACK');
+                }
+                catch { /* ignore */ }
             }
-            catch { /* ignore */ }
             throw e;
         }
+        finally {
+            releaseSqliteTx();
+        }
+    }
+    if (txStore.getStore()) {
+        // MySQL 同样禁止嵌套开新事务：内层并入外层，避免行锁互相等待与连接池耗尽
+        console.warn('[dsh-autotest] 检测到嵌套事务调用，已并入外层事务（内层不单独提交/回滚）');
+        return fn();
     }
     const conn = await mysqlPool().getConnection();
     try {
@@ -229,7 +286,7 @@ export async function ensureReady() {
                 for (const [table, col] of [
                     ['libraries', 'package_name'], ['libraries', 'main_ability'],
                     ['plans', 'script_mode'], ['plans', 'error'], ['plans', 'progress'], ['plans', 'progress_note'],
-                    ['tasks', 'trace_id'], ['executions', 'trace_id'],
+                    ['tasks', 'trace_id'], ['executions', 'trace_id'], ['executions_archive', 'trace_id'],
                 ]) {
                     try {
                         const cols = await query(`PRAGMA table_info(${table})`, []);
@@ -243,6 +300,7 @@ export async function ensureReady() {
                                 'plans:progress_note': "ALTER TABLE plans ADD COLUMN progress_note TEXT NOT NULL DEFAULT ''",
                                 'tasks:trace_id': "ALTER TABLE tasks ADD COLUMN trace_id TEXT NOT NULL DEFAULT ''",
                                 'executions:trace_id': "ALTER TABLE executions ADD COLUMN trace_id TEXT NOT NULL DEFAULT ''",
+                                'executions_archive:trace_id': "ALTER TABLE executions_archive ADD COLUMN trace_id TEXT NOT NULL DEFAULT ''",
                             };
                             await query(ddl[`${table}:${col}`], []);
                         }
@@ -273,10 +331,11 @@ export async function ensureReady() {
                     throw e;
                 }
             }
-            // 轻量迁移：旧库补充包名/主 Ability 列 + 计划脚本模式/错误信息列
+            // 轻量迁移：旧库补充包名/主 Ability 列 + 计划脚本模式/错误信息列 + 归档 trace_id
             for (const [, , ddl] of [
                 ['libraries', 'package_name', "ALTER TABLE libraries ADD COLUMN package_name VARCHAR(128) NOT NULL DEFAULT ''"],
                 ['libraries', 'main_ability', "ALTER TABLE libraries ADD COLUMN main_ability VARCHAR(255) NOT NULL DEFAULT ''"],
+                ['executions_archive', 'trace_id', "ALTER TABLE executions_archive ADD COLUMN trace_id VARCHAR(64) NOT NULL DEFAULT ''"],
                 ['plans', 'script_mode', "ALTER TABLE plans ADD COLUMN script_mode VARCHAR(16) NOT NULL DEFAULT ''"],
                 ['plans', 'error', "ALTER TABLE plans ADD COLUMN error VARCHAR(500) NOT NULL DEFAULT ''"],
                 ['plans', 'progress', 'ALTER TABLE plans ADD COLUMN progress INT NOT NULL DEFAULT 0'],

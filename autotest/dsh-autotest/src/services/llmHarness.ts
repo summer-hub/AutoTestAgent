@@ -185,11 +185,16 @@ export function makeLlm(ctx: Context): LlmCall {
   };
 }
 
-/** 原始 LLM 输出落盘（extractJson 彻底失败时），路径跟随 workspace，不写死绝对路径。 */
-export function writeRawPayload(text: string): void {
+/**
+ * 原始 LLM 输出落盘（extractJson 彻底失败时），路径跟随 workspace，不写死绝对路径。
+ * tag 用于区分调用来源：并发分片同时解析失败时，若都写同一个文件只会留下最后一次，
+ * 前面几次的原始输出（排查解析问题唯一的一手证据）就被覆盖掉了。
+ */
+export function writeRawPayload(text: string, tag?: string): void {
   try {
     const dir = workspaceDir();
-    const file = `${dir}/llm-raw.json`;
+    const suffix = tag ? `-${String(tag).replace(/[^\w.-]/g, '_')}` : '';
+    const file = `${dir}/llm-raw${suffix}.json`;
     writeFileSync(file, text, 'utf8');
   } catch { /* 落盘失败不阻塞 */ }
 }
@@ -202,6 +207,11 @@ function jsonDirective(prompt: string): string {
 /**
  * 结构化输出三保险：严格 JSON 指令 → extractJson 容错 → 解析失败把错误回灌 LLM 修复一次。
  * 相比裸 extractJson，二次回灌让模型看到"哪里解析失败"，显著提升结构可靠性。
+ *
+ * 注意：解析错误必须保存在**本次调用的局部变量**里。
+ * 这里曾是模块级 `let firstErr`，而分片生成是并发的（agent.genShardConcurrency 默认 3），
+ * 于是各分片会互相把对方的错误塞进自己的修复提示；且上一次调用的错误会残留到下一次。
+ * 这与已经修掉的全局 lastLlmCall 是同一类问题，别再改回全局。
  */
 export async function llmJson<T>(
   llm: LlmCall,
@@ -209,28 +219,26 @@ export async function llmJson<T>(
   opts: { retries?: number } = {},
 ): Promise<LlmJsonResult<T>> {
   const retries = Math.max(0, Math.min(2, opts.retries ?? 1));
-  let first: LlmResult | null = null;
+  let lastParseErr: Error | null = null;
   for (let i = 0; i <= retries; i++) {
     const attemptInput = i === 0
       ? { ...input, user: jsonDirective(input.user) }
       : {
           ...input,
-          user: `上次模型输出不是合法 JSON，解析失败原因：${(firstErr?.message ?? '未知').slice(0, 300)}\n\n请只输出修复后的纯 JSON（对象或数组），不要任何解释、围栏、注释。\n\n原始任务：${input.user.slice(0, 3000)}`,
+          user: `上次模型输出不是合法 JSON，解析失败原因：${(lastParseErr?.message ?? '未知').slice(0, 300)}\n\n请只输出修复后的纯 JSON（对象或数组），不要任何解释、围栏、注释。\n\n原始任务：${input.user.slice(0, 3000)}`,
         };
     const res = await llm(attemptInput);
-    first = res;
     try {
       const data = extractJson<T>(res.text);
       return { data, text: res.text, provider: res.provider, model: res.model };
     } catch (e) {
-      firstErr = e instanceof Error ? e : new Error(String(e));
-      writeRawPayload(res.text);
+      lastParseErr = e instanceof Error ? e : new Error(String(e));
+      // 落盘文件名带上调用方标识，避免并发分片互相覆盖同一份原始输出
+      writeRawPayload(res.text, input.meta?.kind);
     }
   }
-  throw new Error(`JSON 解析失败（已回灌修复 ${retries} 次）：${firstErr?.message ?? '未知'}`);
+  throw new Error(`JSON 解析失败（已回灌修复 ${retries} 次）：${lastParseErr?.message ?? '未知'}`);
 }
-
-let firstErr: Error | null = null;
 
 /** 从 LLM 输出中提取 JSON（容忍 ```json 围栏与前后杂文） */
 export function extractJson<T>(text: string): T {

@@ -54,12 +54,14 @@ export async function seed(): Promise<void> {
    ('deepseek-reasoner', 'deepseek', 'https://api.deepseek.com/v1', 'deepseek-reasoner', '', 0, @t, @t),
    ('ollama 本地', 'ollama', 'http://localhost:11434/v1', 'qwen2.5:7b', '', 0, @t, @t)`).run({ t: t1 });
 
+  // 注意：这里**不能**写 app.workspace。
+  // 历史上种子把它硬编码成开发机路径（D:\autotest\workspace），后果有两层：
+  //   1) 换机器/换系统后工作区指向一个无效目录；
+  //   2) workspaceConfigured() 返回 true，"未配置工作区"的告警被架空（治理逻辑失效）。
+  // 工作区必须留空，由使用者在「系统配置」里显式设定；未设置时回退到 <启动目录>/workspace 并给出提示。
   await db.prepare(`INSERT IGNORE INTO settings (\`key\`, value, updated_at) VALUES
-   ('app.workspace', '"D:\\autotest\\workspace"', @t),
    ('agent.defaultModel', '""', @t),
-   ('data.redisCache', 'false', @t),
-   ('device.execEngine', '"hdc"', @t),
-   ('exec.scriptMode', '"script"', @t)`).run({ t: t1 });
+   ('data.redisCache', 'false', @t)`).run({ t: t1 });
 
   console.log(`✅ dsh-autotest 种子完成：${LIBRARIES.length} 个三方库注册（不含虚假用例/任务/设备），耗时 ${Date.now() - t0}ms`);
 }

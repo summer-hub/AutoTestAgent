@@ -9,9 +9,13 @@ AutoTest需求规格.txt
 
 # 日志
 *.log
+*.log.err
 
 # 一次性测试产物
 schtasks-test.txt
+
+# 本地 npm pack 产物（发布由 CI 从 tag 构建，tar 包不入库）
+*.tgz
 
 # SQLite 种子库（首次启动自动建表 + 种子，不入库）
 autotest/dsh-autotest/data/

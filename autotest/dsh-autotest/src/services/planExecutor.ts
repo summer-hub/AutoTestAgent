@@ -38,6 +38,34 @@ export async function executePlan(planId: number): Promise<void> {
   const plan = await db.prepare('SELECT * FROM plans WHERE id = ?').get<PlanRow>(planId);
   if (!plan) return;
   const t = now();
+
+  // 原子占位：只有「把 status 从非 running 改成 running」的那一次调用才真正执行。
+  // 否则连点两次「立即执行」、或 cron 触发与手动触发重叠时，同一计划会在真机上跑两份
+  // （设备争抢 + 执行记录翻倍）。
+  const claim = await db.prepare(
+    `UPDATE plans SET status='running', error='', progress=2, progress_note='准备中…', updated_at=? WHERE id=? AND status <> 'running'`,
+  ).run(t, planId);
+  if (!Number(claim.changes)) {
+    console.warn(`[plan #${planId}] 已有实例在执行中，本次触发跳过`);
+    return;
+  }
+
+  try {
+    await runPlanOnce(planId, plan, t);
+  } catch (e) {
+    // 任何异常（包括 device_ids 的 JSON.parse 这类前置解析）都必须落到终态：
+    // 否则计划永久停在 running，而前端每 2 秒轮询一个永远不会结束的状态。
+    const reason = (e as Error)?.message || String(e);
+    console.error(`[plan #${planId}] 执行异常：${reason}`);
+    await db.prepare(`UPDATE plans SET status='failed', error=?, progress=100, progress_note=?, updated_at=? WHERE id=?`)
+      .run(reason.slice(0, 480), `失败：${reason.slice(0, 120)}`, now(), planId);
+    throw e;
+  }
+}
+
+/** 计划主体（已被 executePlan 原子占位，保证同一计划同时只有一个实例在执行）。 */
+async function runPlanOnce(planId: number, plan: PlanRow, t: string): Promise<void> {
+  const db = getDb();
   const planTraceId = `tr-plan-${planId}-${Date.now()}`;
   const setProgress = async (pct: number, note: string): Promise<void> => {
     await db.prepare(`UPDATE plans SET progress = ?, progress_note = ?, updated_at = ? WHERE id = ?`)
@@ -48,8 +76,6 @@ export async function executePlan(planId: number): Promise<void> {
       .run(reason.slice(0, 480), `失败：${reason.slice(0, 120)}`, now(), planId);
     console.warn(`[plan #${planId}] ${plan.name} 执行失败：${reason}`);
   };
-
-  await db.prepare(`UPDATE plans SET status='running', error='', progress=2, progress_note='准备中…', updated_at=? WHERE id=?`).run(t, planId);
 
   // ---- 前置校验 ----
   if (!(await hdcAvailable())) {

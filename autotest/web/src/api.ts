@@ -1,5 +1,5 @@
 // API 客户端 — 统一走 /api（Vite 代理到后端 3280）
-import type { Analysis, CaseVersion, Device, Execution, ExploreReportMeta, ExploreResult, Library, ModelConfig, ModelTestResult, Page, Plan, Prompt, RepoFile, RepoFileEntry, RepoInfo, Task, TestCase } from 'shared';
+import type { Analysis, CaseVersion, Device, Execution, ExploreReportMeta, ExploreResult, Library, ModelConfig, ModelTestResult, Paged, Page, Plan, Prompt, RepoFile, RepoFileEntry, RepoInfo, Task, TestCase } from 'shared';
 
 // 嵌入 DSH 时由构建注入 VITE_API_BASE=/api/autotest（同源直连插件路由）；
 // 独立版默认 /api（Vite 代理到 3280）。
@@ -14,6 +14,15 @@ async function req<T>(url: string, init?: RequestInit): Promise<T> {
     throw new Error((body as { message?: string }).message || `HTTP ${res.status}`);
   }
   return res.json() as Promise<T>;
+}
+
+/**
+ * 列表信封归一化：兼容"裸数组"（0.1.56 及更早的后端）与 `{ items, nextCursor }`（新后端）。
+ * 前端产物与后端代码分别部署/热更时，很容易出现一边新一边旧的窗口
+ * （例如只替换了 lib/web 还没重启宿主进程），这里统一兜住，避免整页因取不到 items 而空白。
+ */
+function paged<T>(p: Promise<Paged<T> | T[]>): Promise<Paged<T>> {
+  return p.then((r) => (Array.isArray(r) ? { items: r, nextCursor: null } : r));
 }
 
 export const api = {
@@ -87,7 +96,7 @@ export const api = {
   testModel: (id: number) => req<ModelTestResult>(`${API_BASE}/models/${id}/test`, { method: 'POST' }),
 
   // 任务
-  tasks: (status?: string) => req<Task[]>(`${API_BASE}/tasks${status ? `?status=${status}` : ''}`),
+  tasks: (status?: string) => paged<Task>(req<Paged<Task> | Task[]>(`${API_BASE}/tasks${status ? `?status=${status}` : ''}`)),
   createTask: (b: { type: string; libraryId?: number; input?: string; title?: string }) =>
     req<Task>(`${API_BASE}/tasks`, { method: 'POST', body: JSON.stringify(b) }),
   retryTask: (id: number) => req<{ ok: boolean }>(`${API_BASE}/tasks/${id}/retry`, { method: 'POST' }),
@@ -169,7 +178,9 @@ export const api = {
     if (params.planId) qs.set('planId', String(params.planId));
     if (params.status) qs.set('status', params.status);
     if (params.limit) qs.set('limit', String(params.limit));
-    return req<Array<Execution & { caseNo: string; caseName: string; libraryName: string; deviceSerial: string | null }>>(`${API_BASE}/executions?${qs}`);
+    return paged<Execution & { caseNo: string; caseName: string; libraryName: string; deviceSerial: string | null }>(
+      req<Paged<Execution & { caseNo: string; caseName: string; libraryName: string; deviceSerial: string | null }> | Array<Execution & { caseNo: string; caseName: string; libraryName: string; deviceSerial: string | null }>>(`${API_BASE}/executions?${qs}`),
+    );
   },
   execution: (id: number) => req<Execution & { caseNo: string; caseName: string; libraryName: string; deviceSerial: string | null }>(`${API_BASE}/executions/${id}`),
   askExecution: (id: number, question: string) =>
@@ -188,7 +199,7 @@ export const api = {
     if (params.kind) qs.set('kind', params.kind);
     if (params.libraryId) qs.set('libraryId', String(params.libraryId));
     if (params.granularity) qs.set('granularity', params.granularity);
-    return req<Analysis[]>(`${API_BASE}/analyses?${qs}`);
+    return paged<Analysis>(req<Paged<Analysis> | Analysis[]>(`${API_BASE}/analyses?${qs}`));
   },
   libraryPrs: (libraryId: number) =>
     req<{ items: Array<{ number: number; title: string; state: string; createdAt: string }>; error?: string }>(

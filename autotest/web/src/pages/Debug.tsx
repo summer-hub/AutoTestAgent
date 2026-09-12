@@ -15,10 +15,10 @@ export default function DebugPage() {
 
   const load = useCallback(() => {
     api.executions({ limit: 30 })
-      .then((list) => {
-        setExecs(list);
-        const failed = list.find((e) => e.status === 'failed');
-        if (!selected) setSelected(failed ?? list[0] ?? null);
+      .then((r) => {
+        setExecs(r.items);
+        const failed = r.items.find((e) => e.status === 'failed');
+        if (!selected) setSelected(failed ?? r.items[0] ?? null);
       })
       .catch((e) => setError(String((e as Error).message)));
   }, [selected]);

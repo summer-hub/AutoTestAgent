@@ -26,7 +26,7 @@ export interface RepoInspect {
 export declare function workspaceDir(): string;
 /** 工作区是否已在系统配置中显式设置。 */
 export declare function workspaceConfigured(): boolean;
-/** 未配置工作区时的提示语（配置了返回 null）。 */
+/** 未配置工作区（或配置来自旧种子默认值）时的提示语；正常配置返回 null。 */
 export declare function workspaceNotice(): string | null;
 /** 运行中对账：仓库目录被删除时清空库的同步状态（首页/用例页不再残留过期信息）。 */
 export declare function reconcileRepos(): Promise<number>;
