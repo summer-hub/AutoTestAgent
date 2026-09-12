@@ -56,6 +56,24 @@ export const api = {
     req<LibrarySheetSyncResult>(`${API_BASE}/libraries/sync-sheet`, { method: 'POST', body: JSON.stringify(b) }),
   exportSheet: (b: { file?: string } = {}) =>
     req<{ file: string; rows: number }>(`${API_BASE}/libraries/export-sheet`, { method: 'POST', body: JSON.stringify(b) }),
+  // P2 接口面提取
+  extractApi: (id: number) => req<{
+    ok: boolean; entryFile: string; packageName: string; symbols: number; demoAssets: number;
+    callSites: number; testCallSites: number; problems: string[]; docFile: string; version: string;
+  }>(`${API_BASE}/libraries/${id}/extract-api`, { method: 'POST' }),
+  apiSymbols: (id: number, version?: string) => req<{
+    libraryId: number; name: string; version: string;
+    counts: { total: number; demoUsed: number; testOnly: number; unused: number };
+    symbols: Array<{
+      id: number; name: string; kind: string; signature: string;
+      params: Array<{ name: string; type: string; optional: boolean; defaultValue: string; doc: string }>;
+      returns: { type: string; doc: string };
+      throws: Array<{ type: string; doc: string }>;
+      deprecated: boolean; sourceFile: string; sourceLine: number; methods: string[]; detailLevel: string;
+      demoCallCount: number; testCallCount: number; pages: string[];
+    }>;
+    demoAssets: Array<{ kind: string; name: string; pagePath: string; sourceFile: string; sourceLine: number; snippet: string; mutability: string }>;
+  }>(`${API_BASE}/libraries/${id}/api-symbols${version ? `?version=${encodeURIComponent(version)}` : ''}`),
 
   // 用例
   cases: (libraryId: number, params: { page?: number; pageSize?: number; q?: string; source?: string; status?: string; ver?: string } = {}) => {

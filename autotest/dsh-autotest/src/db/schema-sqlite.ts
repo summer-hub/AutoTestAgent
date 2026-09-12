@@ -22,6 +22,46 @@ CREATE TABLE IF NOT EXISTS libraries (
 );
 CREATE INDEX IF NOT EXISTS idx_libraries_status ON libraries(status);
 
+-- 导出符号（接口面的最小事实单元）：P2 的产物，P3 覆盖矩阵的分母
+CREATE TABLE IF NOT EXISTS api_symbols (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  library_id INTEGER NOT NULL,
+  library_version TEXT NOT NULL DEFAULT '',
+  name TEXT NOT NULL,
+  kind TEXT NOT NULL,
+  signature TEXT NOT NULL,
+  params_json TEXT NOT NULL,
+  returns_json TEXT NOT NULL,
+  throws_json TEXT NOT NULL,
+  since_version TEXT NOT NULL DEFAULT '',
+  deprecated INTEGER NOT NULL DEFAULT 0,
+  source_file TEXT NOT NULL,
+  source_line INTEGER NOT NULL DEFAULT 0,
+  methods_json TEXT NOT NULL,
+  doc_refs TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  UNIQUE (library_id, library_version, name, kind)
+);
+CREATE INDEX IF NOT EXISTS idx_api_symbols_lib ON api_symbols(library_id);
+
+-- demo 资产：页面与可注入参数点（接口 ↔ demo 位置的落点，P3/P5 的证据来源）
+CREATE TABLE IF NOT EXISTS demo_assets (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  library_id INTEGER NOT NULL,
+  library_version TEXT NOT NULL DEFAULT '',
+  kind TEXT NOT NULL,
+  name TEXT NOT NULL,
+  page_path TEXT NOT NULL DEFAULT '',
+  source_file TEXT NOT NULL DEFAULT '',
+  source_line INTEGER NOT NULL DEFAULT 0,
+  snippet TEXT NOT NULL,
+  mutability TEXT NOT NULL DEFAULT 'none',
+  created_at TEXT NOT NULL,
+  UNIQUE (library_id, library_version, kind, name, source_file, source_line)
+);
+CREATE INDEX IF NOT EXISTS idx_demo_assets_lib ON demo_assets(library_id);
+
 CREATE TABLE IF NOT EXISTS cases (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   library_id INTEGER NOT NULL,

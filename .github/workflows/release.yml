@@ -58,6 +58,10 @@ jobs:
         working-directory: autotest/dsh-autotest
         run: npm run verify:sheet
 
+      - name: API extract self-check（导出链解析 / 定义提取 / 假覆盖防护）
+        working-directory: autotest/dsh-autotest
+        run: npm run verify:api-extract
+
       - name: Step contract self-check（句式映射 / guardrail，无设备自动跳过真机组）
         working-directory: autotest/dsh-autotest
         run: node scripts/verify-step-contract.mjs

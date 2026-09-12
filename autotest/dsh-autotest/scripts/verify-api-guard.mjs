@@ -335,6 +335,33 @@ check(gone.status === 404, '删除后库确实不存在', `status=${gone.status}
 const orphan = await db.prepare('SELECT COUNT(*) AS n FROM cases WHERE library_id = ?').get(libId);
 check(orphan.n === 0, '级联删除了该库的用例（不留孤儿数据）', `剩余用例=${orphan.n}`);
 
+// ---------- P2：接口面提取 ----------
+//
+// 自检环境里没有真实仓库克隆，所以这里验的是**失败路径与空状态**是否清晰：
+// 没拉代码时必须给人可操作的提示（而不是 500），没采集过时列表要如实返回空。
+console.log('\n— P2 接口面提取 —');
+{
+  const created = await raw('POST', '/api/autotest/libraries', {
+    headers: { 'Content-Type': 'application/json' },
+    body: { name: 'verify-api-extract', repoUrl: 'https://gitcode.com/ohos-verify/not-cloned.git' },
+  });
+  const id = created.json?.id;
+  check(!!id, '预置：待提取的库已建立', `id=${id}`);
+
+  const noRepo = await raw('POST', `/api/autotest/libraries/${id}/extract-api`);
+  check(noRepo.status === 400 && /拉取仓库代码/.test(noRepo.json?.error ?? ''),
+    '未拉取代码时提取返回 400 且提示去拉代码（不是 500）', `status=${noRepo.status} msg=${noRepo.json?.error}`);
+
+  const empty = await raw('GET', `/api/autotest/libraries/${id}/api-symbols`);
+  check(empty.status === 200 && empty.json?.version === '' && empty.json?.symbols?.length === 0,
+    '未采集过的库：接口清单为空而不是报错', `status=${empty.status} version='${empty.json?.version}'`);
+  check(empty.json?.counts?.total === 0 && empty.json?.counts?.unused === 0, '空状态的统计全为 0', JSON.stringify(empty.json?.counts));
+
+  const missing = await raw('GET', '/api/autotest/libraries/999999/api-symbols');
+  check(missing.status === 404, '不存在的库返回 404', `status=${missing.status}`);
+  await raw('DELETE', `/api/autotest/libraries/${id}?force=1`);
+}
+
 // ---------- Prompt 模板（对应前端"新建模板必然 404"的回归） ----------
 console.log('\n— Prompt 模板 —');
 const newPrompt = await raw('POST', '/api/autotest/prompts', {

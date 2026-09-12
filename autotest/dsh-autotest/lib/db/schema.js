@@ -24,6 +24,48 @@ CREATE TABLE IF NOT EXISTS libraries (
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 CREATE INDEX idx_libraries_status ON libraries(status);
 
+-- 导出符号（接口面的最小事实单元）：P2 的产物，P3 覆盖矩阵的分母
+-- 唯一键含 library_version：同一符号换版本重新采集是一条新事实，而不是覆盖历史
+CREATE TABLE IF NOT EXISTS api_symbols (
+  id BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+  library_id BIGINT UNSIGNED NOT NULL,
+  library_version VARCHAR(64) NOT NULL DEFAULT '',
+  name VARCHAR(255) NOT NULL,
+  kind VARCHAR(32) NOT NULL,
+  signature MEDIUMTEXT NOT NULL,
+  params_json MEDIUMTEXT NOT NULL,
+  returns_json MEDIUMTEXT NOT NULL,
+  throws_json MEDIUMTEXT NOT NULL,
+  since_version VARCHAR(32) NOT NULL DEFAULT '',
+  deprecated TINYINT NOT NULL DEFAULT 0,
+  source_file VARCHAR(512) NOT NULL,
+  source_line INT NOT NULL DEFAULT 0,
+  -- 类的方法清单：class 类符号真正可测的单元是它的方法（v.validate(...)），P3 需要它
+  methods_json MEDIUMTEXT NOT NULL,
+  doc_refs MEDIUMTEXT NOT NULL,
+  created_at VARCHAR(32) NOT NULL,
+  updated_at VARCHAR(32) NOT NULL,
+  UNIQUE KEY uk_api_symbols (library_id, library_version, name, kind)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+CREATE INDEX idx_api_symbols_lib ON api_symbols(library_id);
+
+-- demo 资产：页面与可注入参数点（接口 ↔ demo 位置的落点，P3/P5 的证据来源）
+CREATE TABLE IF NOT EXISTS demo_assets (
+  id BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+  library_id BIGINT UNSIGNED NOT NULL,
+  library_version VARCHAR(64) NOT NULL DEFAULT '',
+  kind VARCHAR(24) NOT NULL,
+  name VARCHAR(255) NOT NULL,
+  page_path VARCHAR(512) NOT NULL DEFAULT '',
+  source_file VARCHAR(512) NOT NULL DEFAULT '',
+  source_line INT NOT NULL DEFAULT 0,
+  snippet MEDIUMTEXT NOT NULL,
+  mutability VARCHAR(16) NOT NULL DEFAULT 'none',
+  created_at VARCHAR(32) NOT NULL,
+  UNIQUE KEY uk_demo_assets (library_id, library_version, kind, name, source_file, source_line)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+CREATE INDEX idx_demo_assets_lib ON demo_assets(library_id);
+
 -- 用例主表（生产可拆 cases_0..cases_15，library_id % 16 路由）
 CREATE TABLE IF NOT EXISTS cases (
   id BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,

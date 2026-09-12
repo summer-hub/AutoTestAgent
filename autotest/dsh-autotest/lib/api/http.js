@@ -18,6 +18,7 @@ import { normalizeSubpath, pullRepo, repoDirFor, splitRepoUrl, workspaceConfigur
 import { hypiumProjectDir, writeCaseScript, ensureHypiumProject } from '../services/hypiumGen.js';
 import { listEvents } from '../services/events.js';
 import { exportLibrariesSheet, resolveSheetPath, syncLibrariesFromSheet } from '../services/librarySheet.js';
+import { loadStoredSymbols, runApiExtraction } from '../services/apiExtract.js';
 import { detectPython, runHypiumModule } from '../services/hypiumRunner.js';
 const routes = [];
 // 分析进度（内存态，供前端轮询展示实时过程；完成后 60s 自动清理）
@@ -388,6 +389,45 @@ function defineRoutes(llm) {
         const r = await exportLibrariesSheet(b.file ? String(b.file) : undefined);
         console.log(`[autotest] 库状态导出：${r.rows} 行 → ${r.file}`);
         return r;
+    });
+    // ---- P2：接口面提取（导出符号 + demo 资产）----
+    //
+    // 这是覆盖矩阵的分母：没有一份完整、可定位的符号清单，"哪些接口没被测到"就是不可证伪的。
+    route('POST', '/libraries/:id/extract-api', async ({ params }) => {
+        const id = Number(params.id);
+        const row = await getDb().prepare('SELECT id, name, repo_url, repo_subpath, last_commit, current_version FROM libraries WHERE id = ?')
+            .get(id);
+        if (!row)
+            throw Object.assign(new Error('库不存在'), { statusCode: 404 });
+        const r = await runApiExtraction(row);
+        if (!r.ok)
+            throw Object.assign(new Error(r.reason ?? '接口提取失败'), { statusCode: 400 });
+        console.log(`[autotest] 接口提取 #${id} ${row.name}：入口 ${r.entryFile} · 符号 ${r.symbols} · demo 调用点 ${r.callSites}（单元测试 ${r.testCallSites}）· 问题 ${r.problems.length}`);
+        return r;
+    });
+    route('GET', '/libraries/:id/api-symbols', async ({ params, query }) => {
+        const id = Number(params.id);
+        const row = await getDb().prepare('SELECT id, name FROM libraries WHERE id = ?').get(id);
+        if (!row)
+            throw Object.assign(new Error('库不存在'), { statusCode: 404 });
+        const { version, symbols } = await loadStoredSymbols(id, query.get('version') ?? undefined);
+        const demoAssets = await getDb().prepare(`SELECT kind, name, page_path, source_file, source_line, snippet, mutability
+       FROM demo_assets WHERE library_id = ? AND library_version = ? ORDER BY kind, name, source_line LIMIT 2000`).all(id, version);
+        const call = symbols.filter((s) => s.demoCallCount > 0).length;
+        return {
+            libraryId: id, name: row.name, version,
+            counts: {
+                total: symbols.length,
+                demoUsed: call,
+                testOnly: symbols.filter((s) => s.demoCallCount === 0 && s.testCallCount > 0).length,
+                unused: symbols.filter((s) => s.demoCallCount === 0 && s.testCallCount === 0).length,
+            },
+            symbols,
+            demoAssets: demoAssets.map((a) => ({
+                kind: a.kind, name: a.name, pagePath: a.page_path, sourceFile: a.source_file,
+                sourceLine: a.source_line, snippet: a.snippet, mutability: a.mutability,
+            })),
+        };
     });
     // ---- 库管理：新增 / 修改（含包名）/ 删除 ----
     //
