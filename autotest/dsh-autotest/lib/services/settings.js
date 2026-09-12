@@ -26,13 +26,18 @@ export const SETTING_DEFAULTS = {
     'data.shardCount': 16,
     'device.appAbilities': '{}',
     'device.autoScanInterval': 30, // 设备自动检测间隔（秒），0=关闭；启动时立即检测一次
-    'explore.maxDepth': 2, // 真机 UI 遍历：BFS 最大深度
-    'explore.maxPages': 40, // 真机 UI 遍历：最多收录页面数（保证全按钮覆盖）
-    'explore.controlsPerPage': 12, // 真机 UI 遍历：每页最多收集控件数
+    'explore.maxDepth': 8, // 真机 UI 遍历：BFS 深度安全上限（真正的限流交给下面的预算项）
+    'explore.maxPages': 40, // 真机 UI 遍历：最多收录页面数
+    'explore.controlsPerPage': 60, // 真机 UI 遍历：每页控件清单上限（对所有页面统一生效）
     'explore.maxSwipePerPage': 5, // 真机 UI 遍历：单页为看全内容最多滑动次数
+    'explore.maxMinutes': 20, // 真机 UI 遍历：单次遍历时长上限（分钟），到点即停并给出原因
+    'explore.maxClicksPerPage': 100, // 真机 UI 遍历：单页点击上限（防异常页面把预算耗在一页）
+    'explore.signatureIncludesLayout': false, // 页面签名是否含布局坐标（默认否：连续动画页每帧坐标都变）
     'explore.statusBarFilter': true, // 真机 UI 遍历：过滤状态栏/系统窗口控件（时钟等）
     'explore.systemBundles': 'com.ohos.sceneboard,com.huawei.systemui,com.ohos.systemui,com.android.systemui',
     'exec.schedulerEnabled': true, // 多节点部署时仅主节点开启调度器（防定时计划/统计预热重复执行）
+    // ---- 三方库测试表（人维护的 xlsx，库管理页「从表同步」用它作为库清单来源）----
+    'libraries.xlsxPath': '', // 留空 = <插件>/data/三方库测试表.xlsx；相对路径按插件 data 目录解析
     // ---- 服务器化 ----
     'db.mysqlUrl': '',
 };

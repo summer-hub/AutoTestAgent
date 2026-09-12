@@ -8,6 +8,7 @@ const SECTIONS: Array<{ title: string; desc: string; fields: Array<{ key: string
   {
     title: '通用', desc: '基础工作区与默认规模', fields: [
       { key: 'app.workspace', label: '工作区路径', type: 'text', hint: '仓库 / 脚本 / 遍历报告统一存放处 · 留空 = 启动目录下的 workspace（不推荐）' },
+      { key: 'libraries.xlsxPath', label: '三方库测试表路径', type: 'text', hint: '人维护的 xlsx（库清单 + 仓库地址），库管理页「从表同步」读它 · 留空 = 插件 data 目录下的「三方库测试表.xlsx」' },
     ],
   },
   {
@@ -42,10 +43,13 @@ const SECTIONS: Array<{ title: string; desc: string; fields: Array<{ key: string
   },
   {
     title: '真机遍历', desc: 'UI 遍历引擎参数（任务页「真机遍历生成用例」执行时生效）', fields: [
-      { key: 'explore.maxDepth', label: '遍历深度', type: 'number', hint: 'BFS 最大层级，1-6，默认 2' },
-      { key: 'explore.maxPages', label: '页面数上限', type: 'number', hint: '最多收录页面数，1-200，默认 20' },
-      { key: 'explore.controlsPerPage', label: '每页控件数上限', type: 'number', hint: '每页最多收集可交互控件，1-50，默认 12' },
+      { key: 'explore.maxDepth', label: '遍历深度安全上限', type: 'number', hint: 'BFS 最大层级，1-20。仅作安全上限，真正限流靠下面三项预算' },
+      { key: 'explore.maxPages', label: '页面数上限', type: 'number', hint: '最多收录页面数，1-200，默认 40' },
+      { key: 'explore.maxMinutes', label: '遍历时长上限（分钟）', type: 'number', hint: '单次遍历到点即停，停止原因写入覆盖率报告，默认 20' },
+      { key: 'explore.maxClicksPerPage', label: '单页点击上限', type: 'number', hint: '防止异常页面把预算耗在一页，1-500，默认 100' },
+      { key: 'explore.controlsPerPage', label: '每页控件清单上限', type: 'number', hint: '可交互控件 + 展示文本，1-300，默认 60（对所有页面统一生效）' },
       { key: 'explore.maxSwipePerPage', label: '单页滑动次数上限', type: 'number', hint: '为看全越界动画/内容最多滑动次数，0-20，默认 5' },
+      { key: 'explore.signatureIncludesLayout', label: '页面签名含布局', type: 'bool', hint: '开启后坐标参与去重（对布局敏感）；动画页建议关闭，默认关' },
       { key: 'explore.statusBarFilter', label: '状态栏过滤', type: 'bool', hint: '按系统 bundleName 子树丢弃 + 高度阈值兜底' },
       { key: 'explore.systemBundles', label: '系统窗口包名清单', type: 'text', hint: '逗号分隔，追加到内置清单（sceneboard/systemui 等）' },
     ],

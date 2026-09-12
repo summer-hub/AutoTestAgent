@@ -95,6 +95,21 @@ export async function uiDump(serial) {
     const { stdout } = await runHdc(['-t', serial, 'shell', 'cat', DUMP_PATH], 20000);
     return stdout;
 }
+/** dumpLayout 的布尔字段是字符串 "true"/"false"，也可能是空串（根节点）或真布尔。 */
+function toBool(v, fallback = false) {
+    if (v === true || v === 'true')
+        return true;
+    if (v === false || v === 'false')
+        return false;
+    return fallback;
+}
+/** 解析 bounds："[0,124][1260,2720]" → {x1,y1,x2,y2}；非法返回 null。 */
+export function parseBounds(raw) {
+    const m = /\[(-?\d+),(-?\d+)\]\[(-?\d+),(-?\d+)\]/.exec(String(raw ?? ''));
+    if (!m)
+        return null;
+    return { x1: Number(m[1]), y1: Number(m[2]), x2: Number(m[3]), y2: Number(m[4]) };
+}
 /** 从 dump XML/JSON 解析当前页面归属（bundleName / pagePath），用于过滤非目标应用页面。 */
 export function dumpMeta(xml) {
     const t = xml.trim();
@@ -114,71 +129,133 @@ export function dumpMeta(xml) {
     }
     return { bundleName: '', pagePath: '' };
 }
-export function parseNodes(dump, opts) {
-    const nodes = [];
-    const text = dump.trim();
-    // HarmonyOS：uitest dumpLayout 输出 JSON 树
-    if (text.startsWith('{')) {
+/**
+ * 解析 UI dump（HarmonyOS dumpLayout JSON 或 Android uiautomator XML）。
+ * 与旧版的区别：
+ *  - 不再要求「有文本」——无文本但可交互的节点（图标按钮）同样返回；
+ *  - 保留全部交互标志与稳定标识；
+ *  - 解析失败**显式回报**，不再静默返回空数组（旧版无法区分"空页面"与"解析失败"）。
+ */
+export function parseDump(dump, opts) {
+    const raw = String(dump ?? '').replace(/^\uFEFF/, '').trim();
+    if (!raw)
+        return { nodes: [], parsed: false, reason: 'dump 内容为空', format: 'unknown' };
+    // ---------- HarmonyOS：uitest dumpLayout JSON 树 ----------
+    if (raw.startsWith('{')) {
+        const nodes = [];
         const skip = opts?.skipBundles;
-        const walk = (node, parentBundle) => {
+        const walk = (node, parentBundle, parentPage) => {
             if (!node || typeof node !== 'object')
                 return;
             const n = node;
             const a = n.attributes ?? {};
-            let curBundle = parentBundle;
-            const b = String(a.bundleName ?? '').trim();
-            if (b)
-                curBundle = b;
-            // 系统窗口（桌面/状态栏/场景板）→ 整棵子树丢弃，彻底过滤时钟等系统文本
+            const curBundle = String(a.bundleName ?? '').trim() || parentBundle;
+            const curPage = String(a.pagePath ?? '').trim() || parentPage;
+            // 系统窗口（桌面/状态栏/场景板）→ 整棵子树丢弃
             if (skip && curBundle && skip.has(curBundle))
                 return;
-            const label = String(a.text ?? '');
-            const desc = String(a.description ?? '');
-            if (label || desc) {
-                const m = /\[(\d+),(\d+)\]\[(\d+),(\d+)\]/.exec(String(a.bounds ?? ''));
-                if (m) {
-                    nodes.push({
-                        text: label,
-                        desc,
-                        x: Math.round((Number(m[1]) + Number(m[3])) / 2),
-                        y: Math.round((Number(m[2]) + Number(m[4])) / 2),
-                        type: String(a.type ?? '') || undefined,
-                        bundle: curBundle || undefined,
-                        bounds: { x1: Number(m[1]), y1: Number(m[2]), x2: Number(m[3]), y2: Number(m[4]) },
-                    });
-                }
+            const bounds = parseBounds(a.bounds);
+            if (bounds) {
+                const text = String(a.text ?? '');
+                const desc = String(a.description ?? '');
+                nodes.push({
+                    id: String(a.id ?? '').trim(),
+                    key: String(a.key ?? '').trim(),
+                    text,
+                    desc,
+                    hint: String(a.hint ?? '').trim(),
+                    x: Math.round((bounds.x1 + bounds.x2) / 2),
+                    y: Math.round((bounds.y1 + bounds.y2) / 2),
+                    type: String(a.type ?? '').trim() || undefined,
+                    bundle: curBundle || undefined,
+                    bounds,
+                    pagePath: curPage,
+                    windowId: String(a.hostWindowId ?? '').trim(),
+                    hierarchy: String(a.hierarchy ?? '').trim(),
+                    clickable: toBool(a.clickable),
+                    longClickable: toBool(a.longClickable),
+                    scrollable: toBool(a.scrollable),
+                    checkable: toBool(a.checkable),
+                    checked: toBool(a.checked),
+                    selected: toBool(a.selected),
+                    enabled: toBool(a.enabled, true), // 缺省视为可用（根节点不带该字段）
+                    visible: toBool(a.visible, true),
+                });
             }
             for (const child of n.children ?? [])
-                walk(child, curBundle);
+                walk(child, curBundle, curPage);
         };
         try {
-            walk(JSON.parse(text), '');
-            return nodes;
+            walk(JSON.parse(raw), '', '');
+            if (nodes.length === 0)
+                return { nodes, parsed: false, reason: 'JSON 解析成功但没有任何带 bounds 的节点', format: 'harmony-json' };
+            return { nodes, parsed: true, format: 'harmony-json' };
         }
-        catch {
-            return [];
+        catch (e) {
+            return { nodes: [], parsed: false, reason: `JSON 解析失败：${e.message}`, format: 'harmony-json' };
         }
     }
-    // Android / OpenHarmony：uiautomator XML
-    const re = /<node[^>]*?text="([^"]*)"[^>]*?content-desc="([^"]*)"[^>]*?bounds="\[(\d+),(\d+)\]\[(\d+),(\d+)\]"[^>]*?class="([^"]*)"/g;
-    let m;
-    while ((m = re.exec(text))) {
-        const [, text, desc, x1, y1, x2, y2, cls] = m;
-        if (!text && !desc)
-            continue;
-        nodes.push({
-            text,
-            desc,
-            x: Math.round((Number(x1) + Number(x2)) / 2),
-            y: Math.round((Number(y1) + Number(y2)) / 2),
-            type: cls || undefined,
-            bounds: { x1: Number(x1), y1: Number(y1), x2: Number(x2), y2: Number(y2) },
-        });
+    // ---------- Android / OpenHarmony：uiautomator XML ----------
+    // 逐属性提取，不依赖属性出现顺序（旧版正则强制 text→content-desc→bounds→class 的固定词序，
+    // 标准 dump 的 class 在 bounds 之前，导致恒 0 命中）。
+    if (raw.startsWith('<')) {
+        const nodes = [];
+        const nodeRe = /<node\b([^>]*?)\/?>/g;
+        let m;
+        while ((m = nodeRe.exec(raw))) {
+            const attrs = {};
+            for (const am of m[1].matchAll(/([\w:-]+)\s*=\s*"([^"]*)"/g))
+                attrs[am[1]] = am[2];
+            const bounds = parseBounds(attrs.bounds);
+            if (!bounds)
+                continue;
+            const cls = attrs.class ?? '';
+            const clickable = toBool(attrs.clickable);
+            const longClickable = toBool(attrs['long-clickable']);
+            const scrollable = toBool(attrs.scrollable);
+            const checkable = toBool(attrs['checkable']);
+            nodes.push({
+                id: (attrs['resource-id'] ?? '').trim(),
+                key: '',
+                text: attrs.text ?? '',
+                desc: attrs['content-desc'] ?? '',
+                hint: '',
+                x: Math.round((bounds.x1 + bounds.x2) / 2),
+                y: Math.round((bounds.y1 + bounds.y2) / 2),
+                type: cls || undefined,
+                bounds,
+                pagePath: '',
+                windowId: '',
+                hierarchy: cls,
+                clickable,
+                longClickable,
+                scrollable,
+                checkable,
+                checked: toBool(attrs.checked),
+                selected: toBool(attrs.selected),
+                enabled: toBool(attrs.enabled, true),
+                visible: attrs.visible === undefined ? true : toBool(attrs.visible, true),
+            });
+        }
+        if (nodes.length === 0)
+            return { nodes, parsed: false, reason: 'XML 中未解析出任何带 bounds 的 node', format: 'android-xml' };
+        return { nodes, parsed: true, format: 'android-xml' };
     }
-    return nodes;
+    return { nodes: [], parsed: false, reason: `无法识别的 dump 格式（首字符 ${JSON.stringify(raw.slice(0, 1))}）`, format: 'unknown' };
+}
+/**
+ * 兼容旧签名：只取节点数组。
+ * ⚠️ 需要区分"解析失败"与"空页面"时请直接用 `parseDump()`。
+ */
+export function parseNodes(dump, opts) {
+    return parseDump(dump, opts).nodes;
 }
 export function findKeyword(nodes, keyword) {
-    const k = keyword.toLowerCase();
+    const k = keyword.toLowerCase().trim();
+    // 空关键词必须直接返回：否则 `includes('')` 恒为真，会把第一个节点当成命中
+    // （历史缺陷：「点击「、」」这类步骤被标点清洗成空串后，点到的是页面第一个控件）
+    if (!k)
+        return undefined;
     return nodes.find((n) => n.text.toLowerCase().includes(k) || n.desc.toLowerCase().includes(k));
 }
 export function screenSize(xml) {
@@ -201,7 +278,7 @@ async function swipe(serial, x1, y1, x2, y2, ms) {
         ? execShell(serial, ['uinput', '-T', '-m', String(x1), String(y1), String(x2), String(y2), String(ms)])
         : execShell(serial, ['input', 'swipe', String(x1), String(y1), String(x2), String(y2), String(ms)]);
 }
-async function inputText(serial, text) {
+export async function inputText(serial, text) {
     const mode = await detectDumpMode(serial);
     return mode === 'harmony'
         ? execShell(serial, ['uinput', '-K', '-t', text])
@@ -301,6 +378,80 @@ export function launchArgs(launch) {
     if (s.includes('.'))
         return ['aa', 'start', '-b', s];
     return ['aa', 'start', '-a', s];
+}
+/** 归一化库名用于模糊匹配：'json-schema' → 'jsonschema'。 */
+function fuzzyKey(s) {
+    return s.toLowerCase().replace(/[^a-z0-9]/g, '');
+}
+/**
+ * 从 `bm dump -n <bundle>` 输出里解析入口 Ability。
+ * 真机实测（ALN-AL00）：该输出**没有** mainElementName 字段，只有 abilities 数组，
+ * 里面第一个 "name" 就是入口 Ability（如 EntryAbility）。优先 mainElementName 以兼容有该字段的版本。
+ */
+export function parseMainAbility(dump) {
+    const direct = /"mainElementName"\s*:\s*"([^"]+)"/.exec(dump)?.[1];
+    if (direct)
+        return direct;
+    const block = /"abilities"\s*:\s*\[([\s\S]*?)\n\s*\]/.exec(dump)?.[1] ?? '';
+    const names = [...block.matchAll(/"name"\s*:\s*"([^"]+)"/g)].map((m) => m[1]);
+    return names.find((n) => /^entry/i.test(n)) ?? names[0] ?? '';
+}
+/**
+ * 查入口 Ability。**必须显式带 -a 启动**：真机上 `aa start -b <bundle>`（隐式启动）
+ * 对很多 demo 直接返回 10103101「Failed to find a matching application for implicit launch」，
+ * 应用根本没起来 —— 遍历却会照常跑完并给出一份看着正常的报告（真机上正是这么骗过验收的）。
+ */
+export async function resolveMainAbility(serial, bundle) {
+    try {
+        return parseMainAbility(await execShell(serial, ['bm', 'dump', '-n', bundle]));
+    }
+    catch {
+        return '';
+    }
+}
+/** 系统/预置包名前缀：不参与"库 → 应用"的模糊匹配。 */
+const SYSTEM_BUNDLE_PREFIXES = ['com.ohos.', 'com.huawei.systemui', 'com.android.', 'com.huawei.hmos.settings'];
+/** 是否是系统/桌面类包（这类 bundle 出现了就说明被测应用没在前台）。 */
+export function isSystemBundle(bundle) {
+    const b = bundle.toLowerCase();
+    return b === 'com.ohos.sceneboard' || SYSTEM_BUNDLE_PREFIXES.some((p) => b.startsWith(p));
+}
+/**
+ * 按库名在设备已安装应用里模糊匹配候选 bundleName，并回填入口 Ability。
+ * 用途：库没拉过仓库时 package_name 为空，真机遍历 `aa start` 会失败 → 这里帮人自动认出来。
+ * 两条命令都走 argv 数组，无注入面。
+ */
+export async function guessBundleFor(serial, libName) {
+    const key = fuzzyKey(libName);
+    if (!key)
+        return [];
+    let out = '';
+    try {
+        out = await execShell(serial, ['bm', 'dump', '-a']);
+    }
+    catch {
+        return [];
+    }
+    const bundles = [...new Set(out.split(/\r?\n/)
+            .map((s) => s.replace(/^[\s\t*]+/, '').trim())
+            .filter((s) => /^[A-Za-z][\w.]*$/.test(s) && s.includes('.'))
+            .filter((s) => !isSystemBundle(s)))];
+    const matched = bundles.filter((b) => {
+        const bk = fuzzyKey(b);
+        const tail = bk.split('.').pop() ?? '';
+        return bk.includes(key) || (tail.length >= 3 && key.includes(tail));
+    });
+    const list = [];
+    for (const bundleName of matched.slice(0, 10)) {
+        let mainAbility = '';
+        try {
+            const dump = await execShell(serial, ['bm', 'dump', '-n', bundleName]);
+            mainAbility = parseMainAbility(dump);
+        }
+        catch { /* 单个取不到不影响其它候选 */ }
+        list.push({ bundleName, mainAbility });
+    }
+    return list;
 }
 async function runStep(serial, desc) {
     const t0 = Date.now();

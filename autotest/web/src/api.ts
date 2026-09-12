@@ -1,5 +1,5 @@
 // API 客户端 — 统一走 /api（Vite 代理到后端 3280）
-import type { Analysis, CaseVersion, Device, Execution, ExploreReportMeta, ExploreResult, Library, ModelConfig, ModelTestResult, Paged, Page, Plan, Prompt, RepoFile, RepoFileEntry, RepoInfo, Task, TestCase } from 'shared';
+import type { Analysis, CaseVersion, DetectBundleResult, Device, Execution, ExploreReportMeta, ExploreResult, Library, LibraryImpact, LibrarySheetSyncResult, ModelConfig, ModelTestResult, Paged, Page, Plan, Prompt, RepoFile, RepoFileEntry, RepoInfo, Task, TestCase } from 'shared';
 
 // 嵌入 DSH 时由构建注入 VITE_API_BASE=/api/autotest（同源直连插件路由）；
 // 独立版默认 /api（Vite 代理到 3280）。
@@ -38,6 +38,24 @@ export const api = {
   },
   library: (id: number) => req<Library>(`${API_BASE}/libraries/${id}`),
   sourceStats: () => req<{ items: Array<{ source: string; n: number }>; total: number }>(`${API_BASE}/libraries/stats/sources`),
+  // 库管理
+  createLibrary: (b: { name: string; repoUrl?: string; repoSubpath?: string; description?: string; packageName?: string; mainAbility?: string }) =>
+    req<Library>(`${API_BASE}/libraries`, { method: 'POST', body: JSON.stringify(b) }),
+  updateLibrary: (id: number, b: Partial<Pick<Library, 'name' | 'repoUrl' | 'repoSubpath' | 'description' | 'packageName' | 'mainAbility' | 'status'>>) =>
+    req<Library>(`${API_BASE}/libraries/${id}`, { method: 'PUT', body: JSON.stringify(b) }),
+  libraryImpact: (id: number) => req<LibraryImpact & { name: string; repoDir: string }>(`${API_BASE}/libraries/${id}/impact`),
+  /** force=false 时若库有关联数据，服务端返回 409 并带影响面说明；调用方据此二次确认 */
+  deleteLibrary: (id: number, force = false) =>
+    req<{ ok: boolean; deleted: string; impact: LibraryImpact; repoDirKept: string }>(
+      `${API_BASE}/libraries/${id}${force ? '?force=1' : ''}`, { method: 'DELETE' },
+    ),
+  detectBundle: (id: number) => req<DetectBundleResult>(`${API_BASE}/libraries/${id}/detect-bundle`, { method: 'POST' }),
+  /** 三方库测试表（人维护的 xlsx）→ 库表同步；apply=false 只预览差异，不写库 */
+  sheetInfo: () => req<{ file: string; exists: boolean; configuredPath: string }>(`${API_BASE}/libraries/sheet`),
+  syncSheet: (b: { file?: string; apply?: boolean } = {}) =>
+    req<LibrarySheetSyncResult>(`${API_BASE}/libraries/sync-sheet`, { method: 'POST', body: JSON.stringify(b) }),
+  exportSheet: (b: { file?: string } = {}) =>
+    req<{ file: string; rows: number }>(`${API_BASE}/libraries/export-sheet`, { method: 'POST', body: JSON.stringify(b) }),
 
   // 用例
   cases: (libraryId: number, params: { page?: number; pageSize?: number; q?: string; source?: string; status?: string; ver?: string } = {}) => {

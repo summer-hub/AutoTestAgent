@@ -12,11 +12,12 @@ import { isMaskedSecret, maskSecret, resolveSecretInput } from '../services/secr
 import { cacheDel, cacheGet, cacheSet } from '../services/cache.js';
 import { readDshDefaultModel } from '../services/llmHarness.js';
 import { autoScanDevices } from '../services/deviceScanner.js';
-import { hdcAvailable, listTargets } from '../services/hdc.js';
+import { guessBundleFor, hdcAvailable, listTargets } from '../services/hdc.js';
 import { spawn } from 'node:child_process';
-import { pullRepo, repoDirFor, workspaceConfigured, workspaceDir, workspaceNotice } from '../services/gitRepo.js';
+import { normalizeSubpath, pullRepo, repoDirFor, splitRepoUrl, workspaceConfigured, workspaceDir, workspaceNotice } from '../services/gitRepo.js';
 import { hypiumProjectDir, writeCaseScript, ensureHypiumProject } from '../services/hypiumGen.js';
 import { listEvents } from '../services/events.js';
+import { exportLibrariesSheet, resolveSheetPath, syncLibrariesFromSheet } from '../services/librarySheet.js';
 import { detectPython, runHypiumModule } from '../services/hypiumRunner.js';
 const routes = [];
 // 分析进度（内存态，供前端轮询展示实时过程；完成后 60s 自动清理）
@@ -354,6 +355,162 @@ function defineRoutes(llm) {
                 throw Object.assign(new Error('库不存在'), { statusCode: 404 });
             return mapLibrary(row);
         });
+    });
+    // ---- 三方库测试表（xlsx）→ 库表 同步 ----
+    //
+    // 分工：xlsx 是人维护的库清单（有哪些库、对应哪个仓库/子目录），db 是 Agent 维护的运行时事实
+    // （包名、入口 Ability、同步状态…）。所以同步**单向**且只写人维护的那两列，
+    // 绝不覆盖包名，也绝不删除库表里有、表里没有的库（删库会级联删用例与执行历史）。
+    route('GET', '/libraries/sheet', async () => {
+        const { file, exists } = resolveSheetPath();
+        return { file, exists, configuredPath: String(getSetting('libraries.xlsxPath', '') || '') };
+    });
+    route('POST', '/libraries/sync-sheet', async ({ body, query }) => {
+        const b = (body ?? {});
+        const apply = b.apply === true || ['1', 'true', 'yes'].includes(String(query.get('apply') ?? '').toLowerCase());
+        const r = await syncLibrariesFromSheet({ file: b.file ? String(b.file) : undefined, apply });
+        if (apply) {
+            invalidateCaseCaches();
+            console.log(`[autotest] 三方库测试表同步：新增 ${r.plan.added.length} / 更新 ${r.plan.updated.length} / 无变化 ${r.plan.unchanged.length} / 仅库中存在 ${r.plan.dbOnly.length} / 跳过 ${r.plan.problems.length}`);
+        }
+        return {
+            file: r.file, total: r.total, applied: r.applied, header: r.header,
+            counts: {
+                added: r.plan.added.length, updated: r.plan.updated.length,
+                unchanged: r.plan.unchanged.length, dbOnly: r.plan.dbOnly.length, problems: r.plan.problems.length,
+            },
+            plan: r.plan,
+        };
+    });
+    // 反向导出：把库表里的事实写成一份**新文件**给人看（不写回人维护的那份表）
+    route('POST', '/libraries/export-sheet', async ({ body }) => {
+        const b = (body ?? {});
+        const r = await exportLibrariesSheet(b.file ? String(b.file) : undefined);
+        console.log(`[autotest] 库状态导出：${r.rows} 行 → ${r.file}`);
+        return r;
+    });
+    // ---- 库管理：新增 / 修改（含包名）/ 删除 ----
+    //
+    // 背景：此前 /libraries 只有 GET，没有写入路由。而 `libraries.package_name` 是遍历/执行的前提
+    // （真机遍历靠它 aa start 拉起被测应用），它只有「拉取仓库代码 → 解析 app.json5」这一条填充路径。
+    // 没拉过仓库的库包名为空 → 遍历时 aa start 失败 → 第一屏 dump 到的是桌面 → 整个遍历作废。
+    route('POST', '/libraries', async ({ body }) => {
+        const b = body;
+        const name = String(b.name ?? '').trim();
+        if (!name)
+            throw Object.assign(new Error('库名必填'), { statusCode: 400 });
+        if (name.length > 128)
+            throw Object.assign(new Error('库名过长（≤128 字符）'), { statusCode: 400 });
+        const db = getDb();
+        if (await db.prepare('SELECT id FROM libraries WHERE name = ?').get(name)) {
+            throw Object.assign(new Error(`库名「${name}」已存在`), { statusCode: 409 });
+        }
+        const packageName = normalizeBundleName(b.packageName);
+        const mainAbility = normalizeAbilityName(b.mainAbility);
+        // 仓库地址里可能自带 `/tree/<分支>/<子目录>`（单体仓子目录库就是这么给的）：
+        // 拆成「仓库根 URL + 子目录」两列存，克隆按仓库根共享，工程解析只看子目录。
+        const { repoUrl, repoSubpath } = splitRepoInput(b.repoUrl, b.repoSubpath);
+        const t = now();
+        const res = await db.prepare(`INSERT INTO libraries (name, repo_url, repo_subpath, description, current_version, package_name, main_ability, status, created_at, updated_at)
+      VALUES (?, ?, ?, ?, 'v0.0.0', ?, ?, 'active', ?, ?)`).run(name, repoUrl, repoSubpath, String(b.description ?? '').trim(), packageName, mainAbility, t, t);
+        invalidateCaseCaches(); // 库列表/覆盖率统计都在缓存里
+        const row = await db.prepare('SELECT * FROM libraries WHERE id = ?').get(Number(res.lastInsertRowid));
+        console.log(`[autotest] 新增三方库 #${res.lastInsertRowid} ${name}（包名 ${packageName || '未填写'}${repoSubpath ? ` · 子目录 ${repoSubpath}` : ''}）`);
+        return mapLibrary(row);
+    });
+    route('PUT', '/libraries/:id', async ({ params, body }) => {
+        const id = Number(params.id);
+        const b = body;
+        const db = getDb();
+        const row = await db.prepare('SELECT * FROM libraries WHERE id = ?').get(id);
+        if (!row)
+            throw Object.assign(new Error('库不存在'), { statusCode: 404 });
+        const name = b.name === undefined ? String(row.name) : String(b.name).trim();
+        if (!name)
+            throw Object.assign(new Error('库名不能为空'), { statusCode: 400 });
+        if (name !== row.name) {
+            const dup = await db.prepare('SELECT id FROM libraries WHERE name = ? AND id <> ?').get(name, id);
+            if (dup)
+                throw Object.assign(new Error(`库名「${name}」已被占用`), { statusCode: 409 });
+        }
+        // 仓库地址/子目录：两者都可独立修改；给了仓库地址就顺手再解析一次子目录
+        // （用户往往是直接把带 /tree/<分支>/<子目录> 的地址贴进来）
+        let repoUrl = String(row.repo_url ?? '');
+        let repoSubpath = String(row.repo_subpath ?? '');
+        if (b.repoUrl !== undefined || b.repoSubpath !== undefined) {
+            const r = splitRepoInput(b.repoUrl === undefined ? row.repo_url : b.repoUrl, b.repoSubpath === undefined ? repoSubpath : b.repoSubpath);
+            repoUrl = r.repoUrl;
+            repoSubpath = r.repoSubpath;
+        }
+        const description = b.description === undefined ? String(row.description) : String(b.description).trim();
+        const packageName = b.packageName === undefined ? String(row.package_name ?? '') : normalizeBundleName(b.packageName);
+        const mainAbility = b.mainAbility === undefined ? String(row.main_ability ?? '') : normalizeAbilityName(b.mainAbility);
+        const status = b.status === undefined ? String(row.status) : String(b.status);
+        await db.prepare(`UPDATE libraries SET name=?, repo_url=?, repo_subpath=?, description=?, package_name=?, main_ability=?, status=?, updated_at=? WHERE id=?`)
+            .run(name, repoUrl, repoSubpath, description, packageName, mainAbility, status, now(), id);
+        invalidateCaseCaches();
+        console.log(`[autotest] 更新三方库 #${id} ${name}（包名 ${packageName || '未填写'}${repoSubpath ? ` · 子目录 ${repoSubpath}` : ''}）`);
+        return mapLibrary(await db.prepare('SELECT * FROM libraries WHERE id = ?').get(id));
+    });
+    // 删除前置影响面统计：默认拒绝删除有数据的库，避免误点一下丢掉整库用例与执行历史
+    route('GET', '/libraries/:id/impact', async ({ params }) => {
+        const id = Number(params.id);
+        const db = getDb();
+        const row = await db.prepare('SELECT id, name, repo_url, repo_subpath FROM libraries WHERE id = ?').get(id);
+        if (!row)
+            throw Object.assign(new Error('库不存在'), { statusCode: 404 });
+        return { libraryId: id, name: row.name, ...(await libraryImpact(id)), repoDir: repoDirFor(row) };
+    });
+    route('DELETE', '/libraries/:id', async ({ params, query }) => {
+        const id = Number(params.id);
+        const db = getDb();
+        const row = await db.prepare('SELECT id, name, repo_url, repo_subpath FROM libraries WHERE id = ?').get(id);
+        if (!row)
+            throw Object.assign(new Error('库不存在'), { statusCode: 404 });
+        const force = ['1', 'true', 'yes'].includes(String(query.get('force') ?? '').toLowerCase());
+        const impact = await libraryImpact(id);
+        const total = impact.cases + impact.versions + impact.tasks + impact.executions + impact.analyses + impact.plans;
+        if (total > 0 && !force) {
+            // 不直接删：把影响面告诉人，由前端确认后带 force=1 再来
+            throw Object.assign(new Error(`该库还有关联数据（用例 ${impact.cases} / 版本 ${impact.versions} / 任务 ${impact.tasks} / ` +
+                `执行记录 ${impact.executions} / 分析 ${impact.analyses} / 计划 ${impact.plans}）。` +
+                `确认要一并删除请携带 force=1。`), { statusCode: 409, impact });
+        }
+        await db.transaction(async () => {
+            await db.prepare('DELETE FROM case_versions WHERE case_id IN (SELECT id FROM cases WHERE library_id = ?)').run(id);
+            await db.prepare('DELETE FROM executions WHERE library_id = ?').run(id);
+            await db.prepare('DELETE FROM analyses WHERE library_id = ?').run(id);
+            await db.prepare('DELETE FROM cases WHERE library_id = ?').run(id);
+            await db.prepare('DELETE FROM tasks WHERE library_id = ?').run(id);
+            await db.prepare('DELETE FROM libraries WHERE id = ?').run(id);
+        });
+        invalidateCaseCaches();
+        console.log(`[autotest] 删除三方库 #${id} ${row.name}（级联：用例 ${impact.cases} / 任务 ${impact.tasks} / 执行 ${impact.executions}）`);
+        // 刻意不删本地克隆目录：那是用户磁盘上的真实文件，交给用户自己处置
+        return { ok: true, deleted: row.name, impact, repoDirKept: repoDirFor(row) };
+    });
+    // 自动识别包名：从设备已安装应用里按库名模糊匹配，命中唯一时写入库并带回入口 Ability
+    route('POST', '/libraries/:id/detect-bundle', async ({ params }) => {
+        const id = Number(params.id);
+        const db = getDb();
+        const row = await db.prepare('SELECT id, name, package_name, main_ability FROM libraries WHERE id = ?')
+            .get(id);
+        if (!row)
+            throw Object.assign(new Error('库不存在'), { statusCode: 404 });
+        const targets = await listTargets();
+        const serial = targets[0];
+        if (!serial)
+            throw Object.assign(new Error('没有在线设备：请先连接真机或启动模拟器'), { statusCode: 400 });
+        const candidates = await guessBundleFor(serial, row.name);
+        if (candidates.length === 1) {
+            const hit = candidates[0];
+            await db.prepare('UPDATE libraries SET package_name = ?, main_ability = ?, updated_at = ? WHERE id = ?')
+                .run(hit.bundleName, row.main_ability || hit.mainAbility, now(), id);
+            invalidateCaseCaches();
+            console.log(`[autotest] 自动识别包名 #${id} ${row.name} → ${hit.bundleName}（${hit.mainAbility}）`);
+            return { saved: true, bundleName: hit.bundleName, mainAbility: hit.mainAbility, candidates };
+        }
+        return { saved: false, bundleName: row.package_name, mainAbility: row.main_ability, candidates };
     });
     // PR 列表（供前端选择 #PR 分析）
     route('GET', '/libraries/:libraryId/prs', async ({ params }) => {
@@ -864,9 +1021,9 @@ function defineRoutes(llm) {
     });
     // ---- 仓库本地目录（拉取仓库代码后查看）----
     route('GET', '/repos', async () => {
-        const rows = await getDb().prepare(`SELECT id, name, repo_url, current_version, last_commit, last_synced_at FROM libraries WHERE repo_url != '' ORDER BY name`).all();
+        const rows = await getDb().prepare(`SELECT id, name, repo_url, repo_subpath, current_version, last_commit, last_synced_at FROM libraries WHERE repo_url != '' ORDER BY name`).all();
         return rows.map((r) => {
-            const dir = repoDirFor(r.name);
+            const dir = repoDirFor(r);
             return {
                 id: r.id,
                 name: r.name,
@@ -896,7 +1053,7 @@ function defineRoutes(llm) {
     });
     route('GET', '/repos/:id/files', async ({ params, query }) => {
         const db = getDb();
-        const lib = await db.prepare('SELECT id, name FROM libraries WHERE id = ?').get(Number(params.id));
+        const lib = await db.prepare('SELECT id, name, repo_url, repo_subpath FROM libraries WHERE id = ?').get(Number(params.id));
         if (!lib)
             throw Object.assign(new Error('三方库不存在'), { statusCode: 404 });
         const rootKind = query.get('root') ?? 'repos';
@@ -904,7 +1061,7 @@ function defineRoutes(llm) {
             ? path.join(hypiumProjectDir(lib.name), 'testcases', lib.name.replace(/[^\w.-]/g, '_'))
             : rootKind === 'hypium'
                 ? path.join(hypiumProjectDir(lib.name), 'testcases', lib.name.replace(/[^\w.-]/g, '_'))
-                : repoDirFor(lib.name);
+                : repoDirFor(lib);
         if (!fs.existsSync(root)) {
             throw Object.assign(new Error(rootKind !== 'repos' ? '该库还没有 Python/Hypium 脚本，请先执行「用例转自动化脚本」或在右侧新建' : '仓库尚未拉取到本地，请先执行「拉取仓库代码」'), { statusCode: 404 });
         }
@@ -930,11 +1087,11 @@ function defineRoutes(llm) {
     });
     route('GET', '/repos/:id/file', async ({ params, query }) => {
         const db = getDb();
-        const lib = await db.prepare('SELECT id, name FROM libraries WHERE id = ?').get(Number(params.id));
+        const lib = await db.prepare('SELECT id, name, repo_url, repo_subpath FROM libraries WHERE id = ?').get(Number(params.id));
         if (!lib)
             throw Object.assign(new Error('三方库不存在'), { statusCode: 404 });
         const rootKind = query.get('root') ?? 'repos';
-        const root = rootKind === 'repos' ? repoDirFor(lib.name) : path.join(hypiumProjectDir(lib.name), 'testcases', lib.name.replace(/[^\w.-]/g, '_'));
+        const root = rootKind === 'repos' ? repoDirFor(lib) : path.join(hypiumProjectDir(lib.name), 'testcases', lib.name.replace(/[^\w.-]/g, '_'));
         const rel = (query.get('path') ?? '').replace(/^\/+/, '');
         if (!rel)
             throw Object.assign(new Error('缺少文件路径'), { statusCode: 400 });
@@ -952,7 +1109,7 @@ function defineRoutes(llm) {
     // 删除自动化脚本（仅 hypium 目录下 .py，带路径穿越防护）
     route('DELETE', '/repos/:libraryId/file', async ({ params, query }) => {
         const db = getDb();
-        const lib = await db.prepare('SELECT id, name FROM libraries WHERE id = ?').get(Number(params.libraryId));
+        const lib = await db.prepare('SELECT id, name, repo_url, repo_subpath FROM libraries WHERE id = ?').get(Number(params.libraryId));
         if (!lib)
             throw Object.assign(new Error('三方库不存在'), { statusCode: 404 });
         const rootKind = query.get('root') ?? 'repos';
@@ -961,7 +1118,7 @@ function defineRoutes(llm) {
         if (rootKind === 'repos') {
             if (!rel.endsWith('.ts'))
                 throw Object.assign(new Error('仅支持删除 .ts 脚本文件'), { statusCode: 400 });
-            const root = repoDirFor(lib.name);
+            const root = repoDirFor(lib);
             file = path.resolve(root, rel);
             if (file !== root && !file.startsWith(root + path.sep))
                 throw Object.assign(new Error('非法路径'), { statusCode: 400 });
@@ -1567,15 +1724,94 @@ ${(row.logs ?? '').slice(0, 4000) || '（无）'}
 // ---------- mappers / helpers ----------
 function mapLibrary(row) {
     return {
-        id: row.id, name: row.name, repoUrl: row.repo_url, description: row.description,
+        id: row.id, name: row.name, repoUrl: row.repo_url, repoSubpath: row.repo_subpath ?? '', description: row.description,
         packageName: row.package_name ?? '', mainAbility: row.main_ability ?? '',
         currentVersion: row.current_version, status: row.status, lastSyncedAt: row.last_synced_at,
         caseCount: row.case_count ?? 0, createdAt: row.created_at, updatedAt: row.updated_at,
     };
 }
+/**
+ * 仓库地址入参归一化：
+ *  - 地址自带 `/tree/<分支>/<子目录>` 时，拆成「仓库根 URL + 子目录」；
+ *  - 显式传入的 `repoSubpath` 优先（允许人工覆盖从 URL 推出来的值）。
+ * 两者分开存是刻意的：克隆按**仓库根**共享（单体仓 168 个子目录库只需一份克隆），
+ * 工程解析只看**子目录**（否则会把整个单体仓 250 个样本混成同一个库）。
+ */
+function splitRepoInput(rawUrl, rawSubpath) {
+    const split = splitRepoUrl(String(rawUrl ?? '').trim());
+    const explicit = normalizeSubpath(String(rawSubpath ?? ''));
+    return { repoUrl: split.repoUrl, repoSubpath: explicit || split.subpath };
+}
 /** 列表信封的游标：取本页最后一条 id（keyset 分页传回 cursor 继续翻下一页）。 */
 function lastIdOf(rows) {
     return rows.length > 0 ? Number(rows[rows.length - 1].id) : null;
+}
+/**
+ * 包名（bundleName）校验与归一化。
+ * HarmonyOS 的 bundleName 是反向域名：至少两段、字母开头、只允许字母/数字/下划线。
+ * 空值合法（表示"未填写"），因为库可以先建起来、稍后再补包名或让「自动识别」去填。
+ */
+function normalizeBundleName(raw) {
+    const s = String(raw ?? '').trim();
+    if (!s)
+        return '';
+    if (!/^[A-Za-z][A-Za-z0-9_]*(\.[A-Za-z0-9_]+)+$/.test(s)) {
+        throw Object.assign(new Error(`包名格式不正确：${s}（应形如 com.example.myapp，至少两段，只含字母/数字/下划线）`), { statusCode: 400 });
+    }
+    return s;
+}
+/**
+ * 入口 Ability 校验：允许短名（EntryAbility）或全名（com.x.y.EntryAbility）。
+ * 空值合法。注意 execShell 走 argv 数组，不存在命令注入问题。
+ */
+function normalizeAbilityName(raw) {
+    const s = String(raw ?? '').trim();
+    if (!s)
+        return '';
+    if (!/^[A-Za-z][A-Za-z0-9_]*(\.[A-Za-z0-9_]+)*$/.test(s)) {
+        throw Object.assign(new Error(`入口 Ability 格式不正确：${s}（应形如 EntryAbility 或 com.example.EntryAbility）`), { statusCode: 400 });
+    }
+    return s;
+}
+/** 删除库前的影响面统计（用于"确认删除"提示与默认拒绝删除的依据）。 */
+async function libraryImpact(libraryId) {
+    const db = getDb();
+    const one = async (sql, ...args) => {
+        const r = await db.prepare(sql).get(...args);
+        return Number(r?.n) || 0;
+    };
+    const cases = await one('SELECT COUNT(*) AS n FROM cases WHERE library_id = ?', libraryId);
+    const versions = await one('SELECT COUNT(*) AS n FROM case_versions WHERE case_id IN (SELECT id FROM cases WHERE library_id = ?)', libraryId);
+    const tasks = await one('SELECT COUNT(*) AS n FROM tasks WHERE library_id = ?', libraryId);
+    const executions = await one('SELECT COUNT(*) AS n FROM executions WHERE library_id = ?', libraryId);
+    const analyses = await one('SELECT COUNT(*) AS n FROM analyses WHERE library_id = ?', libraryId);
+    // 计划的 scope 是 JSON 文本，无法用 SQL 精确统计 → 取回后在 JS 里解析
+    let plans = 0;
+    try {
+        const rows = await db.prepare('SELECT id, scope FROM plans').all();
+        for (const r of rows) {
+            let scope = {};
+            try {
+                scope = JSON.parse(r.scope || '{}');
+            }
+            catch {
+                continue;
+            }
+            if ((scope.libraryIds ?? []).includes(libraryId)) {
+                plans++;
+                continue;
+            }
+            const caseIds = scope.caseIds ?? [];
+            if (caseIds.length > 0) {
+                const marks = caseIds.map(() => '?').join(',');
+                const hit = await one(`SELECT COUNT(*) AS n FROM cases WHERE library_id = ? AND id IN (${marks})`, libraryId, ...caseIds);
+                if (hit > 0)
+                    plans++;
+            }
+        }
+    }
+    catch { /* 统计失败不影响主流程 */ }
+    return { cases, versions, tasks, executions, analyses, plans };
 }
 /** 入参 steps 归一化：只接受字符串数组；字段缺省返回 undefined（调用方回退到库中原值）。 */
 function normalizeStepsInput(raw) {

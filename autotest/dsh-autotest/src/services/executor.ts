@@ -12,7 +12,7 @@ import { llmJson, type LlmCall } from './llmHarness.js';
 import { exploreApp, ensureDeviceOnline, saveExploreReport, type ExploreResult, type ExploredPage } from './uiExplorer.js';
 import { hypiumProjectDir, writeCaseScript } from './hypiumGen.js';
 import { dryRunCase, mergeFailureBriefs } from './dryRun.js';
-import { listTargets } from './hdc.js';
+import { guessBundleFor, listTargets } from './hdc.js';
 
 // ---------- 定向用例设计（write_cases）辅助 ----------
 
@@ -112,7 +112,7 @@ export async function runTask(taskId: number, llm: LlmCall): Promise<void> {
 async function execute(task: TaskRow, llm: LlmCall): Promise<string> {
   const db = getDb();
   const lib = task.library_id
-    ? (await db.prepare('SELECT * FROM libraries WHERE id = ?').get<{ id: number; name: string; description: string; current_version: string; repo_url: string; last_commit: string }>(task.library_id))
+    ? (await db.prepare('SELECT * FROM libraries WHERE id = ?').get<{ id: number; name: string; description: string; current_version: string; repo_url: string; repo_subpath: string; last_commit: string }>(task.library_id))
     : undefined;
   if (!lib && task.library_id !== null && task.library_id !== undefined) {
     throw new Error(`三方库 #${task.library_id} 不存在`);
@@ -729,8 +729,25 @@ async function exploreCases(task: TaskRow, lib: RepoLib & { description: string 
   if (!(await ensureDeviceOnline(serial))) throw new Error(`设备 ${serial} 不在线`);
   const libFull = await db.prepare('SELECT package_name, main_ability FROM libraries WHERE id = ?').get<{ package_name: string; main_ability: string }>(lib.id);
   let launchAbility = '';
-  const pkg = String(libFull?.package_name ?? '').trim();
-  const ability = String(libFull?.main_ability ?? '').trim();
+  let pkg = String(libFull?.package_name ?? '').trim();
+  let ability = String(libFull?.main_ability ?? '').trim();
+  // 包名缺失时先自动识别再启动。
+  // 旧逻辑直接退化用库名当 bundle（如 "json-schema"），aa start 必然失败 → 设备停在桌面 →
+  // 遍历把 launcher 当目标应用，最后返回 0 页 0 控件。真机上就是这么踩的。
+  if (!pkg) {
+    const candidates = await guessBundleFor(serial, lib.name);
+    if (candidates.length === 1) {
+      pkg = candidates[0].bundleName;
+      ability = ability || candidates[0].mainAbility;
+      await db.prepare('UPDATE libraries SET package_name = ?, main_ability = ?, updated_at = ? WHERE id = ?')
+        .run(pkg, ability, now(), lib.id);
+      await traceTask(task.id, '自动识别包名', `${lib.name} → ${pkg}${ability ? `（入口 ${ability}）` : ''}，已回写库管理`);
+    } else if (candidates.length > 1) {
+      throw new Error(`库「${lib.name}」未填包名，设备上按库名匹配到多个应用：${candidates.map((c) => c.bundleName).join(' / ')}。请到「库管理」选定包名后重试`);
+    } else {
+      throw new Error(`库「${lib.name}」未填包名，且设备上按库名匹配不到已安装应用。请到「库管理」填写包名（可点「识别包名」），或确认对应 demo 已安装到设备`);
+    }
+  }
   if (pkg) launchAbility = ability && !ability.includes('.') ? `${pkg}/${ability}` : pkg;
   if (!launchAbility) {
     try {
@@ -745,9 +762,13 @@ async function exploreCases(task: TaskRow, lib: RepoLib & { description: string 
   // 2. 真机 BFS 遍历（含双向滚动探索、状态栏过滤）
   const result = await exploreApp(serial, bundle, { launchAbility, trace: spanMeta(task, 'explore_app') });
   saveExploreReport(lib.name, result);
-  await refreshPackageInfo({ id: lib.id, name: lib.name });
+  await refreshPackageInfo(lib);
   await getDb().prepare('UPDATE tasks SET progress = 40, updated_at = ? WHERE id = ?').run(now(), task.id);
   await traceTask(task.id, '遍历完成', `${result.pages.length} 个页面 · 去重页 ${result.visitedCount} · 耗时 ${Math.round(result.durationMs / 1000)}s\n报告已存 workspace/explore/${lib.name}/`);
+  // 硬性异常必须显式上报：否则「0 个页面」会被当成"这个 demo 没什么可测的"
+  if (result.warnings?.length) {
+    await traceTask(task.id, '遍历告警（结果可能不可信）', result.warnings.join('\n'));
+  }
   // 真机操作序列摘要（最近 100 条；完整轨迹随报告文件留存，可在任务卡片「操作日志」查看）
   if (result.ops?.length) {
     const digest = result.ops.slice(-100).map((o) => `${o.at} ${o.action}${o.detail ? ` · ${o.detail}` : ''}`).join('\n');
@@ -755,13 +776,30 @@ async function exploreCases(task: TaskRow, lib: RepoLib & { description: string 
   }
 
   // 3. 遍历数据 → 分片生成（map-reduce：每片独立调用，输出永不超限；单片失败只重试该片，不全局降级）
-  const pagesCompact = result.pages.map((p) => ({
-    path: p.path.join(' → '),
-    controls: p.controls.map((c) => (c.text || c.desc).trim()).filter(Boolean).slice(0, 30),
-    swipes: p.swipes,
-    scrolls: p.scrolls ?? 0,
-    animation: Boolean(p.animation),
-  }));
+  //
+  // 关键改进：区分「可交互控件」与「纯展示文本」，并带上控件类别。
+  // 旧版把所有文本混成一个数组喂给模型，模型看不出哪个能点、哪个是输入框/下拉框，
+  // 于是只能写出"点击「某文本」"这一种步骤 —— 输入/下拉/开关类控件永远进不了用例。
+  const pagesCompact = result.pages.map((p) => {
+    const actionable = p.controls.filter((c) => c.clickable || c.longClickable || c.checkable);
+    const displays = p.controls.filter((c) => !(c.clickable || c.longClickable || c.checkable));
+    // 控件标签：无文本控件用 `#节点ID` 兜底 —— 这样图标按钮**可以被用例引用**，
+    // 也才能通过后面的控件引用校验（旧版根本没有它们，用例不可能覆盖到）
+    const label = (c: (typeof p.controls)[number]): string =>
+      (c.text || c.desc).trim() || (c.id ? `#${c.id}` : `[${c.kind}]`);
+    return {
+      path: p.path.join(' → '),
+      // controls 保持"原文标签清单"语义：guardrail（validateDraftsAgainstPages）按它校验引用真实性
+      controls: [...actionable, ...displays].map(label).filter(Boolean).slice(0, 50),
+      // actions 供模型判断"这个控件该怎么操作"，避免一律写成点击
+      actions: actionable.map((c) => `${c.kind}:${label(c)}${c.checked ? '(当前已选中)' : ''}`).slice(0, 30),
+      // 纯展示文本：预期结果的可观察证据来源（控件文本/日志区文本）
+      texts: displays.map(label).filter(Boolean).slice(0, 20),
+      swipes: p.swipes,
+      scrolls: p.scrolls ?? 0,
+      animation: Boolean(p.animation),
+    };
+  });
   const pagesByPath = new Map(pagesCompact.map((p) => [p.path, p]));
   const sceneCtx = `三方库：${lib.name}（${lib.current_version}）
 库简介：${lib.description}`;
@@ -769,6 +807,8 @@ async function exploreCases(task: TaskRow, lib: RepoLib & { description: string 
 
 【真机遍历数据驱动补充规则】
 1. 只能基于本批【真机遍历数据】中出现的页面与控件设计用例；步骤引用的按钮/文本必须原样出现在对应页面的 controls 清单中；
+   注意 actions 字段给出了每个可交互控件的类别（button/input/dropdown/checkbox/switch），请据此选择正确的交互动词：
+   输入框用「输入…」、下拉/选择器用「点击」后选择、开关/复选框用「点击」并验证状态切换，不要一律写成点击；
 2. 每个遍历到的页面至少 1 条正向用例（按 path 导航路径进入）；controls 数量多或 scrolls>0 的页面说明内容超一屏——涉及回调输出/日志区/动画状态的预期证据，步骤必须包含「上滑」后「验证「输出区域文本」」，预期写明滑动后应看到的证据；
 3. 预期结果写明具体控件文本与动画表现（越界动画页注明"滑动后完整可见"），可结合 hilog 日志断言；
 4. 来源固定为 AI 生成；每条用例必须带 pagePath 字段（值 = 该用例所属页面的 path 原文）。`;

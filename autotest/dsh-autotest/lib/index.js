@@ -4,7 +4,7 @@ import { makeLlm } from './services/llmHarness.js';
 import { makeApiHandler } from './api/http.js';
 import { startScheduler, stopAllSchedulers } from './services/scheduler.js';
 import { makeStaticHandler } from './static.js';
-import { reconcileRepos, workspaceNotice } from './services/gitRepo.js';
+import { migrateRepoSubpaths, reconcileRepos, workspaceNotice } from './services/gitRepo.js';
 import { installLlmTracing } from './services/events.js';
 import { reapOnStartup } from './services/reaper.js';
 import { getSetting } from './services/settings.js';
@@ -17,6 +17,15 @@ export function apply(ctx) {
             setDbUrlProvider(() => String(getSetting('db.mysqlUrl', '') || '').trim() || defaultUrlProvider());
             await ensureReady();
             installLlmTracing();
+            // 启动迁移：仓库地址里的 /tree/<分支>/<子目录> 拆成「仓库根 + 子目录」两列（必须在启动对账之前）
+            try {
+                const migrated = await migrateRepoSubpaths();
+                if (migrated > 0)
+                    console.log(`[dsh-autotest] 启动迁移：${migrated} 个库的仓库地址已拆出子目录`);
+            }
+            catch (e) {
+                console.warn('[dsh-autotest] 仓库地址拆分迁移失败：', e.message);
+            }
             // 启动对账：本地没有克隆目录的库，同步状态一律清空（迁移/拷贝旧库后不再显示过期记录）
             const changed = await reconcileRepos();
             if (changed > 0)

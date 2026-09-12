@@ -11,10 +11,11 @@ import DevicesPage from './pages/Devices';
 import PromptsPage from './pages/Prompts';
 import SettingsPage from './pages/Settings';
 import ScriptsPage from './pages/Scripts';
+import LibrariesPage from './pages/Libraries';
 import SettingsModal from './components/SettingsModal';
 import { ErrorBoundary } from './components/ErrorBoundary';
 
-export type PageKey = 'home' | 'tasks' | 'cases' | 'scripts' | 'plans' | 'analysis' | 'attribution' | 'debug' | 'devices' | 'prompts' | 'settings';
+export type PageKey = 'home' | 'tasks' | 'libraries' | 'cases' | 'scripts' | 'plans' | 'analysis' | 'attribution' | 'debug' | 'devices' | 'prompts' | 'settings';
 
 const NAV: Array<{ group: string; items: Array<{ key: PageKey; icon: string; label: string; badge?: string }> }> = [
   {
@@ -27,6 +28,7 @@ const NAV: Array<{ group: string; items: Array<{ key: PageKey; icon: string; lab
   {
     group: '测试资产',
     items: [
+      { key: 'libraries', icon: '📚', label: '库管理' },
       { key: 'cases', icon: '🧪', label: '测试用例' },
       { key: 'scripts', icon: '🤖', label: '自动化脚本' },
     ],
@@ -51,7 +53,7 @@ const NAV: Array<{ group: string; items: Array<{ key: PageKey; icon: string; lab
 ];
 
 const TITLES: Record<PageKey, string> = {
-  home: '首页', tasks: '任务管理', cases: '测试用例', scripts: '自动化脚本', plans: '执行计划', analysis: '数据分析',
+  home: '首页', tasks: '任务管理', libraries: '库管理', cases: '测试用例', scripts: '自动化脚本', plans: '执行计划', analysis: '数据分析',
   attribution: '归因分析', debug: '调试会话', devices: '设备管理', prompts: 'Prompt 管理', settings: '系统配置',
 };
 
@@ -120,6 +122,7 @@ export default function App() {
     <ErrorBoundary resetKey={page}>
       {page === 'home' && <HomePage />}
       {page === 'tasks' && <TasksPage />}
+      {page === 'libraries' && <LibrariesPage />}
       {page === 'cases' && <CasesPage />}
       {page === 'scripts' && <ScriptsPage />}
       {page === 'plans' && <PlansPage />}

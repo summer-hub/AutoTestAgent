@@ -26,9 +26,21 @@ export interface Paged<T> {
 export interface Library {
   id: number;
   name: string;              // 库名，如 axios-ohos
-  repoUrl: string;
+  repoUrl: string;           // 仓库根地址（不含 /tree/...）
+  /**
+   * 库在仓库内的子目录（单体仓专用，如 openharmony_tpc_samples 下的 `json-schema`）。
+   * 空串表示库就是整个仓库。三方库表里 171/269 个是单体仓子目录地址，必须靠这两列区分：
+   * 克隆按 repoUrl 共享一份，工程解析只看 仓库根 + 本子目录。
+   */
+  repoSubpath: string;
   description: string;
-  packageName: string;       // 从仓库 app.json5 解析的 bundleName（真机启动/遍历用）
+  /**
+   * bundleName（真机启动/遍历/执行的前提）。
+   * 两种填充路径：① 拉取仓库后从 app.json5 / module.json5 自动解析；
+   *                   ② 库管理页手工填写或点「识别包名」从设备已安装应用模糊匹配。
+   * 为空时真机遍历会 aa start 失败（会 dump 到桌面），因此遍历前必须补齐。
+   */
+  packageName: string;
   mainAbility: string;       // 主 Ability
   currentVersion: string;    // 三方库当前版本，如 v1.13.0
   status: 'active' | 'archived';
@@ -36,6 +48,46 @@ export interface Library {
   caseCount?: number;        // 聚合：用例数
   createdAt: string;
   updatedAt: string;
+}
+
+/** 删除库前的影响面统计（用于「确认删除」提示） */
+export interface LibraryImpact {
+  cases: number;
+  versions: number;
+  tasks: number;
+  executions: number;
+  analyses: number;
+  plans: number;
+}
+
+/** 「识别包名」的结果：命中唯一时已落库，命中多个/零个时返回候选交由人选择 */
+export interface DetectBundleResult {
+  saved: boolean;
+  bundleName: string;
+  mainAbility: string;
+  candidates: Array<{ bundleName: string; mainAbility: string }>;
+}
+
+/**
+ * 三方库测试表（xlsx）同步的结果。
+ *
+ * 分工：xlsx 是人维护的（有哪些库、对应哪个仓库/子目录），db 是 Agent 维护的（包名、同步状态…）。
+ * 所以同步是单向的，只写人维护的那两列；`dbOnly` 是"库里有、表里没有"的库，
+ * 只报告不删除（删库会级联删用例/任务/执行历史），由人决定。
+ */
+export interface LibrarySheetSyncResult {
+  file: string;
+  total: number;             // 表里解析出的库数
+  applied: boolean;          // false = 仅预览（dry-run）
+  header: { row: number; nameCol: number; urlCol: number } | null;
+  counts: { added: number; updated: number; unchanged: number; dbOnly: number; problems: number };
+  plan: {
+    added: Array<{ name: string; repoUrl: string; repoSubpath: string; row: number }>;
+    updated: Array<{ id: number; name: string; from: { repoUrl: string; repoSubpath: string }; to: { repoUrl: string; repoSubpath: string }; row: number }>;
+    unchanged: Array<{ id: number; name: string; row: number }>;
+    dbOnly: Array<{ id: number; name: string; repoUrl: string; repoSubpath: string; packageName: string; caseCount: number }>;
+    problems: Array<{ row: number; name: string; reason: string }>;
+  };
 }
 
 /** 测试用例（主表行） */
@@ -230,6 +282,7 @@ export interface RepoInfo {
   id: number;
   name: string;
   repoUrl: string;
+  repoSubpath?: string;        // 单体仓内本库的子目录（空=整个仓库）
   dir: string;                 // 服务器本地目录
   exists: boolean;             // 是否已拉取到本地
   version: string;

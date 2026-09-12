@@ -196,6 +196,145 @@ await raw('DELETE', `/api/autotest/cases/${caseId}`);
 const third = await raw('GET', `/api/autotest/cases/${caseId}`);
 check(third.status === 404, '删除后立即 404（不再返回缓存里的已删用例）', `status=${third.status}`);
 
+// ---------- 库管理（新增 / 改包名 / 删除保护） ----------
+console.log('\n— 库管理 —');
+const newLib = await raw('POST', '/api/autotest/libraries', {
+  headers: { 'Content-Type': 'application/json' },
+  body: { name: 'verify-lib-schema', repoUrl: 'https://gitcode.com/x/y.git', description: '自检用库', packageName: 'com.example.verify' },
+});
+check(newLib.status === 200 && newLib.json?.packageName === 'com.example.verify', 'POST /libraries 能新增库并写入包名',
+  `status=${newLib.status} pkg=${newLib.json?.packageName}`);
+const dupLib = await raw('POST', '/api/autotest/libraries', {
+  headers: { 'Content-Type': 'application/json' }, body: { name: 'verify-lib-schema' },
+});
+check(dupLib.status === 409, '重名库返回 409（而不是 500 或静默成功）', `status=${dupLib.status}`);
+const badPkg = await raw('POST', '/api/autotest/libraries', {
+  headers: { 'Content-Type': 'application/json' }, body: { name: 'verify-lib-badpkg', packageName: 'not a bundle name' },
+});
+check(badPkg.status === 400, '非法包名被拒（400）并给出格式要求', `status=${badPkg.status}`);
+const libId = newLib.json?.id;
+
+// 改包名：这是本次新增功能的核心 —— 没拉过仓库的库只能靠人工把包名补上，否则真机遍历起不来
+const setPkg = await raw('PUT', `/api/autotest/libraries/${libId}`, {
+  headers: { 'Content-Type': 'application/json' },
+  body: { packageName: 'com.openharmony.jsonschemavalidator', mainAbility: 'EntryAbility' },
+});
+check(setPkg.status === 200 && setPkg.json?.packageName === 'com.openharmony.jsonschemavalidator' && setPkg.json?.mainAbility === 'EntryAbility',
+  'PUT /libraries/:id 能补写包名与入口 Ability', `pkg=${setPkg.json?.packageName} ability=${setPkg.json?.mainAbility}`);
+const badPkgPut = await raw('PUT', `/api/autotest/libraries/${libId}`, {
+  headers: { 'Content-Type': 'application/json' }, body: { packageName: '..bad..' },
+});
+check(badPkgPut.status === 400, '改包名同样做格式校验', `status=${badPkgPut.status}`);
+
+// 仓库地址里的 /tree/<分支>/<子目录> 必须被拆成「仓库根 URL + 子目录」两列。
+// 不拆的后果：克隆按库名各存一份单体仓（实测 591MB × 168 个子目录库 ≈ 97GB），
+// 且工程解析只看仓库根 → 包名永远解析不到（json-schema 包名长期为空就是这个原因）。
+const treeLib = await raw('POST', '/api/autotest/libraries', {
+  headers: { 'Content-Type': 'application/json' },
+  body: { name: 'verify-lib-subpath', repoUrl: 'https://gitcode.com/openharmony-tpc/openharmony_tpc_samples/tree/master/json-schema' },
+});
+check(treeLib.json?.repoUrl === 'https://gitcode.com/openharmony-tpc/openharmony_tpc_samples.git'
+  && treeLib.json?.repoSubpath === 'json-schema',
+  'POST /libraries 把 /tree/<分支>/<子目录> 地址拆成仓库根 + 子目录',
+  `repoUrl=${treeLib.json?.repoUrl} subpath=${treeLib.json?.repoSubpath}`);
+const subLibId = treeLib.json?.id;
+const evilSub = await raw('PUT', `/api/autotest/libraries/${subLibId}`, {
+  headers: { 'Content-Type': 'application/json' }, body: { repoSubpath: '../../../Windows' },
+});
+check(evilSub.status === 200 && !String(evilSub.json?.repoSubpath ?? '').includes('..'),
+  '子目录里的 .. 被剔除（目录穿越防护）', `subpath=${evilSub.json?.repoSubpath}`);
+await raw('DELETE', `/api/autotest/libraries/${subLibId}?force=1`);
+
+// ---------- 三方库测试表（xlsx）→ 库表同步 ----------
+//
+// 这是本功能最关键的**行为保证**，必须在真实 HTTP + 真实 DB 上验：
+//   xlsx 是人维护的（有哪些库、对应哪个仓库），db 里 Agent 维护的字段（包名/入口 Ability）
+//   在同步中**一个都不能被冲掉** —— 冲掉就等于丢了真机遍历好不容易补齐的启动信息。
+console.log('\n— 三方库测试表同步（xlsx → db）—');
+{
+  const XLSX = (await import('xlsx')).default;
+  const MONO = 'https://gitcode.com/CPF-ApplicationTPC/openharmony_tpc_samples';
+  const sheetFile = path.join(tmpDir, '三方库测试表.xlsx');
+  const rows = [
+    ['三方库名称', 'URL'],
+    ['sheet-keep-pkg', `${MONO}/tree/master/keepPkg`],   // 库里已有同名的、带包名的库 → 只能改地址，不能动包名
+    ['sheet-new-lib', `${MONO}/tree/master/newLib`],     // 库里没有 → 新增
+    ['', `${MONO}/tree/master/noName`],                  // 缺库名 → 跳过并报告
+  ];
+  const wb = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(rows), 'Sheet1');
+  XLSX.writeFile(wb, sheetFile);
+
+  // 先建一个"Agent 已经补好包名"的库，且地址与表里不同（模拟人改了表里的地址）
+  const keep = await raw('POST', '/api/autotest/libraries', {
+    headers: { 'Content-Type': 'application/json' },
+    body: { name: 'sheet-keep-pkg', repoUrl: 'https://gitcode.com/old/place.git', packageName: 'com.agent.filled', mainAbility: 'EntryAbility' },
+  });
+  check(keep.status === 200, '预置：带包名的库已建立', `status=${keep.status}`);
+
+  const dry = await raw('POST', '/api/autotest/libraries/sync-sheet', {
+    headers: { 'Content-Type': 'application/json' }, body: { file: sheetFile },
+  });
+  check(dry.status === 200 && dry.json?.applied === false, '预览（dry-run）不写库', `applied=${dry.json?.applied}`);
+  check(dry.json?.counts?.added === 1 && dry.json?.counts?.updated === 1 && dry.json?.counts?.problems === 1,
+    '预览给出 新增1/更新1/跳过1', JSON.stringify(dry.json?.counts));
+  const beforeDry = await db.prepare('SELECT COUNT(*) AS n FROM libraries').get();
+  const dryNames = (await db.prepare('SELECT name FROM libraries ORDER BY id').all()).map((r) => r.name);
+  check(!dryNames.includes('sheet-new-lib'), '预览没有新增任何库（真的没写）', `libraries=${beforeDry.n} · ${dryNames.join(',')}`);
+
+  const applied = await raw('POST', '/api/autotest/libraries/sync-sheet?apply=1', {
+    headers: { 'Content-Type': 'application/json' }, body: { file: sheetFile },
+  });
+  check(applied.status === 200 && applied.json?.applied === true, 'apply=1 执行落库', `status=${applied.status}`);
+
+  const newLib = await db.prepare('SELECT * FROM libraries WHERE name = ?').get('sheet-new-lib');
+  check(!!newLib && newLib.repo_url === `${MONO}.git` && newLib.repo_subpath === 'newLib',
+    '新增库落库且子目录已拆出', `url=${newLib?.repo_url} sub=${newLib?.repo_subpath}`);
+
+  const kept = await db.prepare('SELECT * FROM libraries WHERE name = ?').get('sheet-keep-pkg');
+  check(kept?.package_name === 'com.agent.filled' && kept?.main_ability === 'EntryAbility',
+    '★ Agent 补的包名与入口 Ability 没被同步冲掉', `pkg=${kept?.package_name} ability=${kept?.main_ability}`);
+  check(kept?.repo_url === `${MONO}.git` && kept?.repo_subpath === 'keepPkg',
+    '人维护的地址与子目录按表更新了', `url=${kept?.repo_url} sub=${kept?.repo_subpath}`);
+
+  const noNameRow = await db.prepare('SELECT COUNT(*) AS n FROM libraries WHERE name = ?').get('');
+  check(noNameRow.n === 0, '缺库名的行没有被建成空名库');
+
+  // 库里存在、表里没有的库绝不能被删除（删库会级联删用例与执行历史）
+  await raw('POST', '/api/autotest/libraries', {
+    headers: { 'Content-Type': 'application/json' }, body: { name: 'db-only-keep', repoUrl: 'https://gitcode.com/o/dbonly.git' },
+  });
+  const second = await raw('POST', '/api/autotest/libraries/sync-sheet?apply=1', {
+    headers: { 'Content-Type': 'application/json' }, body: { file: sheetFile },
+  });
+  check(second.json?.counts?.added === 0 && second.json?.counts?.updated === 0 && second.json?.counts?.unchanged === 2,
+    '二次同步幂等：0 新增 0 更新', JSON.stringify(second.json?.counts));
+  const dbOnlySurvived = await db.prepare('SELECT id, package_name FROM libraries WHERE name = ?').get('db-only-keep');
+  check(!!dbOnlySurvived, '表里没有的库不会被同步删除（只在 dbOnly 里报告）');
+  check(second.json?.plan?.dbOnly?.some((d) => d.name === 'db-only-keep'), 'dbOnly 列表里能看到它');
+
+  const badFile = await raw('POST', '/api/autotest/libraries/sync-sheet', {
+    headers: { 'Content-Type': 'application/json' }, body: { file: path.join(tmpDir, '不存在.xlsx') },
+  });
+  check(badFile.status === 400, '文件不存在 → 400 且给出可操作提示（不是 500）', `status=${badFile.status}`);
+}
+
+// 删除保护：有数据的库默认拒绝，避免误点一下丢掉整库用例与执行历史
+await raw('POST', '/api/autotest/cases', {
+  headers: { 'Content-Type': 'application/json' },
+  body: { libraryId: libId, caseNo: 'C-DEL-001', name: '待删除用例', steps: ['打开应用'] },
+});
+const impact = await raw('GET', `/api/autotest/libraries/${libId}/impact`);
+check(impact.status === 200 && impact.json?.cases === 1, 'GET /libraries/:id/impact 能统计关联数据', `cases=${impact.json?.cases}`);
+const delGuard = await raw('DELETE', `/api/autotest/libraries/${libId}`);
+check(delGuard.status === 409, '有数据的库默认拒绝删除（409 + 影响面说明）', `status=${delGuard.status}`);
+const delForce = await raw('DELETE', `/api/autotest/libraries/${libId}?force=1`);
+check(delForce.status === 200 && delForce.json?.ok === true, 'force=1 时级联删除成功', `status=${delForce.status}`);
+const gone = await raw('GET', `/api/autotest/libraries/${libId}`);
+check(gone.status === 404, '删除后库确实不存在', `status=${gone.status}`);
+const orphan = await db.prepare('SELECT COUNT(*) AS n FROM cases WHERE library_id = ?').get(libId);
+check(orphan.n === 0, '级联删除了该库的用例（不留孤儿数据）', `剩余用例=${orphan.n}`);
+
 // ---------- Prompt 模板（对应前端"新建模板必然 404"的回归） ----------
 console.log('\n— Prompt 模板 —');
 const newPrompt = await raw('POST', '/api/autotest/prompts', {

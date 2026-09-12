@@ -8,6 +8,7 @@ CREATE TABLE IF NOT EXISTS libraries (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   name TEXT NOT NULL,
   repo_url TEXT NOT NULL DEFAULT '',
+  repo_subpath TEXT NOT NULL DEFAULT '',
   description TEXT NOT NULL,
   current_version TEXT NOT NULL DEFAULT 'v0.0.0',
   last_commit TEXT NOT NULL DEFAULT '',

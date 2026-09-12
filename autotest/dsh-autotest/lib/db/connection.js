@@ -284,7 +284,7 @@ export async function ensureReady() {
                 }
                 // 列迁移（新版本补列）：PRAGMA table_info 检查后 ALTER
                 for (const [table, col] of [
-                    ['libraries', 'package_name'], ['libraries', 'main_ability'],
+                    ['libraries', 'package_name'], ['libraries', 'main_ability'], ['libraries', 'repo_subpath'],
                     ['plans', 'script_mode'], ['plans', 'error'], ['plans', 'progress'], ['plans', 'progress_note'],
                     ['tasks', 'trace_id'], ['executions', 'trace_id'], ['executions_archive', 'trace_id'],
                 ]) {
@@ -294,6 +294,7 @@ export async function ensureReady() {
                             const ddl = {
                                 'libraries:package_name': "ALTER TABLE libraries ADD COLUMN package_name TEXT NOT NULL DEFAULT ''",
                                 'libraries:main_ability': "ALTER TABLE libraries ADD COLUMN main_ability TEXT NOT NULL DEFAULT ''",
+                                'libraries:repo_subpath': "ALTER TABLE libraries ADD COLUMN repo_subpath TEXT NOT NULL DEFAULT ''",
                                 'plans:script_mode': "ALTER TABLE plans ADD COLUMN script_mode TEXT NOT NULL DEFAULT ''",
                                 'plans:error': "ALTER TABLE plans ADD COLUMN error TEXT NOT NULL DEFAULT ''",
                                 'plans:progress': 'ALTER TABLE plans ADD COLUMN progress INTEGER NOT NULL DEFAULT 0',
@@ -335,6 +336,7 @@ export async function ensureReady() {
             for (const [, , ddl] of [
                 ['libraries', 'package_name', "ALTER TABLE libraries ADD COLUMN package_name VARCHAR(128) NOT NULL DEFAULT ''"],
                 ['libraries', 'main_ability', "ALTER TABLE libraries ADD COLUMN main_ability VARCHAR(255) NOT NULL DEFAULT ''"],
+                ['libraries', 'repo_subpath', "ALTER TABLE libraries ADD COLUMN repo_subpath VARCHAR(512) NOT NULL DEFAULT ''"],
                 ['executions_archive', 'trace_id', "ALTER TABLE executions_archive ADD COLUMN trace_id VARCHAR(64) NOT NULL DEFAULT ''"],
                 ['plans', 'script_mode', "ALTER TABLE plans ADD COLUMN script_mode VARCHAR(16) NOT NULL DEFAULT ''"],
                 ['plans', 'error', "ALTER TABLE plans ADD COLUMN error VARCHAR(500) NOT NULL DEFAULT ''"],

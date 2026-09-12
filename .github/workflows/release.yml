@@ -46,6 +46,18 @@ jobs:
         working-directory: autotest/dsh-autotest
         run: npm run verify:api
 
+      - name: Explorer rules self-check（候选判定 / 去重 / 控件分类 / 预算 / 覆盖率报告）
+        working-directory: autotest/dsh-autotest
+        run: npm run verify:explorer
+
+      - name: Repo paths self-check（仓库地址拆分 / 子目录穿越防护 / 同仓共享克隆）
+        working-directory: autotest/dsh-autotest
+        run: npm run verify:repo-paths
+
+      - name: Library sheet self-check（xlsx 解析 / 同步计划 / 幂等 / 不覆盖 Agent 字段）
+        working-directory: autotest/dsh-autotest
+        run: npm run verify:sheet
+
       - name: Step contract self-check（句式映射 / guardrail，无设备自动跳过真机组）
         working-directory: autotest/dsh-autotest
         run: node scripts/verify-step-contract.mjs
