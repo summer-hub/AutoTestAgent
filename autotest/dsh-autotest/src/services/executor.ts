@@ -10,11 +10,15 @@ import { ensureLibraryByRepoUrl, inspectRepo, pullRepo, recentChanges, refreshPa
 import { getSetting } from './settings.js';
 import { llmJson, type LlmCall } from './llmHarness.js';
 import { exploreApp, ensureDeviceOnline, saveExploreReport, type ExploreResult, type ExploredPage } from './uiExplorer.js';
-import { hypiumProjectDir, writeCaseScript } from './hypiumGen.js';
+import { hypiumProjectDir } from './hypiumGen.js';
 import { dryRunCase, mergeFailureBriefs } from './dryRun.js';
 import { guessBundleFor, listTargets } from './hdc.js';
 import { planLibraryCases, samplePlan } from './casePlan.js';
 import { buildCoverageMatrix } from './coverageMatrix.js';
+import { validateOracles, type Oracle } from './oracle.js';
+import { bindCaseScript, markBindingStaleOnCaseBump } from './scriptBinding.js';
+import { injectForStage } from './knowledge.js';
+import { bindingTraceLine, resolveBinding } from './agentBinding.js';
 
 // ---------- 定向用例设计（write_cases）辅助 ----------
 
@@ -186,12 +190,14 @@ async function withProgress<T>(taskId: number, steps: Array<[number, () => Promi
 
 // ---------- 用例生成公共层：归一化 / 自审进化 / 经验记忆 / 入库 ----------
 
-interface DraftCase {
+export interface DraftCase {
   name: string; source: string; precondition: string; steps: string[]; expected: string; pagePath?: string;
   /** P4：溯源到接口符号与场景维度（覆盖矩阵据此把用例算成"这个接口测过了"） */
   apiSymbolId?: number;
   scenarioKind?: string;
   priority?: string;
+  /** P6：机器可校验判据（硬门槛 —— 没有它的用例不允许入库） */
+  oracles?: Oracle[];
 }
 
 /** 用例生成 Agent 的内置兜底 Prompt（Prompt 管理里 role=用例生成 可覆盖）。 */
@@ -211,6 +217,22 @@ export const REVIEW_RUBRIC = `评审标准（逐条对照）：
 4. 覆盖完整：对照给定界面数据逐个核对——目标范围内的主要可交互元素（按钮/开关/输入项/异常输入）都应有用例覆盖；预期证据在首屏之下（scrolls>0 或源码含滚动容器）而步骤没有「向上滑动查看输出区域」的，视为问题并在修订中补上。`;
 
 /** 预期证据强化规则（动画/视频/图片等媒体类库必须落到可断言的具体证据），注入所有用例生成/优化场景。 */
+/** P6：Oracle 强制规则（追加到用例生成/优化类 Agent 的系统提示里）。 */
+export const ORACLE_RULE = `
+
+【oracle 强制规则（硬门槛，不满足的用例会被直接丢弃）】
+每条用例必须给出**可机器校验**的判据 oracles（数组，至少一条），取值域：
+- control_text    界面出现/消失指定控件文本  {"type":"control_text","control":"实际结果：","expect":"appear"}
+- text_value      指定控件文本等于/包含某值  {"type":"text_value","control":"实际结果：","op":"contains","value":"true"}
+- hilog_keyword   hilog 出现关键字（含错误码）{"type":"hilog_keyword","keyword":"jsonschema"}
+- state_flag      控件勾选/开关状态          {"type":"state_flag","control":"自动播放","state":true}
+- no_crash        执行期间无 E 级日志/无崩溃  {"type":"no_crash"}
+- screenshot_diff 截图像素差异在阈值内        {"type":"screenshot_diff","threshold":0.05}
+- script_assert   脚本断言                  {"type":"script_assert","expr":"expect(result.valid).assertTrue()"}
+禁止：期望值写成「正常/成功/符合预期/功能正常」这类无法核对的词（会被判为伪判据）；
+禁止 assert true 这类恒真断言；value 必须是界面上真正会出现的文本。
+每个 oracle 请附 note 说明它在核对什么。`;
+
 export const EVIDENCE_RULE = `
 
 【预期证据强化 · 媒体类库专项】动画、视频、图片类库的预期结果禁止「播放正常」「加载成功」式描述，必须给出至少一个可断言的具体证据：
@@ -298,8 +320,10 @@ export function validateDraftsAgainstPages(
     for (const step of r.steps) {
       for (const ref of stepControlRefs(step)) {
         const key = normLabel(ref);
-        // 子串匹配要求控件文本 ≥2 字，否则单字符控件会让 includes 恒真、校验形同虚设
-        const hit = key && controls.some((c) => c === key || (c.length >= 2 && (c.includes(key) || key.includes(c))));
+        // 全等 = 强证据（真机上确实存在该文案的控件，单字符如「1」「×」也接受）；
+        // 子串匹配 = 弱证据，必须「两侧都 ≥2 字」—— 任一侧是单字符时 includes 极易恒真
+        // （引用「1」会命中「10 秒后关闭」、控件「1」会命中引用「100 元」），校验将形同虚设。
+        const hit = !!key && controls.some((c) => c === key || (key.length >= 2 && c.length >= 2 && (c.includes(key) || key.includes(c))));
         if (!hit) bad.push(`步骤「${step.slice(0, 30)}」引用的控件「${ref}」不在页面控件清单`);
       }
     }
@@ -440,7 +464,7 @@ ${loadLessons(libName).map((l, i) => `${i + 1}. ${l}`).join('\n') || '（暂无�
 
 /** 草稿入库：来源统一 AI 生成，V1 快照入 case_versions（含 pagePath 溯源），返回创建的用例行（供绑定脚本）。
  * maxOverride：遍历场景按「页数×每页配额」计算的动态上限，避免固定 20 条硬截断。 */
-async function insertDraftCases(libraryId: number, rows: DraftCase[], note: string, maxOverride?: number): Promise<Array<{ id: number; caseNo: string; name: string; steps: string[] }>> {
+export async function insertDraftCases(libraryId: number, rows: DraftCase[], note: string, maxOverride?: number): Promise<Array<{ id: number; caseNo: string; name: string; steps: string[] }>> {
   const db = getDb();
   const t = now();
   const created: Array<{ id: number; caseNo: string; name: string; steps: string[] }> = [];
@@ -450,10 +474,10 @@ async function insertDraftCases(libraryId: number, rows: DraftCase[], note: stri
     const maxCases = maxOverride ?? getSetting('agent.maxCasesPerTask', 20);
     for (const r of rows.slice(0, maxCases)) {
       const caseNo = `C-AI-${String(count.n + ++n).padStart(3, '0')}`;
-      const res = await db.prepare(`INSERT INTO cases (library_id, case_no, name, source, precondition, steps, expected, status, script_status, current_version, api_symbol_id, scenario_kind, priority, created_at, updated_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, '待确认', '未绑定', 1, ?, ?, ?, ?, ?)`).run(
+      const res = await db.prepare(`INSERT INTO cases (library_id, case_no, name, source, precondition, steps, expected, status, script_status, current_version, api_symbol_id, scenario_kind, priority, oracle_json, created_at, updated_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, '待确认', '未绑定', 1, ?, ?, ?, ?, ?, ?)`).run(
         libraryId, caseNo, r.name, r.source || 'AI 生成', r.precondition, JSON.stringify(r.steps), r.expected,
-        r.apiSymbolId ?? null, r.scenarioKind ?? 'happy', r.priority ?? 'P1', t, t,
+        r.apiSymbolId ?? null, r.scenarioKind ?? 'happy', r.priority ?? 'P1', JSON.stringify(r.oracles ?? []), t, t,
       );
       const caseId = Number(res.lastInsertRowid);
       await db.prepare(`INSERT INTO case_versions (case_id, version, snapshot, change_note, author, author_type, created_at)
@@ -462,6 +486,7 @@ async function insertDraftCases(libraryId: number, rows: DraftCase[], note: stri
         precondition: r.precondition, steps: r.steps, expected: r.expected,
         pagePath: r.pagePath ?? '',  // 溯源：本用例来自哪个遍历页面（优化 Agent 据此定向取上下文）
         apiSymbolId: r.apiSymbolId ?? null, scenarioKind: r.scenarioKind ?? 'happy', priority: r.priority ?? 'P1',
+        oracles: r.oracles ?? [],
         status: '待确认', scriptStatus: '未绑定', currentVersion: 1, createdAt: t, updatedAt: t,
       }), note, t);
       created.push({ id: caseId, caseNo, name: r.name, steps: r.steps });
@@ -470,24 +495,30 @@ async function insertDraftCases(libraryId: number, rows: DraftCase[], note: stri
   return created;
 }
 
-/** 为一批新建用例生成并写入 Hypium（Python）绑定脚本。 */
+/**
+ * 为一批新建用例生成并写入 Hypium（Python）绑定脚本。
+ *
+ * 走 `bindCaseScript` 而不是直接 writeCaseScript：这样才会**带上 oracle 断言**、
+ * 记录 `case_script_bindings`（版本联动的基础），并且未映射步骤/空断言会被如实拦下。
+ */
 async function bindHypiumScripts(
   lib: RepoLib & { description: string },
   packageName: string,
   created: Array<{ id: number; caseNo: string; name: string; steps: string[] }>,
 ): Promise<number> {
   if (created.length === 0) return 0;
-  const hlib = { name: lib.name, packageName: packageName || lib.name };
+  void packageName;
   let bound = 0;
   for (const c of created) {
     try {
-      writeCaseScript(hlib, { caseNo: c.caseNo, name: c.name, steps: c.steps });
-      await getDb().prepare(`UPDATE cases SET script_status = '已绑定', updated_at = ? WHERE id = ?`).run(now(), c.id);
-      bound++;
+      const r = await bindCaseScript(c.id);
+      if (r.ok) bound++;
+      else console.warn(`[hypium] ${c.caseNo} 未绑定：${r.reason}`);
     } catch (e) {
       console.warn(`[hypium] 绑定脚本失败 ${c.caseNo}:`, (e as Error).message);
     }
   }
+  void lib;
   return bound;
 }
 
@@ -553,8 +584,11 @@ ${STEP_CONTRACT}
         .run(o.id, next, JSON.stringify(snapshot), `【dry-run 回灌】依据真机执行失败证据重写步骤（自 v${next - 1}），脚本已重新绑定。`, t);
     });
     try {
-      writeCaseScript(hlib, { caseNo: o.caseNo, name, steps });
+      // 重写后重新绑定（带 oracle、记录版本）；失败不影响用例修订本身
+      const rb = await bindCaseScript(o.id);
+      if (!rb.ok) console.warn(`[hypium] ${o.caseNo} 回灌后未绑定：${rb.reason}`);
     } catch { /* 绑脚本失败不影响用例修订 */ }
+    void hlib;
     n++;
   }
   return n;
@@ -946,7 +980,7 @@ const CASE_OPT_FALLBACK = `你是鸿蒙三方库测试用例优化 Agent。在�
 export async function optimizeCaseById(
   caseId: number,
   llm: LlmCall,
-): Promise<{ caseNo: string; name: string; version: number }> {
+): Promise<{ caseNo: string; name: string; version: number; addedCases?: string[]; rejectedAdditions?: string[] }> {
   const db = getDb();
   const c = await db.prepare(
     `SELECT c.*, l.name AS library_name, l.description AS library_desc, l.package_name
@@ -977,16 +1011,31 @@ export async function optimizeCaseById(
       : `【真机遍历对照数据】（真实 dump 控件清单，步骤只能引用这里出现的控件文本）：\n${JSON.stringify(allPages.slice(0, 10))}`;
   }
 
+  // P6 补缺：把「本库覆盖矩阵里还没覆盖的接口」一并给 Agent，允许它**新增**用例（不只是改写）
+  const uncovered = await db.prepare(
+    `SELECT s.name, s.kind, m.status, m.status_reason FROM coverage_matrix m
+     JOIN api_symbols s ON s.id = m.symbol_id
+     WHERE m.library_id = ? AND m.status <> 'covered' ORDER BY m.status, s.id LIMIT 20`,
+  ).all<{ name: string; kind: string; status: string; status_reason: string }>(c.library_id);
+  const gapCtx = uncovered.length > 0
+    ? `\n【本库尚未覆盖的接口（如能补充用例请在 additions 里给出，最多 3 条；不要重复已有用例）】\n${uncovered.map((u) => `- ${u.name}（${u.kind}，${u.status}）：${u.status_reason.slice(0, 80)}`).join('\n')}`
+    : '';
+
+  // P9：优化阶段注入经验（oracle_recipe + demo_patch + human_verdict），并把注入清单写进场景上下文
+  const inject = injectForStage('case_optimize', { library: c.library_name });
+  const knowledgeCtx = inject.text ? `\n${inject.text}` : '';
+
   const sceneCtx = `三方库：${c.library_name}（bundle=${c.package_name || '—'}）库简介：${c.library_desc ?? ''}
 ${uiCtx}
 待优化用例 ${c.case_no}${pagePath ? `（所属页面：${pagePath}）` : ''}：
 名称：${c.name}
 前置条件：${c.precondition}
 步骤：${JSON.stringify(JSON.parse(c.steps || '[]'))}
-预期结果：${c.expected}`;
+预期结果：${c.expected}
+${gapCtx}${knowledgeCtx}`;
 
   const tpl = await promptBundle('用例优化', CASE_OPT_FALLBACK);
-  const sys = `${tpl.content}${tpl.skill ? `\n\n【绑定技能】\n${tpl.skill}` : ''}${STEP_CONTRACT}${EVIDENCE_RULE}`;
+  const sys = `${tpl.content}${tpl.skill ? `\n\n【绑定技能】\n${tpl.skill}` : ''}${STEP_CONTRACT}${EVIDENCE_RULE}${ORACLE_RULE}`;
   let parsed: unknown = null;
   let lastErr: unknown = null;
   for (let attempt = 0; attempt < 2 && !parsed; attempt++) {
@@ -1005,8 +1054,9 @@ ${uiCtx}
   // 优化后自动重新生成 Hypium 脚本（先落盘，成功则置「已绑定」，失败保留「未绑定」待 to_script 补）
   let rebound = false;
   try {
-    writeCaseScript({ name: c.library_name, packageName: c.package_name || c.library_name }, { caseNo: c.case_no, name: r.name || c.name, steps: r.steps });
-    rebound = true;
+    const rb = await bindCaseScript(c.id);
+    rebound = rb.ok;
+    if (!rb.ok) console.warn(`[hypium] 优化后未重绑 ${c.case_no}：${rb.reason}`);
   } catch (e) {
     console.warn(`[hypium] 优化后重绑脚本失败 ${c.case_no}:`, (e as Error).message);
   }
@@ -1027,7 +1077,36 @@ ${uiCtx}
       VALUES (?, ?, ?, ?, 'AI 用例优化 Agent', 'ai', ?)`)
       .run(c.id, next, JSON.stringify(snapshot), `【AI优化】按用例优化 Agent 重写：步骤对齐真实控件、预期落到可验证证据${pagePath ? `（所属页面 ${pagePath}）` : ''}（自 v${c.current_version}）${rebound ? '，脚本已重新绑定' : ''}。`, t);
   });
-  return { caseNo: c.case_no, name: snapshot.name, version: next };
+  // 用例升版后，其他读同一绑定的视图要能看出"脚本基于旧版本"（这里重新绑定则状态已刷新）
+  if (!rebound) await markBindingStaleOnCaseBump(c.id, next);
+  // P6 补缺：Agent 可以针对"未覆盖接口"新增用例（不只是改写当前这条）。
+  // 新增的用例同样过 oracle 硬门槛 —— 补缺不是放宽标准的理由。
+  const additions = Array.isArray((parsed as { additions?: unknown }).additions)
+    ? ((parsed as { additions: Array<{ name?: string; precondition?: string; steps?: string[]; expected?: string; oracles?: unknown; symbol?: string }> }).additions).slice(0, 3)
+    : [];
+  const addDrafts: DraftCase[] = [];
+  const addRejected: string[] = [];
+  for (const a of additions) {
+    const steps = Array.isArray(a.steps) ? a.steps.map(String).filter(Boolean) : [];
+    if (steps.length === 0) { addRejected.push(`「${String(a.name ?? '').slice(0, 24)}」步骤为空`); continue; }
+    const problems = validateOracles(a.oracles);
+    if (problems.length > 0) { addRejected.push(`「${String(a.name ?? '').slice(0, 24)}」oracle 不达标：${problems.map((p) => p.reason).join('；').slice(0, 100)}`); continue; }
+    addDrafts.push({
+      name: String(a.name ?? '补缺用例').slice(0, 120), source: 'AI 生成',
+      precondition: String(a.precondition ?? ''), steps, expected: String(a.expected ?? ''),
+      scenarioKind: 'happy', priority: 'P1', oracles: a.oracles as Oracle[],
+    });
+  }
+  const added = addDrafts.length > 0
+    ? await insertDraftCases(c.library_id, addDrafts, `P6 补缺（针对未覆盖接口，由优化 Agent 提出，共 ${uncovered.length} 个未覆盖项）`)
+    : [];
+  if (addRejected.length > 0) console.warn(`[autotest] 补缺用例被拒：${addRejected.join('；')}`);
+
+  return {
+    caseNo: c.case_no, name: snapshot.name, version: next,
+    ...(added.length > 0 ? { addedCases: added.map((x) => x.caseNo) } : {}),
+    ...(addRejected.length > 0 ? { rejectedAdditions: addRejected } : {}),
+  } as { caseNo: string; name: string; version: number };
 }
 
 async function updateCases(task: TaskRow, lib: RepoLib & { current_version: string }, llm: LlmCall): Promise<string> {
@@ -1098,6 +1177,9 @@ ${changeCtx}
  */
 async function matrixCases(task: TaskRow, lib: RepoLib & { description: string }, llm: LlmCall): Promise<string> {
   const db = getDb();
+  // P10：把本次实际生效的 agent 绑定写进轨迹（可追溯"这条用例是哪个 agent 生成的"）
+  const binding = await resolveBinding('case_draft', lib.id);
+  await traceTask(task.id, '生效的 Agent 绑定', bindingTraceLine(binding));
   await traceTask(task.id, '读取覆盖矩阵与适用性', `库 ${lib.name}`);
   const plan = await planLibraryCases(lib.id, {
     maxTriggersPerSymbol: Number(getSetting('explore.matrixMaxTriggers', 3)) || 3,
@@ -1123,6 +1205,15 @@ async function matrixCases(task: TaskRow, lib: RepoLib & { description: string }
   }
   const shards = [...bySymbol.entries()];
   await traceTask(task.id, '开始生成', `${shards.length} 个符号 · ${sampled.selected.length} 条用例`);
+
+  // P9：注入该库的经验（设计 §7.5：生成阶段注入 oracle_recipe + demo_patch，预算 1500 字）。
+  // 注入清单必须进轨迹 —— 否则"为什么这次生成得好/不好"无从追溯。
+  const inject = injectForStage('case_draft', { library: lib.name });
+  if (inject.picked.length > 0) {
+    await traceTask(task.id, '注入了知识条目', inject.picked.map((p) => `· ${p.title}（${p.why}）`).join('\n')
+      + (inject.truncated > 0 ? `\n（因预算截断 ${inject.truncated} 条）` : ''));
+  }
+
   const drafts: DraftCase[] = [];
   const failures: string[] = [];
   for (const [symbolId, cases] of shards) {
@@ -1135,16 +1226,24 @@ async function matrixCases(task: TaskRow, lib: RepoLib & { description: string }
           system: MATRIX_CASE_SYSTEM,
           user: `【本次要覆盖的接口】\n${symName}（${first.symbolKind}）\n` +
             `【已算好的用例计划（逐条写出来，不要增删维度）】\n` +
-            cases.map((c, i) => `${i + 1}. [${c.priority}/${c.scenario}] ${c.title}\n   目的：${c.purpose}\n   依据：${c.because}\n   输入设计：${c.inputPlan}\n   断言要点：${c.assertionPlan}\n   触发入口：${c.triggerPage || '（demo 中无现成入口）'}${c.triggerControl ? ` · 控件「${c.triggerControl}」` : ''}\n   可测性初判：${c.needsPatchHint}`).join('\n'),
+            cases.map((c, i) => `${i + 1}. [${c.priority}/${c.scenario}] ${c.title}\n   目的：${c.purpose}\n   依据：${c.because}\n   输入设计：${c.inputPlan}\n   断言要点：${c.assertionPlan}\n   触发入口：${c.triggerPage || '（demo 中无现成入口）'}${c.triggerControl ? ` · 控件「${c.triggerControl}」` : ''}\n   可测性初判：${c.needsPatchHint}`).join('\n')
+            + (inject.text ? `\n\n${inject.text}` : ''),
           meta: { taskId: task.id, spanId: `matrix_cases:${symName}`, kind: 'matrix_cases' },
         },
       );
       const rows = Array.isArray(res.data?.cases) ? res.data.cases : [];
       if (rows.length === 0) { failures.push(`${symName}：模型未返回用例`); continue; }
-      rows.slice(0, cases.length).forEach((r: { name?: string; precondition?: string; steps?: string[]; expected?: string }, i: number) => {
+      rows.slice(0, cases.length).forEach((r: { name?: string; precondition?: string; steps?: string[]; expected?: string; oracles?: unknown }, i: number) => {
         const planRow = cases[Math.min(i, cases.length - 1)];
         const steps = Array.isArray(r.steps) ? r.steps.map(String).filter(Boolean) : [];
         if (steps.length === 0) { failures.push(`${symName}#${i + 1}：步骤为空，已丢弃（不做假用例）`); return; }
+        // ★ P6 硬门槛：没有可机器校验的 oracle 就不允许入库。
+        // 放行一条"断言为空"的用例，等于把"没测"变成"测过了" —— 这正是假通过（R12）。
+        const oracleProblems = validateOracles(r.oracles);
+        if (oracleProblems.length > 0) {
+          failures.push(`${symName}#${i + 1}「${String(r.name ?? planRow.title).slice(0, 30)}」：因 oracle 不达标未入库 —— ${oracleProblems.map((p) => p.reason).join('；').slice(0, 160)}`);
+          return;
+        }
         drafts.push({
           name: String(r.name || planRow.title).slice(0, 120),
           source: 'AI 生成',
@@ -1153,6 +1252,7 @@ async function matrixCases(task: TaskRow, lib: RepoLib & { description: string }
           expected: String(r.expected || planRow.assertionPlan),
           pagePath: planRow.triggerPage,
           apiSymbolId: symbolId, scenarioKind: planRow.scenario, priority: planRow.priority,
+          oracles: r.oracles as Oracle[],
         });
       });
     } catch (e) {
@@ -1181,33 +1281,35 @@ const MATRIX_CASE_SYSTEM = `你是鸿蒙三方库的真机测试用例设计者�
 纪律（违反即作废）：
 1. 严格按计划逐条输出，**不要增删场景维度**：计划里有几条就输出几条，顺序一致；
 2. 每条用例的步骤必须是**真机可操作的句式**：打开应用 / 点击「X」/ 输入「X」到「Y」/ 等待 N 秒 / 上滑 / 返回 / 验证「X」；
-3. 断言必须写清**可核对的结果**（界面上出现什么文本、返回什么值），禁止写"功能正常"这类无法核对的预期；
+3. **每条用例必须给出可机器校验的 oracle（硬门槛，缺了这条用例会被直接丢弃）**，取值域：
+   - control_text：界面出现/消失指定控件文本 {control, expect}
+   - text_value：控件文本等于/包含某值 {control, op, value}（value 必须是界面上真正会出现的文本，禁止写"正常/成功/符合预期"这类无法核对的词）
+   - hilog_keyword：hilog 出现关键字（含错误码）{keyword}
+   - state_flag：控件勾选/开关状态 {control, state}
+   - no_crash：执行期间无 E 级日志/无崩溃 {}
+   - screenshot_diff：截图像素差异在阈值内 {threshold}（0-1）
+   - script_assert：脚本断言 {expr}（禁止 assert true 这类恒真断言）
 4. 用例名要能看出接口与场景（如「Validator · 边界异常：传入非法 schema 抛出 SchemaError」）；
 5. 若计划标注「demo 中无现成入口」，步骤里要说明需要先补齐入口，不要假装能直接跑。
-只输出 JSON：{"cases":[{"name":"...","precondition":"...","steps":["..."],"expected":"..."}]}`;
+只输出 JSON：{"cases":[{"name":"...","precondition":"...","steps":["..."],"expected":"...","oracles":[{"type":"text_value","control":"实际结果：","op":"contains","value":"true"}]}]}`;
 
-async function toScript(task: TaskRow, lib: { id: number; name: string }, llm: LlmCall): Promise<string> {  void llm; // 确定性模板生成，不消耗 token
+async function toScript(task: TaskRow, lib: { id: number; name: string }, llm: LlmCall): Promise<string> {
+  void llm; // 确定性模板生成，不消耗 token
   const db = getDb();
-  const cases = await db.prepare(`SELECT id, case_no, name, steps FROM cases WHERE library_id = ? AND script_status = '未绑定' ORDER BY id LIMIT 50`).all<{ id: number; case_no: string; name: string; steps: string }>(lib.id);
+  const cases = await db.prepare(`SELECT id, case_no, name FROM cases WHERE library_id = ? AND script_status = '未绑定' ORDER BY id LIMIT 50`).all<{ id: number; case_no: string; name: string }>(lib.id);
   if (cases.length === 0) return '没有未绑定脚本的用例，无需转换。';
-  const full = await db.prepare('SELECT package_name FROM libraries WHERE id = ?').get<{ package_name: string }>(lib.id);
-  const hlib = { name: lib.name, packageName: String(full?.package_name ?? '') || lib.name };
   let bound = 0;
   const files: string[] = [];
   for (const c of cases) {
-    try {
-      const file = writeCaseScript(hlib, {
-        caseNo: c.case_no,
-        name: c.name,
-        steps: JSON.parse(c.steps || '[]') as string[],
-      });
-      await db.prepare(`UPDATE cases SET script_status = '已绑定', updated_at = ? WHERE id = ?`).run(now(), c.id);
-      files.push(path.basename(file));
+    // 走 bindCaseScript：带 oracle 断言、记录绑定（版本联动）、未映射步骤与空断言如实拦下
+    const r = await bindCaseScript(c.id);
+    if (r.ok && r.binding) {
+      files.push(path.basename(r.binding.scriptPath));
       bound++;
-    } catch (e) {
-      await traceTask(task.id, `脚本生成失败 ${c.case_no}`, (e as Error).message.slice(0, 200));
+    } else {
+      await traceTask(task.id, `脚本生成失败 ${c.case_no}`, String(r.reason ?? '未知原因').slice(0, 200));
     }
   }
   await traceTask(task.id, 'Python 脚本落盘', `${bound} 个 → ${hypiumProjectDir(lib.name)}\\testcases\\${lib.name.replace(/[^\w.-]/g, '_')}`);
-  return `已按 HypiumProjectTemplate 模板为 ${bound} 条用例生成 Python 脚本并绑定（script_status=已绑定）。\n目录：${hypiumProjectDir(lib.name)}`;
+  return `已按 HypiumProjectTemplate 模板为 ${bound} 条用例生成 Python 脚本并绑定（含 oracle 断言；未映射步骤与无断言的用例会被拒绝绑定，原因见操作日志）。\n目录：${hypiumProjectDir(lib.name)}`;
 }

@@ -8,8 +8,18 @@ import { promisify } from 'node:util';
 import { getDb, now } from '../db/connection.js';
 import { getSetting } from './settings.js';
 const execFileAsync = promisify(execFile);
-/** 工作区根目录：app.workspace 显式设置优先；未设置时回退到启动目录下的 workspace（并在使用处提示）。 */
+/**
+ * 工作区根目录，优先级：`AUTOTEST_WORKSPACE` 环境变量 > 系统配置 `app.workspace` > 启动目录下的 workspace。
+ *
+ * 环境变量优先是给**自检与 CI** 用的（与 `AUTOTEST_DATA_DIR` 同一套约定）：
+ * 自检必须能在临时目录里跑，绝不能碰使用者真实工作区里的仓库与知识库。
+ */
 export function workspaceDir() {
+    const override = String(process.env.AUTOTEST_WORKSPACE || '').trim();
+    if (override) {
+        fs.mkdirSync(override, { recursive: true });
+        return override;
+    }
     const base = String(getSetting('app.workspace', '') || '').trim();
     const dir = base || path.join(process.cwd(), 'workspace');
     fs.mkdirSync(dir, { recursive: true });

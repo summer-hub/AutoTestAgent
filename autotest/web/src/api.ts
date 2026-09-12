@@ -140,6 +140,109 @@ export const api = {
   casePlan: (id: number, b: { budget?: number } = {}) => req<CasePlanPayload>(`${API_BASE}/libraries/${id}/case-plan`, {
     method: 'POST', body: JSON.stringify(b),
   }),
+  // P5 可测性判定与补丁评审（补丁只在独立副本上应用，原仓库只读）
+  runTestability: (libId: number) => req<{
+    libraryId: number; libraryName: string; total: number;
+    byClass: Record<string, number>;
+    humanQueue: Array<{ caseNo: string; name: string; class: string; reason: string }>;
+    withPatch: number;
+    details: Array<{ caseId: number; caseNo: string; class: string; reason: string; hasPatch: boolean }>;
+  }>(`${API_BASE}/libraries/${libId}/testability`, { method: 'POST' }),
+  casePatch: (caseId: number) => req<{
+    caseId: number; caseNo: string; name: string; testability: string; testabilityReason: string;
+    patch: null | {
+      class: string; target: string; reason: string; risk: string; revert: string;
+      edits: Array<{ file: string; line: number; before: string; after: string; note: string }>;
+      impact?: string[]; verify?: string[];
+    };
+  }>(`${API_BASE}/cases/${caseId}/patch`),
+  applyCasePatch: (caseId: number) => req<{
+    ok: boolean; copyDir: string; files: number;
+    applied: Array<{ file: string; line: number }>;
+    failed: Array<{ edit: { file: string; line: number }; reason: string }>;
+  }>(`${API_BASE}/cases/${caseId}/patch/apply`, { method: 'POST', body: JSON.stringify({ approved: true }) }),
+  revertCasePatch: (caseId: number, removeCopy: boolean) => req<{ ok: boolean; removed: string[]; copyDir: string }>(
+    `${API_BASE}/cases/${caseId}/patch/revert`, { method: 'POST', body: JSON.stringify({ removeCopy }) }),
+  // P6 质量度量（两条硬门槛：断言覆盖率 100%、假通过 0）
+  quality: (libId: number) => req<{
+    name: string; libraryId: number; total: number; withOracle: number; oracleCoverage: number; falsePass: number;
+    falsePassCases: Array<{ caseNo: string; name: string; reason: string }>;
+    missingOracleCases: Array<{ caseNo: string; name: string; reason: string }>;
+    gates: { oracleCoverage: boolean; falsePass: boolean; allPassed: boolean };
+  }>(`${API_BASE}/libraries/${libId}/quality`),
+  // P7 自动化可行性分流 + 人工接管队列
+  triage: (libId: number, maxDurationSec?: number) =>
+    req<{ libraryId: number; libraryName: string; total: number; auto: number; human: number; byBlocker: Record<string, number>; queued: number }>(
+      `${API_BASE}/libraries/${libId}/triage`, { method: 'POST', body: JSON.stringify({ maxDurationSec }) }),
+  humanQueue: (libId: number, status?: string) =>
+    req<{ libraryId: number; total: number; open: number; byStage: Record<string, number>; items: Array<{
+      id: number; caseId: number | null; caseNo: string; caseName: string; stage: string;
+      reason: string; question: string;
+      payload: {
+        caseNo?: string; caseName?: string; testability?: string; estimatedSeconds?: number;
+        oracleCount?: number; steps?: string[];
+        patchDraft?: null | { class: string; target: string; reason: string; edits: Array<{ file: string; line: number; before: string; after: string; note: string }> } | null;
+      };
+      status: string; resolution: string; resolvedBy: string; resolvedAt: string | null; createdAt: string;
+    }> }>(`${API_BASE}/libraries/${libId}/human-queue${status ? `?status=${status}` : ''}`),
+  resolveQueueItem: (itemId: number, resolution: string) =>
+    req<{ ok: boolean; requeued: boolean; appliedOracle: boolean; message: string }>(
+      `${API_BASE}/human-queue/${itemId}/resolve`, { method: 'POST', body: JSON.stringify({ resolution }) }),
+  // P8 用例 ↔ 脚本映射与版本联动
+  scriptBindings: (libId: number) => req<{
+    libraryId: number; total: number; byStatus: Record<string, number>;
+    bindings: Array<{
+      caseId: number; caseNo: string; caseName: string; caseVersion: number;
+      scriptPath: string; moduleStem: string; status: string; statusReason: string;
+      lastRunStatus: string; lastRunAt: string | null; fileExists: boolean;
+    }>;
+  }>(`${API_BASE}/libraries/${libId}/script-bindings`),
+  regenerateScript: (caseId: number, force = false) =>
+    req<{ ok: boolean; binding?: { status: string; statusReason: string; scriptPath: string } }>(
+      `${API_BASE}/cases/${caseId}/script/regenerate`, { method: 'POST', body: JSON.stringify({ force }) }),
+  confirmScript: (caseId: number) => req<{ ok: boolean }>(`${API_BASE}/cases/${caseId}/script/confirm`, { method: 'POST' }),
+  unbindScript: (caseId: number) => req<{ ok: boolean; removedFile: string }>(
+    `${API_BASE}/cases/${caseId}/script/unbind`, { method: 'POST', body: JSON.stringify({ removeFile: true }) }),
+  // P9 知识库（LLM wiki，无向量）
+  knowledge: (f: { scopeKind?: string; kind?: string; status?: string; q?: string } = {}) => {
+    const qs = new URLSearchParams();
+    for (const [k, v] of Object.entries(f)) if (v) qs.set(k, String(v));
+    const q = qs.toString();
+    return req<{
+      total: number; broken: string[]; byStatus: Record<string, number>; byKind: Record<string, number>; wikiRoot: string;
+      entries: Array<{
+        id: string; scopeKind: string; scopeKey: string; kind: string; title: string; keywords: string[];
+        status: string; confidence: number; evidence: Array<Record<string, unknown>>; body: string;
+        createdAt: string; updatedAt: string; wikiPath: string;
+      }>;
+    }>(`${API_BASE}/knowledge${q ? `?${q}` : ''}`);
+  },
+  knowledgeConfirm: (id: string) => req<{ id: string }>(`${API_BASE}/knowledge/confirm`, { method: 'POST', body: JSON.stringify({ id }) }),
+  knowledgeStatus: (id: string, status: string) => req<{ id: string }>(`${API_BASE}/knowledge/status`, { method: 'POST', body: JSON.stringify({ id, status }) }),
+  knowledgeRebuild: () => req<{ total: number; broken: string[] }>(`${API_BASE}/knowledge/rebuild`, { method: 'POST' }),
+  knowledgeRetrieve: (b: { library?: string; apiName?: string; scenarioKind?: string; stage?: string; budgetChars?: number }) =>
+    req<{
+      selected: Array<{ id: string; title: string; scopeKind: string; kind: string; status: string; confidence: number }>;
+      why: Array<{ id: string; title: string; score: number; why: string }>;
+      truncated: number; text: string;
+    }>(`${API_BASE}/knowledge/retrieve`, { method: 'POST', body: JSON.stringify(b) }),
+  // P10 Agent 绑定
+  agentStages: () => req<{ stages: Array<{ stage: string; label: string; builtinRole: string; input: string; output: string; knowledgeKinds: string[]; knowledgeBudget: number }> }>(`${API_BASE}/agent/stages`),
+  agentBindings: (libraryId?: number) => req<{
+    libraryId: number | null;
+    bindings: Array<{
+      stage: string; kind: string; source: string; scope: string; libraryId: number | null;
+      promptId: number | null; skillPath: string; model: string; params: Record<string, unknown>; externalCmd: string;
+      def: { stage: string; label: string; builtinRole: string; input: string; output: string; knowledgeKinds: string[]; knowledgeBudget: number };
+      raw: Record<string, unknown> | null;
+    }>;
+  }>(`${API_BASE}/agent/bindings${libraryId ? `?libraryId=${libraryId}` : ''}`),
+  upsertAgentBinding: (b: {
+    stage: string; scope: 'global' | 'library'; libraryId?: number; kind: 'builtin' | 'prompt' | 'skill' | 'external';
+    promptId?: number; skillPath?: string; model?: string; params?: Record<string, unknown>; externalCmd?: string;
+  }) => req<{ stage: string; kind: string; source: string }>(`${API_BASE}/agent/bindings`, { method: 'POST', body: JSON.stringify(b) }),
+  deleteAgentBinding: (id: number) => req<{ ok: boolean }>(`${API_BASE}/agent/bindings/${id}`, { method: 'DELETE' }),
+  externalCmdCheck: (cmd: string) => req<{ available: boolean; reason: string }>(`${API_BASE}/agent/external-check?cmd=${encodeURIComponent(cmd)}`),
 
   // 用例
   cases: (libraryId: number, params: { page?: number; pageSize?: number; q?: string; source?: string; status?: string; ver?: string } = {}) => {

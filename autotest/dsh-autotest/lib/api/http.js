@@ -3,7 +3,7 @@ import path from 'node:path';
 import XLSX from 'xlsx';
 import { ensureReady, dbMode, getDb, now, withRead } from '../db/connection.js';
 import { caseTableFor, shardOf, shardStats } from '../db/repository.js';
-import { runTask, optimizeCaseById } from '../services/executor.js';
+import { runTask, optimizeCaseById, insertDraftCases } from '../services/executor.js';
 import { executePlan } from '../services/planExecutor.js';
 import { registerScheduledPlan, unregisterScheduledPlan } from '../services/scheduler.js';
 import { analyzeAttribution, analyzeCaseUpdates, analyzePrChanges, fetchPr, fetchPrs, fetchPrsFromGit, parseRepoPath, } from '../services/analyzer.js';
@@ -21,7 +21,13 @@ import { exportLibrariesSheet, resolveSheetPath, syncLibrariesFromSheet } from '
 import { loadStoredSymbols, runApiExtraction } from '../services/apiExtract.js';
 import { buildCoverageMatrix, loadCoverageMatrix, renderMatrixCsv, renderMatrixMarkdown } from '../services/coverageMatrix.js';
 import { planLibraryCases, samplePlan } from '../services/casePlan.js';
-import { detectPython, runHypiumModule } from '../services/hypiumRunner.js';
+import { applyCasePatch, revertCasePatch, runTestability } from '../services/testability.js';
+import { evaluateQuality, validateOracles } from '../services/oracle.js';
+import { loadHumanQueue, resolveQueueItem, runTriage } from '../services/automation.js';
+import { bindCaseScript, confirmBinding, listBindings, refreshBindingStatuses, unbindCaseScript } from '../services/scriptBinding.js';
+import { canConfirm, loadEntriesFromDisk, rebuildIndex, renderInjection, retrieve, saveEntry, wikiRoot, } from '../services/knowledge.js';
+import { bindingTraceLine, deleteBinding, externalCmdAvailable, JSONRPC, listResolvedBindings, mcpInitializeResult, mcpTools, rpcError, rpcResult, STAGES, upsertBinding, } from '../services/agentBinding.js';
+import { detectPython, runHypiumModule, probePythons, describePythonProbe } from '../services/hypiumRunner.js';
 const routes = [];
 // 分析进度（内存态，供前端轮询展示实时过程；完成后 60s 自动清理）
 const analysisProgress = new Map();
@@ -431,6 +437,266 @@ function defineRoutes(llm) {
             })),
         };
     });
+    // ---- P9：知识库（LLM wiki，无向量）----
+    //
+    // md 是唯一事实来源（workspace/knowledge/wiki/**），DB 只是索引。
+    // 检索是纯函数：作用域键精确命中 + 关键词命中，命中理由可逐字解释（不是相似度黑盒）。
+    route('GET', '/knowledge', async ({ query }) => {
+        const { entries, broken } = loadEntriesFromDisk();
+        const scopeKind = query.get('scopeKind');
+        const kind = query.get('kind');
+        const status = query.get('status');
+        const q = (query.get('q') ?? '').toLowerCase();
+        const filtered = entries.filter((e) => (!scopeKind || e.scopeKind === scopeKind)
+            && (!kind || e.kind === kind)
+            && (!status || e.status === status)
+            && (!q || `${e.title} ${e.keywords.join(' ')} ${e.scopeKey}`.toLowerCase().includes(q)));
+        const byStatus = {};
+        const byKind = {};
+        for (const e of entries) {
+            byStatus[e.status] = (byStatus[e.status] ?? 0) + 1;
+            byKind[e.kind] = (byKind[e.kind] ?? 0) + 1;
+        }
+        return { total: entries.length, broken, byStatus, byKind, wikiRoot: wikiRoot(), entries: filtered };
+    });
+    route('POST', '/knowledge', async ({ body }) => {
+        const b = (body ?? {});
+        if (!b.title || !b.scopeKind)
+            throw Object.assign(new Error('缺少 title 或 scopeKind'), { statusCode: 400 });
+        const e = await saveEntry({
+            id: b.id || `kn-${new Date().toISOString().slice(0, 10).replace(/-/g, '')}-${String(Date.now()).slice(-4)}`,
+            scopeKind: b.scopeKind, scopeKey: String(b.scopeKey ?? ''), kind: b.kind ?? 'human_verdict',
+            title: b.title, keywords: b.keywords ?? [], status: b.status ?? 'ai_draft',
+            confidence: b.confidence ?? 50, evidence: b.evidence ?? [], body: b.body ?? '',
+            createdAt: new Date().toISOString(), updatedAt: new Date().toISOString(),
+        });
+        console.log(`[autotest] 写入知识条目 ${e.id}（${e.scopeKind}/${e.scopeKey} · ${e.kind}）`);
+        return e;
+    });
+    route('POST', '/knowledge/confirm', async ({ body }) => {
+        const b = (body ?? {});
+        const { entries } = loadEntriesFromDisk();
+        const e = entries.find((x) => x.id === b.id);
+        if (!e)
+            throw Object.assign(new Error('知识条目不存在'), { statusCode: 404 });
+        // 生命周期纪律：没有证据的结论不允许标为人工确认（知识库不能收传闻）
+        const can = canConfirm(e);
+        if (!can.ok)
+            throw Object.assign(new Error(can.reason), { statusCode: 400 });
+        const saved = await saveEntry({ ...e, status: 'human_confirmed' });
+        console.log(`[autotest] 知识条目确认 ${saved.id}：${saved.title}`);
+        return saved;
+    });
+    route('POST', '/knowledge/status', async ({ body }) => {
+        const b = (body ?? {});
+        const { entries } = loadEntriesFromDisk();
+        const e = entries.find((x) => x.id === b.id);
+        if (!e)
+            throw Object.assign(new Error('知识条目不存在'), { statusCode: 404 });
+        if (!['ai_draft', 'human_confirmed', 'rejected', 'deprecated'].includes(String(b.status))) {
+            throw Object.assign(new Error(`非法的知识状态：${String(b.status)}`), { statusCode: 400 });
+        }
+        return await saveEntry({ ...e, status: b.status });
+    });
+    route('POST', '/knowledge/rebuild', async () => {
+        const r = await rebuildIndex();
+        console.log(`[autotest] 知识索引重建：${r.total} 条${r.broken.length ? ` · 跳过坏文件 ${r.broken.length}` : ''}`);
+        return r;
+    });
+    /** 检索预览：让人看到"换成任务时会注入哪些条目、为什么"（注入不是黑盒）。 */
+    route('POST', '/knowledge/retrieve', async ({ body }) => {
+        const b = (body ?? {});
+        const { entries } = loadEntriesFromDisk();
+        const r = retrieve({ ...b }, entries, b.budgetChars ?? 1500);
+        return {
+            selected: r.selected.map((e) => ({ id: e.id, title: e.title, scopeKind: e.scopeKind, kind: e.kind, status: e.status, confidence: e.confidence })),
+            why: r.scored.slice(0, 20).map((s) => ({ id: s.entry.id, title: s.entry.title, score: s.score, why: s.why })),
+            truncated: r.truncated,
+            text: renderInjection(r.selected),
+        };
+    });
+    // ---- P10：Agent 绑定（阶段即接口）----
+    route('GET', '/agent/stages', async () => ({ stages: STAGES }));
+    route('GET', '/agent/bindings', async ({ query }) => {
+        const libId = query.get('libraryId') ? Number(query.get('libraryId')) : null;
+        return { libraryId: libId, bindings: await listResolvedBindings(libId) };
+    });
+    route('POST', '/agent/bindings', async ({ body }) => {
+        const b = (body ?? {});
+        const r = await upsertBinding({
+            stage: String(b.stage ?? ''), scope: b.scope === 'library' ? 'library' : 'global', libraryId: b.libraryId ?? null,
+            kind: (b.kind ?? 'builtin'), promptId: b.promptId ?? null, skillPath: b.skillPath,
+            model: b.model, params: b.params, externalCmd: b.externalCmd,
+        });
+        console.log(`[autotest] Agent 绑定更新：${bindingTraceLine(r)}`);
+        return r;
+    });
+    route('DELETE', '/agent/bindings/:id', async ({ params }) => deleteBinding(Number(params.id)));
+    /** 外部 agent 可用性体检（不做实际调用，只看命令是否在 PATH 里）。 */
+    route('GET', '/agent/external-check', async ({ query }) => externalCmdAvailable(query.get('cmd') ?? ''));
+    /**
+     * 最小 MCP 服务端（JSON-RPC 2.0 over HTTP）：initialize / tools/list / tools/call。
+     *
+     * 这是"外部 agent 用同一份约定接入"的落点（设计 §8.4）。刻意只实现核心三个方法：
+     * 不实现 stdio 传输、resources/prompts、会话协商等 —— 够用且每一处行为都可核对。
+     */
+    route('POST', '/mcp', async ({ body }) => {
+        const req = (body ?? {});
+        if (req.jsonrpc !== '2.0' || !req.method) {
+            return rpcError(req.id ?? null, JSONRPC.INVALID_REQUEST, '需要 JSON-RPC 2.0 请求（含 jsonrpc 与 method）');
+        }
+        if (req.method === 'initialize')
+            return rpcResult(req.id, mcpInitializeResult());
+        if (req.method === 'tools/list')
+            return rpcResult(req.id, { tools: mcpTools() });
+        if (req.method === 'tools/call') {
+            const { name, arguments: args } = (req.params ?? {});
+            try {
+                const payload = await callMcpTool(String(name ?? ''), args ?? {});
+                return rpcResult(req.id, { content: [{ type: 'text', text: JSON.stringify(payload, null, 2) }] });
+            }
+            catch (e) {
+                const err = e;
+                return rpcError(req.id, JSONRPC.INVALID_PARAMS, err.message, { statusCode: err.statusCode ?? 500 });
+            }
+        }
+        return rpcError(req.id, JSONRPC.METHOD_NOT_FOUND, `未实现的方法：${req.method}（支持 initialize / tools/list / tools/call）`);
+    });
+    // ---- P8：用例 ↔ 脚本映射与版本联动 ----
+    //
+    // 需求明确的一条：手工用例更新后要能提示对应脚本"可能过期"。
+    // 状态是**算出来的**（每次读取都按当前文件内容与版本重新判定），不是落库的快照。
+    route('GET', '/libraries/:id/script-bindings', async ({ params }) => {
+        const id = Number(params.id);
+        const lib = await getDb().prepare('SELECT id FROM libraries WHERE id = ?').get(id);
+        if (!lib)
+            throw Object.assign(new Error('库不存在'), { statusCode: 404 });
+        const bindings = await listBindings(id);
+        const byStatus = {};
+        for (const b of bindings)
+            byStatus[b.status] = (byStatus[b.status] ?? 0) + 1;
+        return { libraryId: id, total: bindings.length, byStatus, bindings };
+    });
+    route('POST', '/libraries/:id/script-bindings/refresh', async ({ params }) => {
+        const id = Number(params.id);
+        const r = await refreshBindingStatuses(id);
+        console.log(`[autotest] 脚本绑定状态重算 #${id}：${r.total} 条 · ${JSON.stringify(r.byStatus)}`);
+        return r;
+    });
+    route('POST', '/cases/:id/script/regenerate', async ({ params, body }) => {
+        const id = Number(params.id);
+        const force = body?.force === true;
+        const r = await bindCaseScript(id, { force });
+        if (!r.ok) {
+            // 失败要给出确切原因（未映射的步骤 / 没有断言 / 人工改过需确认），不能用 500 糊过去
+            throw Object.assign(new Error(r.reason ?? '脚本生成失败'), {
+                statusCode: 400, unmappedStep: r.unmappedStep ?? null,
+            });
+        }
+        invalidateCaseCaches();
+        return r;
+    });
+    route('POST', '/cases/:id/script/confirm', async ({ params }) => {
+        const r = await confirmBinding(Number(params.id));
+        invalidateCaseCaches();
+        return r;
+    });
+    route('POST', '/cases/:id/script/unbind', async ({ params, body }) => {
+        const removeFile = body?.removeFile !== false;
+        const r = await unbindCaseScript(Number(params.id), { removeFile });
+        invalidateCaseCaches();
+        return r;
+    });
+    // ---- P7：自动化可行性分流 + 人工接管队列 ----
+    //
+    // 分流是确定性规则（先规则、后 LLM、规则结果优先）：决定"这条用例到底会不会被自动执行"，
+    // 交给模型自由发挥就无法核对。进人工队列的每条都带阻塞类别、面向人的原因与「需要人做什么」。
+    route('POST', '/libraries/:id/triage', async ({ params, body }) => {
+        const id = Number(params.id);
+        const maxDurationSec = Number(body?.maxDurationSec ?? 0) || undefined;
+        const r = await runTriage(id, { maxDurationSec });
+        console.log(`[autotest] 可行性分流 #${id} ${r.libraryName}：${r.total} 条用例 → 可自动化 ${r.auto} / 人工 ${r.human} · 新增队列条目 ${r.queued}`);
+        return r;
+    });
+    route('GET', '/libraries/:id/human-queue', async ({ params, query }) => {
+        const id = Number(params.id);
+        const lib = await getDb().prepare('SELECT id FROM libraries WHERE id = ?').get(id);
+        if (!lib)
+            throw Object.assign(new Error('库不存在'), { statusCode: 404 });
+        const items = await loadHumanQueue(id, query.get('status') ?? undefined);
+        const byStage = {};
+        for (const i of items)
+            byStage[i.stage] = (byStage[i.stage] ?? 0) + 1;
+        return { libraryId: id, total: items.length, open: items.filter((i) => i.status === 'open').length, byStage, items };
+    });
+    route('POST', '/human-queue/:id/resolve', async ({ params, body }) => {
+        const id = Number(params.id);
+        const b = (body ?? {});
+        const resolution = String(b.resolution ?? '').trim();
+        if (!resolution)
+            throw Object.assign(new Error('回填结论不能为空（结论会沉淀为知识条目，空结论等于没处理）'), { statusCode: 400 });
+        const r = await resolveQueueItem(id, resolution, String(b.resolvedBy ?? 'human'));
+        console.log(`[autotest] 人工队列回填 #${id}：${r.message}`);
+        invalidateCaseCaches();
+        return r;
+    });
+    // ---- P6：质量度量（两条硬门槛：断言覆盖率 100%、假通过 0）----
+    route('GET', '/libraries/:id/quality', async ({ params }) => {
+        const id = Number(params.id);
+        const lib = await getDb().prepare('SELECT id, name FROM libraries WHERE id = ?').get(id);
+        if (!lib)
+            throw Object.assign(new Error('库不存在'), { statusCode: 404 });
+        return { name: lib.name, ...(await evaluateQuality(id)) };
+    });
+    // ---- P5：demo 可测性判定 + 补丁评审/应用/回退 ----
+    //
+    // 纪律：补丁**只在独立副本上应用**（workspace/demo-patches/<库>/<用例>/），原仓库只读；
+    // 应用前校验 before 与文件内容一致；回退即还原副本。人工评审是必经环节（见前端补丁视图）。
+    route('POST', '/libraries/:id/testability', async ({ params }) => {
+        const id = Number(params.id);
+        const r = await runTestability(id);
+        console.log(`[autotest] 可测性判定 #${id} ${r.libraryName}：${r.total} 条用例 · A ${r.byClass.A} / B ${r.byClass.B} / C ${r.byClass.C} / D ${r.byClass.D} · 带补丁草案 ${r.withPatch}`);
+        invalidateCaseCaches();
+        return r;
+    });
+    route('GET', '/cases/:id/patch', async ({ params }) => {
+        const id = Number(params.id);
+        const row = await getDb().prepare(`SELECT c.id, c.case_no, c.name, c.testability, c.testability_reason, c.demo_patch_json
+      FROM cases c WHERE c.id = ?`)
+            .get(id);
+        if (!row)
+            throw Object.assign(new Error('用例不存在'), { statusCode: 404 });
+        let patch = null;
+        try {
+            patch = row.demo_patch_json ? JSON.parse(row.demo_patch_json) : null;
+        }
+        catch {
+            patch = null;
+        }
+        return {
+            caseId: row.id, caseNo: row.case_no, name: row.name,
+            testability: row.testability, testabilityReason: row.testability_reason,
+            patch,
+        };
+    });
+    route('POST', '/cases/:id/patch/apply', async ({ params, body }) => {
+        const id = Number(params.id);
+        const approved = body?.approved === true;
+        if (!approved) {
+            // 人工评审闸门：没有显式批准不落盘，避免"点错一下就把别人工程改了"
+            throw Object.assign(new Error('需要人工评审通过后才能应用补丁（请传 approved=true）'), { statusCode: 400 });
+        }
+        const r = await applyCasePatch(id);
+        console.log(`[autotest] 应用补丁 用例 #${id}：副本 ${r.copyDir}（${r.files} 个文件）· 应用 ${r.applied.length} 处 · 失败 ${r.failed.length} 处`);
+        return r;
+    });
+    route('POST', '/cases/:id/patch/revert', async ({ params, body }) => {
+        const id = Number(params.id);
+        const removeCopy = body?.removeCopy === true;
+        const r = await revertCasePatch(id, removeCopy);
+        console.log(`[autotest] 回退补丁 用例 #${id}：还原 ${r.removed.length} 个文件${removeCopy ? '，并删除副本' : ''}`);
+        return r;
+    });
     // ---- P4：矩阵驱动用例计划（dry-run，不调 LLM、不写用例）----
     //
     // 先看数量报告再决定要不要花 token 生成：报告里每条都带"为什么会有这条"，
@@ -801,7 +1067,7 @@ function defineRoutes(llm) {
             throw Object.assign(new Error('真机未连接：hdc list targets 为空，请连接鸿蒙机型设备'), { statusCode: 400 });
         const pythonCmd = await detectPython();
         if (!pythonCmd)
-            throw Object.assign(new Error('未检测到 Python 环境（需 Python + xdevice）'), { statusCode: 400 });
+            throw Object.assign(new Error(describePythonProbe(await probePythons())), { statusCode: 400 });
         ensureHypiumProject({ name: lib.name, packageName: lib.package_name || lib.name }, targets[0]);
         const projDir = hypiumProjectDir(lib.name);
         const moduleStem = name.replace(/\.py$/i, '');
@@ -811,7 +1077,7 @@ function defineRoutes(llm) {
             ok: true,
             status: result.status,
             durationMs: Date.now() - t0,
-            log: `设备 ${targets[0]} · python main.py ${moduleStem}\n${result.log}`,
+            log: `设备 ${targets[0]} · ${pythonCmd} main.py ${moduleStem}\n${result.log}`,
             reportDir: result.reportDir,
         };
     });
@@ -1952,6 +2218,80 @@ function parseStepsStored(raw) {
         return parsed.trim() ? [parsed] : [];
     return [];
 }
+/**
+ * MCP 工具的实际实现（设计 §8.4）：外部 agent 通过这些工具读写平台数据。
+ * 写入路径同样守住硬门槛（case_write 必须带合法 oracle）。
+ */
+async function callMcpTool(name, args) {
+    const num = (v, label) => {
+        const n = Number(v);
+        if (!Number.isFinite(n) || n <= 0)
+            throw Object.assign(new Error(`${label} 必须是正整数`), { statusCode: 400 });
+        return n;
+    };
+    switch (name) {
+        case 'autotest.api_symbols': {
+            const id = num(args.libraryId, 'libraryId');
+            return await loadStoredSymbols(id, args.version === undefined ? undefined : String(args.version));
+        }
+        case 'autotest.coverage_matrix': {
+            const id = num(args.libraryId, 'libraryId');
+            const r = await loadCoverageMatrix(id, { status: args.status === undefined ? undefined : String(args.status) });
+            return { version: r.version, summary: r.summary, rows: r.rows };
+        }
+        case 'autotest.case_read': {
+            const limit = Math.min(200, Number(args.limit ?? 50) || 50);
+            if (args.libraryId !== undefined) {
+                const id = num(args.libraryId, 'libraryId');
+                const rows = await getDb().prepare(`SELECT id, case_no, name, steps, expected, status, scenario_kind, priority, testability, oracle_json
+          FROM cases WHERE library_id = ? ORDER BY id LIMIT ?`).all(id, limit);
+                return { libraryId: id, cases: rows.map((r) => mapCase(r)) };
+            }
+            if (args.libraryName !== undefined) {
+                const lib = await getDb().prepare('SELECT id FROM libraries WHERE name = ?').get(String(args.libraryName));
+                if (!lib)
+                    throw Object.assign(new Error(`库不存在：${String(args.libraryName)}`), { statusCode: 404 });
+                const rows = await getDb().prepare(`SELECT id, case_no, name, steps, expected, status, scenario_kind, priority, testability, oracle_json
+          FROM cases WHERE library_id = ? ORDER BY id LIMIT ?`).all(lib.id, limit);
+                return { libraryId: lib.id, cases: rows.map((r) => mapCase(r)) };
+            }
+            throw Object.assign(new Error('需要 libraryId 或 libraryName'), { statusCode: 400 });
+        }
+        case 'autotest.case_write': {
+            const id = num(args.libraryId, 'libraryId');
+            const problems = validateOracles(args.oracles);
+            if (problems.length > 0) {
+                throw Object.assign(new Error(`oracle 不达标，拒绝写入：${problems.map((p) => p.reason).join('；')}`), { statusCode: 400 });
+            }
+            const steps = Array.isArray(args.steps) ? args.steps.map(String) : [];
+            if (steps.length === 0)
+                throw Object.assign(new Error('steps 不能为空'), { statusCode: 400 });
+            const created = await insertDraftCases(id, [{
+                    name: String(args.name), source: '外部 Agent', precondition: String(args.precondition ?? ''),
+                    steps, expected: String(args.expected ?? ''), scenarioKind: String(args.scenarioKind ?? 'happy'),
+                    priority: String(args.priority ?? 'P1'), oracles: args.oracles,
+                }], 'MCP case_write（外部 agent）');
+            return { created };
+        }
+        case 'autotest.knowledge_retrieve': {
+            const { entries } = loadEntriesFromDisk();
+            const r = retrieve({
+                library: args.library === undefined ? undefined : String(args.library),
+                apiName: args.apiName === undefined ? undefined : String(args.apiName),
+                scenarioKind: args.scenarioKind === undefined ? undefined : String(args.scenarioKind),
+            }, entries, Number(args.budgetChars ?? 1500) || 1500);
+            return { picked: r.selected.map((e) => ({ title: e.title, status: e.status, confidence: e.confidence })), text: renderInjection(r.selected) };
+        }
+        case 'autotest.human_queue': {
+            const id = num(args.libraryId, 'libraryId');
+            return await loadHumanQueue(id, args.status === undefined ? undefined : String(args.status));
+        }
+        case 'autotest.quality':
+            return await evaluateQuality(num(args.libraryId, 'libraryId'));
+        default:
+            throw Object.assign(new Error(`未知工具：${name}`), { statusCode: 404 });
+    }
+}
 function mapCase(row, libraryName) {
     const steps = parseStepsStored(row.steps)
         .map((s) => (typeof s === 'string' ? s : String(s?.step ?? s?.text ?? s?.expected ?? '')))
@@ -1961,6 +2301,20 @@ function mapCase(row, libraryName) {
         source: row.source, precondition: row.precondition, steps,
         expected: row.expected, status: row.status, scriptStatus: row.script_status,
         dtsUrl: row.dts_url ?? '',
+        // P4/P5：场景维度、优先级、可测性判定（前端据此显示标签与补丁入口）
+        scenarioKind: row.scenario_kind ?? '',
+        priority: row.priority ?? '',
+        apiSymbolId: row.api_symbol_id ?? null,
+        testability: row.testability ?? '',
+        testabilityReason: row.testability_reason ?? '',
+        hasPatch: !!String(row.demo_patch_json ?? ''),
+        // P6：机器可校验判据（断言覆盖率硬门槛；空数组=该用例断言为空）
+        oracles: (() => { try {
+            return JSON.parse(String(row.oracle_json ?? '[]'));
+        }
+        catch {
+            return [];
+        } })(),
         currentVersion: row.current_version, createdAt: row.created_at, updatedAt: row.updated_at,
     };
 }

@@ -10,7 +10,8 @@ import { getDb, now } from '../db/connection.js';
 import { hdcAvailable, listTargets } from './hdc.js';
 import { getSetting } from './settings.js';
 import { ensureHypiumProject, hypiumProjectDir, hypiumCaseScriptPath, caseClassName } from './hypiumGen.js';
-import { detectPython, runHypiumModule } from './hypiumRunner.js';
+import { detectPython, runHypiumModule, probePythons, describePythonProbe } from './hypiumRunner.js';
+import { recordScriptRun } from './scriptBinding.js';
 function realThinking(caseRow, status, failLog) {
     if (status === 'passed') {
         return `任务：在真实设备上通过 xdevice/Hypium 运行绑定脚本 ${caseRow.case_no}.py。
@@ -85,7 +86,7 @@ async function runPlanOnce(planId, plan, t) {
         deviceSerial = targets[0];
     const pythonCmd = await detectPython();
     if (!pythonCmd) {
-        await failPlan('未检测到 Python 环境（python / python3）。Hypium 脚本执行需要 Python + xdevice，请安装后重试。');
+        await failPlan(describePythonProbe(await probePythons()));
         return;
     }
     // ---- 范围与抽样 ----
@@ -166,6 +167,11 @@ async function runPlanOnce(planId, plan, t) {
                 passed++;
             else
                 failed++;
+            // P8：脚本执行结果回写绑定（供 flaky 识别与"这个脚本到底跑没跑过"）
+            try {
+                await recordScriptRun(item.row.id, result.status);
+            }
+            catch { /* 回写失败不影响执行结果 */ }
             if (result.status === 'failed' && failPolicy === 'abort_library') {
                 for (const rest of boundItems.slice(idx + 1)) {
                     done++;

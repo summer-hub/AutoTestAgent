@@ -80,6 +80,78 @@ CREATE TABLE IF NOT EXISTS coverage_matrix (
 );
 CREATE INDEX IF NOT EXISTS idx_coverage_lib ON coverage_matrix(library_id, status);
 
+-- 人工接管队列（P7）：每条含「原因 / 需要你做什么 / 上下文证据 / 回填结论」四段
+CREATE TABLE IF NOT EXISTS human_queue (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  library_id INTEGER NOT NULL,
+  case_id INTEGER NULL,
+  stage TEXT NOT NULL,
+  reason TEXT NOT NULL,
+  question TEXT NOT NULL,
+  payload_json TEXT NOT NULL,
+  status TEXT NOT NULL DEFAULT 'open',
+  resolution TEXT NOT NULL DEFAULT '',
+  resolved_by TEXT NOT NULL DEFAULT '',
+  resolved_at TEXT NULL,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_human_queue_lib ON human_queue(library_id, status);
+
+-- 用例 ↔ 脚本映射（P8）：版本联动的基础 —— 用例升版后脚本要能被判为「可能过期」
+CREATE TABLE IF NOT EXISTS case_script_bindings (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  case_id INTEGER NOT NULL,
+  case_version INTEGER NOT NULL,
+  script_path TEXT NOT NULL,
+  script_hash TEXT NOT NULL DEFAULT '',
+  module_stem TEXT NOT NULL DEFAULT '',
+  status TEXT NOT NULL DEFAULT 'fresh',
+  last_run_status TEXT NOT NULL DEFAULT '',
+  last_run_at TEXT NULL,
+  confirmed_at TEXT NULL,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  UNIQUE (case_id)
+);
+CREATE INDEX IF NOT EXISTS idx_case_script_status ON case_script_bindings(status);
+
+-- 知识条目索引（P9）：**正文在 wiki 的 .md 文件里**（md 是唯一事实来源），这里只是可查询的索引
+CREATE TABLE IF NOT EXISTS knowledge_entries (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  wiki_path TEXT NOT NULL,
+  scope_kind TEXT NOT NULL,
+  scope_key TEXT NOT NULL,
+  kind TEXT NOT NULL,
+  title TEXT NOT NULL,
+  keywords TEXT NOT NULL,
+  status TEXT NOT NULL DEFAULT 'ai_draft',
+  confidence INTEGER NOT NULL DEFAULT 50,
+  evidence_json TEXT NOT NULL,
+  content_hash TEXT NOT NULL DEFAULT '',
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_knowledge_lookup ON knowledge_entries(scope_kind, scope_key, status);
+
+-- Agent 绑定（P10）：stage → 内置 / 自写 / 外部 agent，支持 global 与按库覆盖
+CREATE TABLE IF NOT EXISTS agent_bindings (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  stage TEXT NOT NULL,
+  scope TEXT NOT NULL DEFAULT 'global',
+  library_id INTEGER NULL,
+  prompt_id INTEGER NULL,
+  skill_path TEXT NOT NULL DEFAULT '',
+  model TEXT NOT NULL DEFAULT '',
+  params_json TEXT NOT NULL DEFAULT '{}',
+  kind TEXT NOT NULL DEFAULT 'builtin',
+  external_cmd TEXT NOT NULL DEFAULT '',
+  enabled INTEGER NOT NULL DEFAULT 1,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  UNIQUE (stage, scope, library_id)
+);
+
 CREATE TABLE IF NOT EXISTS cases (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   library_id INTEGER NOT NULL,
@@ -99,6 +171,13 @@ CREATE TABLE IF NOT EXISTS cases (
   scenario_kind TEXT NOT NULL DEFAULT 'happy',
   -- 优先级：P0 正向必跑 / P1 关键负向 / P2 长尾（执行计划按它抽样，抽样必须显式报告）
   priority TEXT NOT NULL DEFAULT 'P1',
+  -- P5 可测性判定：A 开箱 / B 改参数 / C 需改代码 / D 无法测（每条用例都必须有）
+  testability TEXT NOT NULL DEFAULT '',
+  testability_reason TEXT NOT NULL DEFAULT '',
+  -- P5 补丁草案（B/C 类才有；只在独立副本上应用，绝不改用户仓库）
+  demo_patch_json TEXT NOT NULL DEFAULT '',
+  -- P6 oracle：机器可校验判据（断言覆盖率硬门槛 100% —— 没有它就不允许入库）
+  oracle_json TEXT NOT NULL DEFAULT '[]',
   created_at TEXT NOT NULL,
   updated_at TEXT NOT NULL,
   UNIQUE (library_id, case_no)

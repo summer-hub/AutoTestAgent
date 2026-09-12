@@ -70,6 +70,7 @@ export default function CoveragePage() {
   const [plan, setPlan] = useState<CasePlanPayload | null>(null);
   const [planBusy, setPlanBusy] = useState(false);
   const [showPlans, setShowPlans] = useState(false);
+  const [quality, setQuality] = useState<Awaited<ReturnType<typeof api.quality>> | null>(null);
 
   useEffect(() => {
     api.libraries({ pageSize: 300 }).then((r) => {
@@ -99,6 +100,11 @@ export default function CoveragePage() {
     } catch (e) { setError(String((e as Error).message)); }
     finally { setBusy(false); }
   };
+
+  useEffect(() => {
+    if (!libId) return;
+    api.quality(libId).then(setQuality).catch(() => setQuality(null));
+  }, [libId, msg]);
 
   const exportAs = async (format: 'md' | 'csv') => {
     if (!libId) return;
@@ -195,6 +201,44 @@ export default function CoveragePage() {
             </div>
           )}
         </>
+      )}
+
+      {quality && quality.total > 0 && (
+        <div className="card" style={{ marginTop: 12, borderColor: quality.gates.allPassed ? 'var(--green-dim)' : 'var(--red-dim)' }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap', marginBottom: 6 }}>
+            <b style={{ fontSize: 13 }}>质量硬门槛（P6）</b>
+            <span className={`tag ${quality.gates.oracleCoverage ? 'green' : 'red'}`}>
+              断言覆盖率 {quality.oracleCoverage}% {quality.gates.oracleCoverage ? '达标' : '未达 100%'}
+            </span>
+            <span className={`tag ${quality.gates.falsePass ? 'green' : 'red'}`}>
+              假通过 {quality.falsePass} 条 {quality.gates.falsePass ? '达标' : '必须为 0'}
+            </span>
+            <span className="muted" style={{ fontSize: 11.5 }}>共 {quality.total} 条用例，其中 {quality.withOracle} 条有可机器校验断言</span>
+          </div>
+          {quality.missingOracleCases.length > 0 && (
+            <div style={{ marginTop: 6 }}>
+              <div className="muted" style={{ fontSize: 11.8, marginBottom: 3 }}>
+                断言不可核验的用例（{quality.missingOracleCases.length} 条）—— 这些用例即使"通过"也判定不了任何事：
+              </div>
+              <div className="mono" style={{ fontSize: 11, maxHeight: 90, overflowY: 'auto', color: 'var(--text2)' }}>
+                {quality.missingOracleCases.slice(0, 12).map((c) => (
+                  <div key={c.caseNo}>{c.caseNo}：{c.reason}</div>
+                ))}
+                {quality.missingOracleCases.length > 12 && <div className="muted">… 其余 {quality.missingOracleCases.length - 12} 条</div>}
+              </div>
+            </div>
+          )}
+          {quality.falsePassCases.length > 0 && (
+            <div style={{ marginTop: 6 }}>
+              <div style={{ fontSize: 11.8, marginBottom: 3, color: 'var(--red)' }}>
+                ★ 假通过（{quality.falsePassCases.length} 条）：脚本通过了，但断言为空或未被校验：
+              </div>
+              <div className="mono" style={{ fontSize: 11, color: 'var(--text2)' }}>
+                {quality.falsePassCases.slice(0, 8).map((c) => <div key={c.caseNo}>{c.caseNo}：{c.reason}</div>)}
+              </div>
+            </div>
+          )}
+        </div>
       )}
 
       {plan && showPlans && (

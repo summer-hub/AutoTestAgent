@@ -362,6 +362,131 @@ console.log('\n— P2 接口面提取 —');
   await raw('DELETE', `/api/autotest/libraries/${id}?force=1`);
 }
 
+// ---------- P7：可行性分流 + 人工队列回填闭环 ----------
+console.log('\n— P7 可行性分流与人工队列 —');
+{
+  const created = await raw('POST', '/api/autotest/libraries', {
+    headers: { 'Content-Type': 'application/json' },
+    body: { name: 'verify-p7-lib', repoUrl: 'https://gitcode.com/ohos-verify/p7.git' },
+  });
+  const id = created.json?.id;
+  const c1 = await raw('POST', '/api/autotest/cases', {
+    headers: { 'Content-Type': 'application/json' },
+    body: { libraryId: id, caseNo: 'C-P7-001', name: '需要外部数据库的用例', steps: ['打开应用', '连接数据库查询', '验证「结果」'] },
+  });
+  const caseId = c1.json?.id;
+
+  const tri = await raw('POST', `/api/autotest/libraries/${id}/triage`, {
+    headers: { 'Content-Type': 'application/json' }, body: {},
+  });
+  check(tri.status === 200 && tri.json?.total === 1, '分流能跑通并覆盖全部用例', `total=${tri.json?.total}`);
+  check(tri.json?.auto + tri.json?.human === tri.json?.total, '★ 每条用例都有明确归属（auto + human = total）',
+    `auto=${tri.json?.auto} human=${tri.json?.human}`);
+  check(tri.json?.human === 1 && tri.json?.byBlocker?.external_dep === 1,
+    '★ 含外部数据库的用例被分流到人工队列，类别为 external_dep', JSON.stringify(tri.json?.byBlocker));
+  check(tri.json?.byBlocker?.oracle_missing === 1, '同时标出缺可校验断言', JSON.stringify(tri.json?.byBlocker));
+
+  const q = await raw('GET', `/api/autotest/libraries/${id}/human-queue`);
+  check(q.status === 200 && q.json?.open >= 1, '人工队列能读出待处理条目', `open=${q.json?.open}`);
+  const item = q.json?.items?.[0];
+  check(!!item?.reason && !!item?.question, '★ 每条都带「原因」与「需要你做什么」', `reason=${String(item?.reason).slice(0, 30)}`);
+  check(item?.payload?.steps?.length > 0, '带上下文证据（步骤）');
+
+  const empty = await raw('POST', `/api/autotest/human-queue/${item.id}/resolve`, {
+    headers: { 'Content-Type': 'application/json' }, body: { resolution: '   ' },
+  });
+  check(empty.status === 400, '★ 空结论被拒（结论要沉淀为知识条目，空结论等于没处理）', `status=${empty.status}`);
+
+  const resolved = await raw('POST', `/api/autotest/human-queue/${item.id}/resolve`, {
+    headers: { 'Content-Type': 'application/json' },
+    body: { resolution: `人工确认：改用离线用例，不依赖外部数据库。case=${caseId}` },
+  });
+  check(resolved.status === 200 && resolved.json?.ok === true, '回填结论成功', `status=${resolved.status}`);
+  check(/已重跑分流/.test(resolved.json?.message ?? ''), '★ 回填后自动重跑分流（闭环）', resolved.json?.message);
+
+  const after = await raw('GET', `/api/autotest/libraries/${id}/human-queue?status=open`);
+  check(Array.isArray(after.json?.items), '能按状态筛选队列', `open=${after.json?.open}`);
+
+  const bad = await raw('POST', '/api/autotest/human-queue/999999/resolve', {
+    headers: { 'Content-Type': 'application/json' }, body: { resolution: 'x' },
+  });
+  check(bad.status === 404, '不存在的队列条目返回 404', `status=${bad.status}`);
+  await raw('DELETE', `/api/autotest/libraries/${id}?force=1`);
+}
+
+// ---------- P6：质量硬门槛 ----------
+console.log('\n— P6 质量度量（断言覆盖率 / 假通过）—');
+{
+  const created = await raw('POST', '/api/autotest/libraries', {
+    headers: { 'Content-Type': 'application/json' },
+    body: { name: 'verify-p6-lib', repoUrl: 'https://gitcode.com/ohos-verify/p6.git' },
+  });
+  const id = created.json?.id;
+
+  // 用例 A：正常入库（有 oracle）—— 走 POST /cases 时 oracle 由生成端写入，这里直接验质量接口的空状态
+  const empty = await raw('GET', `/api/autotest/libraries/${id}/quality`);
+  check(empty.status === 200 && empty.json?.total === 0, '没有用例时质量接口返回 0 而不是报错', `status=${empty.status}`);
+  check(empty.json?.gates?.oracleCoverage === true, '没有用例时断言覆盖率门槛视为达标（不误判）', JSON.stringify(empty.json?.gates));
+  check(empty.json?.falsePass === 0, '没有用例时假通过为 0');
+
+  // 没有 oracle 的用例 → 断言覆盖率不达标（这是硬门槛能被触发的证明）
+  await raw('POST', '/api/autotest/cases', {
+    headers: { 'Content-Type': 'application/json' },
+    body: { libraryId: id, caseNo: 'C-P6-001', name: '无断言的用例', steps: ['打开应用', '点击「验证」'] },
+  });
+  const withCase = await raw('GET', `/api/autotest/libraries/${id}/quality`);
+  check(withCase.json?.total === 1 && withCase.json?.withOracle === 0, '无 oracle 的用例不计入断言覆盖', `withOracle=${withCase.json?.withOracle}`);
+  check(withCase.json?.oracleCoverage === 0 && withCase.json?.gates?.oracleCoverage === false,
+    '★ 断言覆盖率未达 100% 时门槛判定为不达标（硬门槛真的会拦）', `coverage=${withCase.json?.oracleCoverage}`);
+  check(withCase.json?.missingOracleCases?.length === 1, '未达标的用例被列出来（可定位到是哪几条）');
+  check(withCase.json.missingOracleCases[0].reason.includes('没有任何 oracle'), '理由指向"没有 oracle"而不是笼统说"不达标"',
+    withCase.json.missingOracleCases[0].reason);
+
+  const missing = await raw('GET', '/api/autotest/libraries/999999/quality');
+  check(missing.status === 404, '不存在的库返回 404', `status=${missing.status}`);
+  await raw('DELETE', `/api/autotest/libraries/${id}?force=1`);
+}
+
+// ---------- P5：可测性判定与补丁评审闸门 ----------
+console.log('\n— P5 可测性判定与补丁 —');
+{
+  const created = await raw('POST', '/api/autotest/libraries', {
+    headers: { 'Content-Type': 'application/json' },
+    body: { name: 'verify-p5-lib', repoUrl: 'https://gitcode.com/ohos-verify/p5.git' },
+  });
+  const id = created.json?.id;
+  const caseCreated = await raw('POST', '/api/autotest/cases', {
+    headers: { 'Content-Type': 'application/json' },
+    body: { libraryId: id, caseNo: 'C-P5-001', name: 'P5 自检用例', steps: ['打开应用', '点击「验证」'] },
+  });
+  const caseId = caseCreated.json?.id;
+  check(!!caseId, '预置：用例已建立', `id=${caseId}`);
+
+  const run = await raw('POST', `/api/autotest/libraries/${id}/testability`);
+  check(run.status === 200 && run.json?.total === 1, '可测性判定能跑通并覆盖全部用例', `total=${run.json?.total}`);
+  check(['A', 'B', 'C', 'D'].includes(run.json?.details?.[0]?.class), '★ 每条用例都拿到 A/B/C/D 判定（设计验收项）', `class=${run.json?.details?.[0]?.class}`);
+  check(typeof run.json?.details?.[0]?.reason === 'string' && run.json.details[0].reason.length > 0, '判定必须带理由（不留空）');
+
+  const patch = await raw('GET', `/api/autotest/cases/${caseId}/patch`);
+  check(patch.status === 200 && patch.json?.testability, '能读回用例的可测性判定', `testability=${patch.json?.testability}`);
+
+  // ★ 人工评审闸门：没有显式批准不能应用
+  const noApprove = await raw('POST', `/api/autotest/cases/${caseId}/patch/apply`, {
+    headers: { 'Content-Type': 'application/json' }, body: {},
+  });
+  check(noApprove.status === 400 && /评审/.test(noApprove.json?.error ?? ''),
+    '★ 未获人工批准时拒绝应用补丁（防止误点改坏工程）', `status=${noApprove.status} msg=${noApprove.json?.error}`);
+
+  const badCase = await raw('GET', '/api/autotest/cases/999999/patch');
+  check(badCase.status === 404, '不存在的用例返回 404', `status=${badCase.status}`);
+  const badApply = await raw('POST', '/api/autotest/cases/999999/patch/apply', {
+    headers: { 'Content-Type': 'application/json' }, body: { approved: true },
+  });
+  check(badApply.status === 404, '对不存在的用例应用补丁返回 404', `status=${badApply.status}`);
+
+  await raw('DELETE', `/api/autotest/libraries/${id}?force=1`);
+}
+
 // ---------- P4：用例计划（dry-run） ----------
 console.log('\n— P4 用例计划 —');
 {

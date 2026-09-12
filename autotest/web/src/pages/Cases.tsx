@@ -4,6 +4,9 @@ import { api } from '../api';
 
 const SOURCE_COLORS: Record<string, string> = { 老库存量: 'gray', 新需求引入: 'blue', 问题单跟踪: 'amber', 'AI 生成': 'purple', 真机遍历: 'green' };
 const STATUS_COLORS: Record<string, string> = { 通过: 'green', 失败: 'red', 待确认: 'gray', 未执行: 'gray' };
+/** P5 可测性：A 开箱可测 / B 改参数可测 / C 需改代码 / D 无法测 */
+const TESTABILITY_LABEL: Record<string, string> = { A: '开箱', B: '改参数', C: '需改代码', D: '无法测' };
+const TESTABILITY_COLORS: Record<string, string> = { A: 'green', B: 'blue', C: 'amber', D: 'red' };
 const PAGE_SIZES = [30, 50, 100];
 
 /** 版本说明渲染：【AI优化】前缀显示为蓝色徽标（AI 迭代标识）。 */
@@ -32,6 +35,89 @@ export default function CasesPage() {
   const fileRef = useRef<HTMLInputElement>(null);
   const [casePage, setCasePage] = useState(1);
   const [pageSize, setPageSize] = useState(30);
+  const [bindings, setBindings] = useState<Record<number, { status: string; statusReason: string; lastRunStatus: string; lastRunAt: string | null }>>({});
+  const [bindMsg, setBindMsg] = useState('');
+
+  /** 拉取本库的脚本绑定（P8）：状态是服务端每次按文件内容与版本重新判定出来的。 */
+  const loadBindings = useCallback((libId: number | '') => {
+    if (libId === '') { setBindings({}); return; }
+    api.scriptBindings(libId).then((r) => {
+      const m: Record<number, { status: string; statusReason: string; lastRunStatus: string; lastRunAt: string | null }> = {};
+      for (const b of r.bindings) m[b.caseId] = { status: b.status, statusReason: b.statusReason, lastRunStatus: b.lastRunStatus, lastRunAt: b.lastRunAt };
+      setBindings(m);
+    }).catch(() => setBindings({}));
+  }, []);
+
+  const regenScript = async (caseId: number) => {
+    setBindMsg('');
+    try {
+      const r = await api.regenerateScript(caseId);
+      setBindMsg(`脚本已生成并绑定：${r.binding?.scriptPath ?? ''}`);
+      if (curLib !== null) { loadBindings(curLib); loadCases(curLib, casePage); }
+    } catch (e) {
+      // 失败原因必须原样呈现（未映射的步骤 / 没有断言 / 人工改过需确认）
+      setBindMsg(`⚠️ ${String((e as Error).message)}`);
+    }
+  };
+
+  const confirmScript = async (caseId: number) => {
+    setBindMsg('');
+    try { await api.confirmScript(caseId); setBindMsg('已标记为人工确认：不再提示过期，直到用例再次升版'); if (curLib !== null) loadBindings(curLib); }
+    catch (e) { setBindMsg(`⚠️ ${String((e as Error).message)}`); }
+  };
+
+  const unbindScript = async (caseId: number) => {
+    if (!window.confirm('解除绑定会删除对应脚本文件，确认？')) return;
+    setBindMsg('');
+    try {
+      const r = await api.unbindScript(caseId);
+      setBindMsg(`已解除绑定${r.removedFile ? `，删除 ${r.removedFile}` : ''}`);
+      if (curLib !== null) { loadBindings(curLib); loadCases(curLib, casePage); }
+    } catch (e) { setBindMsg(`⚠️ ${String((e as Error).message)}`); }
+  };
+  const [patchView, setPatchView] = useState<{
+    caseId: number; caseNo: string; name: string; testability: string; testabilityReason: string;
+    patch: null | {
+      class: string; target: string; reason: string; risk: string; revert: string;
+      edits: Array<{ file: string; line: number; before: string; after: string; note: string }>;
+      impact?: string[]; verify?: string[];
+    };
+  } | null>(null);
+  const [patchBusy, setPatchBusy] = useState(false);
+  const [patchMsg, setPatchMsg] = useState('');
+
+  const openPatch = async (caseId: number) => {
+    setPatchMsg('');
+    try {
+      const r = await api.casePatch(caseId);
+      setPatchView(r);
+    } catch (e) { setPatchMsg(String((e as Error).message)); }
+  };
+
+  const applyPatch = async () => {
+    if (!patchView) return;
+    const edits = patchView.patch?.edits ?? [];
+    if (!window.confirm(
+      `将在**独立副本**上应用 ${edits.length} 处改动（原仓库不会被修改）。\n\n` +
+      `副本目录：workspace/demo-patches/<库>/${patchView.caseNo}/\n\n确认应用？`,
+    )) return;
+    setPatchBusy(true); setPatchMsg('');
+    try {
+      const r = await api.applyCasePatch(patchView.caseId);
+      setPatchMsg(`已应用到副本 ${r.copyDir}（复制 ${r.files} 个文件）· 应用 ${r.applied.length} 处 · 失败 ${r.failed.length} 处${r.failed.length ? `｜${r.failed.map((f) => f.reason).join('；')}` : ''}`);
+    } catch (e) { setPatchMsg(`⚠️ ${String((e as Error).message)}`); }
+    finally { setPatchBusy(false); }
+  };
+
+  const revertPatch = async (removeCopy: boolean) => {
+    if (!patchView) return;
+    setPatchBusy(true); setPatchMsg('');
+    try {
+      const r = await api.revertCasePatch(patchView.caseId, removeCopy);
+      setPatchMsg(`已还原 ${r.removed.length} 个文件${removeCopy ? '，副本目录已删除' : ''}`);
+    } catch (e) { setPatchMsg(`⚠️ ${String((e as Error).message)}`); }
+    finally { setPatchBusy(false); }
+  };
 
   // 多选批量操作（跨页保留勾选，切库/切来源时清空）
   const [sel, setSel] = useState<Set<number>>(new Set());
@@ -172,6 +258,8 @@ export default function CasesPage() {
   // 切库/来源/搜索词变化时清空勾选
   useEffect(() => { setSel(new Set()); }, [curLib, source, caseQ]);
 
+  useEffect(() => { if (curLib !== null) loadBindings(curLib); else setBindings({}); }, [curLib, loadBindings]);
+
   useEffect(() => {
     if (curLib !== null) loadCases(curLib, casePage);
   }, [curLib, casePage, loadCases]);
@@ -294,6 +382,8 @@ export default function CasesPage() {
         版本按单条用例迭代（每次更新自动递增，可单独回滚）· 来源分类（新需求 / 存量 / 问题单）· Excel 导入导出
       </div>
 
+      {bindMsg && <div className={bindMsg.startsWith('⚠️') ? 'error' : 'ok'} style={{ marginBottom: 8 }}>{bindMsg}</div>}
+
       {error && <div className="error">⚠️ {error}</div>}
 
       <div className="grid" style={{ gridTemplateColumns: '230px 1fr' }}>
@@ -380,7 +470,7 @@ export default function CasesPage() {
                   <th style={{ width: 34 }}>
                     <input type="checkbox" checked={allPageSelected} onChange={toggleAllPage} title="全选本页" style={{ accentColor: 'var(--accent)', cursor: 'pointer' }} />
                   </th>
-                  <th>用例 ID</th><th>用例名称</th><th>来源</th><th>版本</th><th>状态</th><th>脚本</th><th>问题单</th><th>操作</th>
+                  <th>用例 ID</th><th>用例名称</th><th>来源</th><th>版本</th><th>状态</th><th>可测性</th><th>补丁</th><th>脚本</th><th>问题单</th><th>操作</th>
                 </tr>
                 {cases.items.map((c) => (
                   <tr key={c.id}>
@@ -394,10 +484,56 @@ export default function CasesPage() {
                     <td><span className={`tag ${SOURCE_COLORS[c.source] ?? 'gray'}`}>{c.source}</span></td>
                     <td><span className="tag plain">V{c.currentVersion}</span></td>
                     <td><span className={`tag ${STATUS_COLORS[c.status] ?? 'gray'}`}>{c.status}</span></td>
+                    <td title={c.testabilityReason ?? ''}>
+                      {c.testability
+                        ? <span className={`tag ${TESTABILITY_COLORS[c.testability] ?? 'gray'}`}>
+                            {c.testability} {TESTABILITY_LABEL[c.testability] ?? ''}
+                          </span>
+                        : <span className="muted">—</span>}
+                    </td>
                     <td>
-                      {c.scriptStatus === '已绑定'
-                        ? <span className="tag cyan">已绑定</span>
-                        : <span className="tag gray">未绑定</span>}
+                      {c.hasPatch
+                        ? <span
+                            className="link"
+                            title="打开补丁评审（只在独立副本上应用，原仓库不会被改）"
+                            onClick={() => void openPatch(c.id)}
+                          >补丁</span>
+                        : <span className="muted">—</span>}
+                    </td>
+                    <td>
+                      {(() => {
+                        const b = bindings[c.id];
+                        if (!b) {
+                          return c.scriptStatus === '已绑定'
+                            ? <span className="tag cyan">已绑定</span>
+                            : <span className="tag gray">未绑定</span>;
+                        }
+                        const meta: Record<string, [string, string]> = {
+                          fresh: ['最新', 'green'], stale: ['可能过期', 'amber'], manual: ['人工改过', 'blue'], broken: ['需重新生成', 'red'],
+                        };
+                        const [label, color] = meta[b.status] ?? [b.status, 'gray'];
+                        return (
+                          <>
+                            <span className={`tag ${color}`} title={b.statusReason}>{label}</span>
+                            {b.lastRunStatus && (
+                              <div className="muted" style={{ fontSize: 10.5, marginTop: 2 }}>
+                                上次跑：{b.lastRunStatus}{b.lastRunAt ? ` · ${b.lastRunAt.slice(5, 16)}` : ''}
+                              </div>
+                            )}
+                            <div style={{ marginTop: 3 }}>
+                              <span className="link" onClick={() => void regenScript(c.id)}>{b.status === 'fresh' ? '重新生成' : '重新生成'}</span>
+                              {b.status === 'stale' && (
+                                <>
+                                  {' · '}
+                                  <span className="link" title="保留现有脚本并标记已确认（不再提示过期，直到用例再次升版）" onClick={() => void confirmScript(c.id)}>保留确认</span>
+                                </>
+                              )}
+                              {' · '}
+                              <span className="link" style={{ color: 'var(--red)' }} onClick={() => void unbindScript(c.id)}>解除</span>
+                            </div>
+                          </>
+                        );
+                      })()}
                     </td>
                     <td>
                       {c.dtsUrl
@@ -717,6 +853,70 @@ export default function CasesPage() {
                   </table>
                 </>
               )}
+            </div>
+          </div>
+        </div>
+      )}
+      {patchView && (
+        <div className="drawer-mask show" onClick={(e) => { if (e.target === e.currentTarget) setPatchView(null); }}>
+          <div className="drawer" style={{ maxWidth: 760 }}>
+            <div className="drawer-h">
+              <b>补丁评审 · {patchView.caseNo} · {patchView.testability || '未判定'}</b>
+              <span className="x" onClick={() => setPatchView(null)}>✕</span>
+            </div>
+            <div className="drawer-b">
+              <div className="muted" style={{ fontSize: 12, marginBottom: 8 }}>{patchView.name}</div>
+              <div className="card" style={{ marginBottom: 10, borderColor: 'var(--amber-dim)' }}>
+                <div style={{ fontSize: 12 }}>
+                  <b>判定理由</b>：{patchView.testabilityReason || '—'}
+                </div>
+                <div className="muted" style={{ fontSize: 11.5, marginTop: 6 }}>
+                  补丁**只在独立副本**（<span className="mono">workspace/demo-patches/&lt;库&gt;/{patchView.caseNo}/</span>）上应用，
+                  原仓库始终只读；应用前会校验改动点内容是否与记录一致，不一致就拒绝，避免改坏工程。
+                </div>
+              </div>
+              {patchView.patch ? (
+                <>
+                  <div style={{ fontSize: 12.5, marginBottom: 6 }}>
+                    <span className={`tag ${TESTABILITY_COLORS[patchView.patch.class] ?? 'gray'}`}>{patchView.patch.class}</span>{' '}
+                    目标 <span className="mono">{patchView.patch.target || '—'}</span>
+                  </div>
+                  <div style={{ fontSize: 12, marginBottom: 10 }}>{patchView.patch.reason}</div>
+                  {patchView.patch.edits.length === 0 ? (
+                    <div className="card" style={{ borderColor: 'var(--red-dim)' }}>
+                      <b style={{ fontSize: 12.5 }}>没有可自动应用的改动</b>
+                      <div className="muted" style={{ fontSize: 11.8, marginTop: 4 }}>
+                        上面的理由里写明了原因（跨行/不唯一/读不到文件/找不到锚点）。这种情况需要人工编写补丁，
+                        工具不会硬凑一个改不对的补丁。
+                      </div>
+                    </div>
+                  ) : (
+                    patchView.patch.edits.map((e, i) => (
+                      <div key={i} className="card" style={{ marginBottom: 8 }}>
+                        <div className="mono" style={{ fontSize: 11.5, marginBottom: 6 }}>{e.file}:{e.line}</div>
+                        <pre className="mono" style={{ fontSize: 11.3, margin: 0, whiteSpace: 'pre-wrap', background: 'var(--red-dim)', padding: 6, borderRadius: 6 }}>- {e.before.slice(0, 600)}</pre>
+                        <pre className="mono" style={{ fontSize: 11.3, margin: '4px 0 0', whiteSpace: 'pre-wrap', background: 'var(--green-dim)', padding: 6, borderRadius: 6 }}>+ {e.after.slice(0, 600)}</pre>
+                        <div className="muted" style={{ fontSize: 11, marginTop: 4 }}>{e.note}</div>
+                      </div>
+                    ))
+                  )}
+                  {(patchView.patch.impact?.length || patchView.patch.verify?.length) ? (
+                    <div className="muted" style={{ fontSize: 11.5, marginTop: 8 }}>
+                      {patchView.patch.impact?.length ? <div><b>影响面</b>：{patchView.patch.impact.join('；')}</div> : null}
+                      {patchView.patch.verify?.length ? <div style={{ marginTop: 4 }}><b>验证建议</b>：{patchView.patch.verify.join(' → ')}</div> : null}
+                      <div style={{ marginTop: 4 }}><b>风险</b>：{patchView.patch.risk}</div>
+                    </div>
+                  ) : null}
+                  <div style={{ display: 'flex', gap: 8, marginTop: 14 }}>
+                    <button className="btn primary" disabled={patchBusy || patchView.patch.edits.length === 0} onClick={() => void applyPatch()}>批准并应用到副本</button>
+                    <button className="btn" disabled={patchBusy} onClick={() => void revertPatch(false)}>回退副本改动</button>
+                    <button className="btn" disabled={patchBusy} onClick={() => void revertPatch(true)}>回退并删除副本</button>
+                  </div>
+                </>
+              ) : (
+                <div className="loading">该用例没有补丁草案（只有 B/C 类才有）。</div>
+              )}
+              {patchMsg && <div className={patchMsg.startsWith('⚠️') ? 'error' : 'ok'} style={{ marginTop: 10 }}>{patchMsg}</div>}
             </div>
           </div>
         </div>

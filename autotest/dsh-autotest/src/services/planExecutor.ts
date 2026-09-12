@@ -10,7 +10,8 @@ import { getDb, now } from '../db/connection.js';
 import { hdcAvailable, listTargets } from './hdc.js';
 import { getSetting } from './settings.js';
 import { ensureHypiumProject, hypiumProjectDir, hypiumCaseScriptPath, caseClassName } from './hypiumGen.js';
-import { detectPython, runHypiumModule } from './hypiumRunner.js';
+import { detectPython, runHypiumModule, probePythons, describePythonProbe } from './hypiumRunner.js';
+import { recordScriptRun } from './scriptBinding.js';
 
 interface PlanRow {
   id: number; plan_no: string; name: string; type: string; cron: string | null;
@@ -96,7 +97,7 @@ async function runPlanOnce(planId: number, plan: PlanRow, t: string): Promise<vo
   if (!deviceSerial) deviceSerial = targets[0];
   const pythonCmd = await detectPython();
   if (!pythonCmd) {
-    await failPlan('未检测到 Python 环境（python / python3）。Hypium 脚本执行需要 Python + xdevice，请安装后重试。');
+    await failPlan(describePythonProbe(await probePythons()));
     return;
   }
 
@@ -193,6 +194,8 @@ async function runPlanOnce(planId: number, plan: PlanRow, t: string): Promise<vo
       );
       done++;
       if (result.status === 'passed') passed++; else failed++;
+      // P8：脚本执行结果回写绑定（供 flaky 识别与"这个脚本到底跑没跑过"）
+      try { await recordScriptRun(item.row.id, result.status); } catch { /* 回写失败不影响执行结果 */ }
       if (result.status === 'failed' && failPolicy === 'abort_library') {
         for (const rest of boundItems.slice(idx + 1)) {
           done++;

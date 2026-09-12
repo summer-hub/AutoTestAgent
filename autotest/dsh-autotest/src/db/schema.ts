@@ -87,6 +87,78 @@ CREATE TABLE IF NOT EXISTS coverage_matrix (
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 CREATE INDEX idx_coverage_lib ON coverage_matrix(library_id, status);
 
+-- 人工接管队列（P7）
+CREATE TABLE IF NOT EXISTS human_queue (
+  id BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+  library_id BIGINT UNSIGNED NOT NULL,
+  case_id BIGINT UNSIGNED NULL,
+  stage VARCHAR(32) NOT NULL,
+  reason VARCHAR(500) NOT NULL,
+  question MEDIUMTEXT NOT NULL,
+  payload_json MEDIUMTEXT NOT NULL,
+  status VARCHAR(16) NOT NULL DEFAULT 'open',
+  resolution MEDIUMTEXT NOT NULL,
+  resolved_by VARCHAR(64) NOT NULL DEFAULT '',
+  resolved_at VARCHAR(32) NULL,
+  created_at VARCHAR(32) NOT NULL,
+  updated_at VARCHAR(32) NOT NULL
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+CREATE INDEX idx_human_queue_lib ON human_queue(library_id, status);
+
+-- 用例 ↔ 脚本映射（P8）
+CREATE TABLE IF NOT EXISTS case_script_bindings (
+  id BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+  case_id BIGINT UNSIGNED NOT NULL,
+  case_version INT NOT NULL,
+  script_path VARCHAR(512) NOT NULL,
+  script_hash VARCHAR(64) NOT NULL DEFAULT '',
+  module_stem VARCHAR(128) NOT NULL DEFAULT '',
+  status VARCHAR(16) NOT NULL DEFAULT 'fresh',
+  last_run_status VARCHAR(16) NOT NULL DEFAULT '',
+  last_run_at VARCHAR(32) NULL,
+  confirmed_at VARCHAR(32) NULL,
+  created_at VARCHAR(32) NOT NULL,
+  updated_at VARCHAR(32) NOT NULL,
+  UNIQUE KEY uk_case_script (case_id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+CREATE INDEX idx_case_script_status ON case_script_bindings(status);
+
+-- 知识条目索引（P9）：正文在 wiki 的 .md 文件里，这里只是索引
+CREATE TABLE IF NOT EXISTS knowledge_entries (
+  id BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+  wiki_path VARCHAR(512) NOT NULL,
+  scope_kind VARCHAR(24) NOT NULL,
+  scope_key VARCHAR(255) NOT NULL,
+  kind VARCHAR(32) NOT NULL,
+  title VARCHAR(255) NOT NULL,
+  keywords VARCHAR(512) NOT NULL,
+  status VARCHAR(16) NOT NULL DEFAULT 'ai_draft',
+  confidence TINYINT NOT NULL DEFAULT 50,
+  evidence_json MEDIUMTEXT NOT NULL,
+  content_hash VARCHAR(64) NOT NULL DEFAULT '',
+  created_at VARCHAR(32) NOT NULL,
+  updated_at VARCHAR(32) NOT NULL,
+  KEY idx_knowledge_lookup (scope_kind, scope_key, status)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+-- Agent 绑定（P10）
+CREATE TABLE IF NOT EXISTS agent_bindings (
+  id BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+  stage VARCHAR(48) NOT NULL,
+  scope VARCHAR(48) NOT NULL DEFAULT 'global',
+  library_id BIGINT UNSIGNED NULL,
+  prompt_id BIGINT UNSIGNED NULL,
+  skill_path VARCHAR(512) NOT NULL DEFAULT '',
+  model VARCHAR(128) NOT NULL DEFAULT '',
+  params_json MEDIUMTEXT NOT NULL,
+  kind VARCHAR(16) NOT NULL DEFAULT 'builtin',
+  external_cmd VARCHAR(512) NOT NULL DEFAULT '',
+  enabled TINYINT NOT NULL DEFAULT 1,
+  created_at VARCHAR(32) NOT NULL,
+  updated_at VARCHAR(32) NOT NULL,
+  UNIQUE KEY uk_agent_binding (stage, scope, library_id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
 -- 用例主表（生产可拆 cases_0..cases_15，library_id % 16 路由）
 CREATE TABLE IF NOT EXISTS cases (
   id BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
@@ -104,6 +176,10 @@ CREATE TABLE IF NOT EXISTS cases (
   api_symbol_id BIGINT UNSIGNED NULL,
   scenario_kind VARCHAR(16) NOT NULL DEFAULT 'happy',
   priority VARCHAR(4) NOT NULL DEFAULT 'P1',
+  testability VARCHAR(8) NOT NULL DEFAULT '',
+  testability_reason VARCHAR(500) NOT NULL DEFAULT '',
+  demo_patch_json MEDIUMTEXT NOT NULL,
+  oracle_json MEDIUMTEXT NOT NULL,
   created_at VARCHAR(32) NOT NULL,
   updated_at VARCHAR(32) NOT NULL,
   UNIQUE KEY uk_cases_lib_no (library_id, case_no)

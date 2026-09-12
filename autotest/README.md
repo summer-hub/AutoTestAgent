@@ -75,7 +75,9 @@ curl -X POST http://localhost:3080/api/autotest/devices/scan   # 2. 设备页「
 3. 设备页确认设备显示「在线」（型号/系统版本来自 `hdc shell param get`）
 4. 系统配置 → 设备与执行：`device.appAbilities` 配置「打开应用」的 app→ability 映射，如 `{"时钟":"com.huawei.hmos.smartclock/.MainAbility"}`
 5. 用例绑定脚本后，执行计划选该设备创建「立即执行」，观察 executions 轨迹：
-   - 计划按用例绑定的 Hypium 模块真机执行：`python main.py <module>` → 解析 `reports/latest/result/<module>.xml` 判定通过/失败
+   - 计划按用例绑定的 Hypium 模块真机执行：`<装了 hypium 的 python> main.py <module>` → 解析 `reports/latest/result/<module>.xml` 判定通过/失败
+     - ⚠️ **必须用装了 hypium 的解释器**：本机 `python` 是 3.13（**没有 hypium**），hypium 6.1.0.210 只装在 `D:\Programs\Python\Python310`，故应执行 `py -3.10 main.py <module>`；也可用 `AUTOTEST_PYTHON` 指定解释器。用错解释器的表现是 `ModuleNotFoundError: No module named 'hypium'`
+     - 判据支持模块（`autotest_oracle.py`）会自动写到脚本同目录；它只用**已核实存在**的 Hypium API（`wait_for_component` / `BY.text` / `get_component_property` / `current_app` / `shell` / `capture_screen`），失败一律抛 `TestAssertionError`，绝不静默通过
    - 脚本内的控件定位与动作由 Hypium（`BY.text` / `driver`）在设备侧完成；生成脚本前用「真机遍历生成用例」可拿到真实控件清单
 6. 前置条件缺失时应如实失败并写明原因（未检测到 hdc / 无在线设备 / 未检测到 Python / 用例未绑定脚本）
 
@@ -171,7 +173,7 @@ Redis 缓存与连接池已落地；分表路由层存在但未启用（当前 S
 - **大模型可自定义**：设置 → 模型 支持添加任意 OpenAI 兼容端点（DeepSeek/OpenAI/Ollama/自定义），连通性测试真实调用；任务执行自动走默认模型（未配 Key 时失败并提示，配置后一键重试）。
 - **执行计划**：五种类型（立即/定时/单独/批量/全量），定时用 node-cron 注册（删除计划会同步注销定时任务）；同一计划**同一时刻只会执行一份**（原子占位 + 重入保护），执行体异常也必定落到终态，不会永久停在 running；失败用例可进入调试会话查看与追问；无在线真机时直接失败并写明原因（**没有模拟回退**）。
 - **仓库同步**：`pull_repo` / `update_repo` 走真实 git CLI（工作区 `app.workspace/repos/<lib>`，记录 `last_commit` 做变更文件解析，版本取 `git describe --tags`）；脚本落盘到 `app.workspace/hypium/<lib>/testcases/<lib>/<caseNo>.py`（Python/Hypium），UI 可浏览/预览/编辑。
-- **脚本执行与失败策略**：执行计划按用例绑定的 Hypium 模块真机执行（`python main.py <module>` → 解析 `reports/latest/result/<module>.xml`）；计划失败策略 `fail_policy`：`continue`（默认）/ `retry_twice`（失败自动重试 2 次）/ `abort_library`（整库失败中止，后续用例跳过）。
+- **脚本执行与失败策略**：执行计划按用例绑定的 Hypium 模块真机执行（`<装了 hypium 的 python> main.py <module>` → 解析 `reports/latest/result/<module>.xml`；本机应使用 `py -3.10`，见上文注意事项）；计划失败策略 `fail_policy`：`continue`（默认）/ `retry_twice`（失败自动重试 2 次）/ `abort_library`（整库失败中止，后续用例跳过）。
 - **Excel 导入导出**：Cases 页「⬇ 导出 Excel / ⬆ 导入 Excel」；导出生成 xlsx（用例编号/名称/来源/前置/步骤/预期/状态/版本），导入解析后批量入库并生成 V1 版本快照（支持中文表头与英文键、步骤换行/JSON/分号分隔）。
 - **数据分析**：Analysis 页「拉取并分析 PR / 用例更新分析」——从 GitCode API 拉取仓库真实 PR（含变更文件），AI 产出更新点/影响范围/建议用例更新/风险，写入 analyses 表；示例库 `lottie_turbo`（CPF-ApplicationTPC/lottie_turbo）已内置真实仓库地址，可直接体验。
 - **归因分析**：Attribution 页自由勾选失败执行（支持跨库，整库失败会整库纳入）——基于失败执行记录与 AI 思考过程，AI 产出结论/根因/证据/建议。

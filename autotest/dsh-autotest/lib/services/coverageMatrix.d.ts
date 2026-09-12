@@ -146,6 +146,19 @@ export declare function summarizeMatrix(rows: MatrixRow[]): {
     scenarioCoverage: number;
     byRisk: Record<string, number>;
 };
+export interface TraversalEvidence {
+    reportFile: string;
+    routes: Map<string, {
+        controls: string[];
+        path: string[];
+    }>;
+    /**
+     * 本次遍历**所有页面**收集到的控件文本（含首页入口项）。
+     * 判定"用例步骤里引用的控件在真机上是否存在"必须用它：用例通常先点首页入口再点目标页按钮，
+     * 而首页在 routes 里没有路由名（它不是"被进入"的页面），只用 routes 会把首页入口判成不存在。
+     */
+    allControls: string[];
+}
 /**
  * 从 P1 的遍历报告里取出「路由 → 该页控件文本」。
  *
@@ -153,13 +166,7 @@ export declare function summarizeMatrix(rows: MatrixRow[]): {
  * `进入判定 · 点击「X」→ 进入新页面 · pagePath=pages/Y` 这条 op 里。
  * 两者拼起来才能把 demo 源码里的 `pages/SimpleValidatePage` 对上真机页面。
  */
-export declare function loadTraversalEvidence(libName: string): {
-    reportFile: string;
-    routes: Map<string, {
-        controls: string[];
-        path: string[];
-    }>;
-} | null;
+export declare function loadTraversalEvidence(libName: string): TraversalEvidence | null;
 export interface MatrixBuildResult {
     libraryId: number;
     libraryName: string;

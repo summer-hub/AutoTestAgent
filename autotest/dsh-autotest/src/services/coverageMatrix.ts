@@ -283,6 +283,17 @@ export function summarizeMatrix(rows: MatrixRow[]): {
 
 // ---------- 真机遍历证据的装载 ----------
 
+export interface TraversalEvidence {
+  reportFile: string;
+  routes: Map<string, { controls: string[]; path: string[] }>;
+  /**
+   * 本次遍历**所有页面**收集到的控件文本（含首页入口项）。
+   * 判定"用例步骤里引用的控件在真机上是否存在"必须用它：用例通常先点首页入口再点目标页按钮，
+   * 而首页在 routes 里没有路由名（它不是"被进入"的页面），只用 routes 会把首页入口判成不存在。
+   */
+  allControls: string[];
+}
+
 /**
  * 从 P1 的遍历报告里取出「路由 → 该页控件文本」。
  *
@@ -290,7 +301,7 @@ export function summarizeMatrix(rows: MatrixRow[]): {
  * `进入判定 · 点击「X」→ 进入新页面 · pagePath=pages/Y` 这条 op 里。
  * 两者拼起来才能把 demo 源码里的 `pages/SimpleValidatePage` 对上真机页面。
  */
-export function loadTraversalEvidence(libName: string): { reportFile: string; routes: Map<string, { controls: string[]; path: string[] }> } | null {
+export function loadTraversalEvidence(libName: string): TraversalEvidence | null {
   const dir = path.join(workspaceDir(), 'explore', libName.replace(/[^\w.-]/g, '_'));
   if (!fs.existsSync(dir)) return null;
   const files = fs.readdirSync(dir).filter((f) => f.endsWith('.json')).sort();
@@ -310,19 +321,22 @@ export function loadTraversalEvidence(libName: string): { reportFile: string; ro
     if (m) labelToRoute.set(m[1], m[2]);
   }
   const routes = new Map<string, { controls: string[]; path: string[] }>();
+  const allControls = new Set<string>();
   for (const p of report.pages ?? []) {
+    const pageControls = (p.controls ?? [])
+      .map((c) => String(c.text || c.desc || '').trim())
+      .filter((s) => s.length > 1 && s.length < 40);
+    for (const c of pageControls) allControls.add(c);
     const labels = p.path ?? [];
     const last = labels.length > 1 ? labels[labels.length - 1] : '';
     const route = labelToRoute.get(last);
-    if (!route) continue;
-    const controls = (p.controls ?? [])
-      .map((c) => String(c.text || c.desc || '').trim())
-      .filter((s) => s.length > 1 && s.length < 40);
+    if (!route) continue;                       // 首页等没有路由名的页面不进 routes，但控件已进 allControls
+    const controls = pageControls;
     const prev = routes.get(route);
     const merged = [...new Set([...(prev?.controls ?? []), ...controls])].slice(0, 40);
     routes.set(route, { controls: merged, path: labels });
   }
-  return { reportFile: file, routes };
+  return { reportFile: file, routes, allControls: [...allControls] };
 }
 
 // ---------- 装配与落库 ----------

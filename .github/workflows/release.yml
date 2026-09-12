@@ -70,6 +70,30 @@ jobs:
         working-directory: autotest/dsh-autotest
         run: npm run verify:case-plan
 
+      - name: Testability self-check（A/B/C/D 判定 / 补丁应用与回退 / 目录穿越防护）
+        working-directory: autotest/dsh-autotest
+        run: npm run verify:testability
+
+      - name: Oracle self-check（oracle 校验 / 伪判据拦截 / 反假通过）
+        working-directory: autotest/dsh-autotest
+        run: npm run verify:oracle
+
+      - name: Automation triage self-check（分流规则 / 阻塞类别 / 时长阈值 / 明确归属）
+        working-directory: autotest/dsh-autotest
+        run: npm run verify:automation
+
+      - name: Script binding self-check（未映射即失败 / 空断言拦截 / 版本联动）
+        working-directory: autotest/dsh-autotest
+        run: npm run verify:binding
+
+      - name: Knowledge + agent binding self-check（无向量检索 / 生命周期 / 阶段契约 / MCP 工具）
+        working-directory: autotest/dsh-autotest
+        run: npm run verify:knowledge
+
+      - name: Oracle runtime self-check（需要装了 hypium 的 Python，缺失自动跳过）
+        working-directory: autotest/dsh-autotest
+        run: npm run verify:oracle-runtime
+
       - name: Step contract self-check（句式映射 / guardrail，无设备自动跳过真机组）
         working-directory: autotest/dsh-autotest
         run: node scripts/verify-step-contract.mjs

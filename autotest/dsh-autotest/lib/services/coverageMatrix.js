@@ -206,7 +206,6 @@ export function summarizeMatrix(rows) {
         byRisk,
     };
 }
-// ---------- 真机遍历证据的装载 ----------
 /**
  * 从 P1 的遍历报告里取出「路由 → 该页控件文本」。
  *
@@ -238,20 +237,24 @@ export function loadTraversalEvidence(libName) {
             labelToRoute.set(m[1], m[2]);
     }
     const routes = new Map();
+    const allControls = new Set();
     for (const p of report.pages ?? []) {
+        const pageControls = (p.controls ?? [])
+            .map((c) => String(c.text || c.desc || '').trim())
+            .filter((s) => s.length > 1 && s.length < 40);
+        for (const c of pageControls)
+            allControls.add(c);
         const labels = p.path ?? [];
         const last = labels.length > 1 ? labels[labels.length - 1] : '';
         const route = labelToRoute.get(last);
         if (!route)
-            continue;
-        const controls = (p.controls ?? [])
-            .map((c) => String(c.text || c.desc || '').trim())
-            .filter((s) => s.length > 1 && s.length < 40);
+            continue; // 首页等没有路由名的页面不进 routes，但控件已进 allControls
+        const controls = pageControls;
         const prev = routes.get(route);
         const merged = [...new Set([...(prev?.controls ?? []), ...controls])].slice(0, 40);
         routes.set(route, { controls: merged, path: labels });
     }
-    return { reportFile: file, routes };
+    return { reportFile: file, routes, allControls: [...allControls] };
 }
 /**
  * 装配并落库覆盖矩阵。同一库重复构建时**先删后插**（矩阵是快照，不是累积流水）。

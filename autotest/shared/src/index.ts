@@ -103,6 +103,16 @@ export interface TestCase {
   expected: string;
   status: CaseStatus;
   scriptStatus: ScriptStatus;
+  /** P5 可测性判定：A 开箱 / B 改参数 / C 需改代码 / D 无法测（空串=尚未判定） */
+  testability?: '' | 'A' | 'B' | 'C' | 'D';
+  testabilityReason?: string;
+  /** 该用例是否带补丁草案（B/C 类才有） */
+  hasPatch?: boolean;
+  /** P6：机器可校验判据（断言覆盖率硬门槛；空数组=断言为空，属于假通过风险） */
+  oracles?: Array<{ type: string; control?: string; value?: string; keyword?: string; expr?: string; note?: string }>;
+  /** P4：场景维度与优先级 */
+  scenarioKind?: string;
+  priority?: string;
   dtsUrl: string;              // 问题单（DTS）链接，空 = 无关联问题单
   /** 当前版本号：每次更新自动 +1，无上限（单条用例粒度） */
   currentVersion: number;
