@@ -95,14 +95,14 @@ cd dsh-autotest && npm pack                # 产出 dsh-autotest-<version>.tgz
 ```jsonc
 // ~/.dsh/profiles/<name>/package.json
 // 版本号与 dsh-autotest/package.json 的 version 保持一致（CI 会校验 tag 与版本一致）
-"dsh-autotest": "https://github.com/summer-hub/AutoTestAgent/releases/download/v0.1.58/dsh-autotest-0.1.58.tgz"
+"dsh-autotest": "https://github.com/summer-hub/AutoTestAgent/releases/download/v0.1.59/dsh-autotest-0.1.59.tgz"
 ```
 
 仓库已配好 GitHub Actions（打 `v*` tag 自动构建并发布 Release + tarball）。发布前会跑类型检查、三套自检、`lib/` 产物一致性与 tag/版本一致性校验：
 
 ```bash
 # 先改 dsh-autotest/package.json 的 version，并 npm run build:plugin 提交产物，再打 tag
-git tag v0.1.58 && git push origin v0.1.58
+git tag v0.1.59 && git push origin v0.1.59
 ```
 
 ## 目录结构
@@ -189,7 +189,7 @@ Redis 缓存与连接池已落地；分表路由层存在但未启用（当前 S
 ```bash
 cd autotest
 npm run typecheck     # web + 插件类型检查
-npm run verify:all    # 构建 + 下面三套
+npm run verify:all    # 构建 + 15 套自检（无设备 / 无 hypium 的项自动跳过）
 ```
 
 | 命令 | 覆盖内容 |
