@@ -14,7 +14,8 @@ import { hypiumProjectDir } from './hypiumGen.js';
 import { dryRunCase, mergeFailureBriefs } from './dryRun.js';
 import { guessBundleFor, listTargets } from './hdc.js';
 import { planLibraryCases, samplePlan } from './casePlan.js';
-import { buildCoverageMatrix } from './coverageMatrix.js';
+import { buildCoverageMatrix, loadTraversalEvidence } from './coverageMatrix.js';
+import { linkCasesForLibrary, linkCaseToSymbols, loadLinksBySymbol, renderLinkReport, isDraftCase } from './caseLink.js';
 import { validateOracles, type Oracle } from './oracle.js';
 import { bindCaseScript, markBindingStaleOnCaseBump } from './scriptBinding.js';
 import { injectForStage } from './knowledge.js';
@@ -138,6 +139,8 @@ async function execute(task: TaskRow, llm: LlmCall): Promise<string> {
       return await toScript(task, lib!, llm);
     case 'matrix_cases':
       return await matrixCases(task, lib!, llm);
+    case 'integrate_cases':
+      return await integrateCases(task, lib!, llm);
     default:
       throw new Error(`未知任务类型：${task.type}`);
   }
@@ -1216,7 +1219,46 @@ async function matrixCases(task: TaskRow, lib: RepoLib & { description: string }
 
   const drafts: DraftCase[] = [];
   const failures: string[] = [];
-  for (const [symbolId, cases] of shards) {
+  await generateDraftsForPlan(task, llm, sampled.selected, inject.text, drafts, failures);
+  if (failures.length > 0) await traceTask(task.id, '生成中的问题', failures.slice(0, 20).join('\n'));
+
+  const before = await buildCoverageMatrix(lib.id);
+  const created = await insertDraftCases(lib.id, drafts, `P4 矩阵驱动生成（库版本 ${plan.version}）`, budget);
+  await db.prepare('UPDATE tasks SET progress = 70, updated_at = ? WHERE id = ?').run(now(), task.id);
+  const after = await buildCoverageMatrix(lib.id);
+  await traceTask(task.id, '覆盖率变化（生成前 → 生成后）', [
+    `接口覆盖率 ${before.summary.apiCoverage}% → ${after.summary.apiCoverage}%`,
+    `已覆盖 ${before.summary.covered} → ${after.summary.covered} · 部分覆盖 ${before.summary.partial} → ${after.summary.partial}`,
+    `未覆盖 ${before.summary.notCovered} → ${after.summary.notCovered}`,
+  ].join('\n'));
+  return [
+    `矩阵驱动生成完成：入库 ${created.length} 条用例（计划 ${sampled.selected.length} 条，其中 ${sampled.skipped.length} 条因预算未生成）`,
+    `接口覆盖率 ${before.summary.apiCoverage}% → ${after.summary.apiCoverage}%`,
+    failures.length > 0 ? `有 ${failures.length} 个符号/条目未成功（见轨迹"生成中的问题"）` : '',
+  ].filter(Boolean).join('；');
+}
+
+/**
+ * 按用例计划逐符号生成草稿（矩阵驱动生成与 P11 整合任务的"补缺口"共用同一段逻辑）。
+ *
+ * 抽出来的原因：两个任务都要"给定一批已算好的计划 → 调 LLM 写成用例 → 过 oracle 硬门禁"，
+ * 抄一份就会出现"两处门禁不一致"的风险 —— 那等于给假通过留后门。
+ */
+async function generateDraftsForPlan(
+  task: TaskRow,
+  llm: LlmCall,
+  plans: Array<{ symbolId: number; symbolName: string; symbolKind: string; priority: string; scenario: string; title: string; purpose: string; because: string; inputPlan: string; assertionPlan: string; triggerPage: string; triggerControl: string; needsPatchHint: string }>,
+  injectText: string,
+  drafts: DraftCase[],
+  failures: string[],
+): Promise<void> {
+  const bySymbol = new Map<number, typeof plans>();
+  for (const c of plans) {
+    const list = bySymbol.get(c.symbolId) ?? [];
+    list.push(c);
+    bySymbol.set(c.symbolId, list);
+  }
+  for (const [symbolId, cases] of bySymbol) {
     const first = cases[0];
     const symName = first.symbolName;
     try {
@@ -1227,7 +1269,7 @@ async function matrixCases(task: TaskRow, lib: RepoLib & { description: string }
           user: `【本次要覆盖的接口】\n${symName}（${first.symbolKind}）\n` +
             `【已算好的用例计划（逐条写出来，不要增删维度）】\n` +
             cases.map((c, i) => `${i + 1}. [${c.priority}/${c.scenario}] ${c.title}\n   目的：${c.purpose}\n   依据：${c.because}\n   输入设计：${c.inputPlan}\n   断言要点：${c.assertionPlan}\n   触发入口：${c.triggerPage || '（demo 中无现成入口）'}${c.triggerControl ? ` · 控件「${c.triggerControl}」` : ''}\n   可测性初判：${c.needsPatchHint}`).join('\n')
-            + (inject.text ? `\n\n${inject.text}` : ''),
+            + (injectText ? `\n\n${injectText}` : ''),
           meta: { taskId: task.id, spanId: `matrix_cases:${symName}`, kind: 'matrix_cases' },
         },
       );
@@ -1259,23 +1301,214 @@ async function matrixCases(task: TaskRow, lib: RepoLib & { description: string }
       failures.push(`${symName}：${(e as Error).message.slice(0, 120)}`);
     }
   }
-  if (failures.length > 0) await traceTask(task.id, '生成中的问题', failures.slice(0, 20).join('\n'));
+}
 
+/**
+ * P11 整合任务：**初版用例草稿 + 真机遍历 → 正式用例**。
+ *
+ * 补的是这条断链：真机遍历生成的"初版用例"此前既不与接口挂钩，也没有可机器校验的判据，
+ * 于是既进不了覆盖矩阵，也判不了通过。本任务按四步走：
+ *
+ *   ① 关联：把初版用例挂到接口上（caseLink 的确定性规则，每条都带依据）；
+ *   ② 升级：对每条"还没有可机器校验判据"的用例，连同**该页真机控件清单**与**它关联到的接口
+ *      签名/参数/异常**回灌 LLM 重写 —— 补 oracle、控件逐字对齐真机、写清场景类型与优先级；
+ *   ③ 补缺：接口上一个用例都没有的，按 P4 的用例计划生成（复用同一段生成逻辑与同一道门禁）；
+ *   ④ 复算：重建矩阵，给出接口覆盖率与"未关联用例数"的前后对比。
+ *
+ * 全程硬门禁：oracle 不达标不入库（假通过 = 0）、控件引用必须真实存在于该页（guardrail）。
+ */
+async function integrateCases(task: TaskRow, lib: RepoLib & { description: string }, llm: LlmCall): Promise<string> {
+  const db = getDb();
+  const binding = await resolveBinding('case_draft', lib.id);
+  await traceTask(task.id, '生效的 Agent 绑定', bindingTraceLine(binding));
+
+  // ---------- ① 关联（初版用例 ↔ 接口） ----------
   const before = await buildCoverageMatrix(lib.id);
-  const created = await insertDraftCases(lib.id, drafts, `P4 矩阵驱动生成（库版本 ${plan.version}）`, budget);
-  await db.prepare('UPDATE tasks SET progress = 70, updated_at = ? WHERE id = ?').run(now(), task.id);
+  const linkRun = await linkCasesForLibrary(lib.id);
+  await traceTask(task.id, '关联初版用例到接口', renderLinkReport(lib, linkRun));
+
+  // ---------- ② 选整合目标：还没有可机器校验判据的用例 ----------
+  const caseRows = await db.prepare(`
+    SELECT c.id, c.case_no, c.name, c.steps, c.expected, c.oracle_json, c.scenario_kind, c.current_version,
+           v.snapshot AS snapshot
+      FROM cases c
+      LEFT JOIN case_versions v ON v.case_id = c.id AND v.version = c.current_version
+     WHERE c.library_id = ? ORDER BY c.id`).all<Record<string, unknown>>(lib.id);
+  const targets = caseRows.filter((c) => isDraftCase(String(c.oracle_json ?? '[]'), validateOracles));
+  const budget = Math.max(1, Number(getSetting('agent.maxCasesPerTask', 20)) || 20);
+  const batch = targets.slice(0, budget);
+  await traceTask(task.id, '整合目标（初版草稿 → 正式用例）', [
+    `本库用例 ${caseRows.length} 条，其中 ${targets.length} 条还缺可机器校验判据（初版草稿特征）`,
+    `本次整合前 ${batch.length} 条` + (targets.length > batch.length ? `（其余 ${targets.length - batch.length} 条受预算 ${budget} 限制，下次继续）` : ''),
+  ].join('\n'));
+
+  // 该库真机遍历证据：页面控件清单（用例步骤必须逐字引用真机上的控件）
+  const traversal = loadTraversalEvidence(lib.name);
+  const pagesByPath = new Map<string, { controls: string[] }>();
+  for (const [route, entry] of traversal?.routes ?? []) {
+    pagesByPath.set(entry.path.join(' → '), { controls: entry.controls });
+  }
+  const linksBySymbol = await loadLinksBySymbol(lib.id);
+  const symRows = await db.prepare('SELECT id, name, kind, signature, params_json, returns_json, throws_json FROM api_symbols WHERE library_id = ?')
+    .all<Record<string, unknown>>(lib.id);
+  const symById = new Map(symRows.map((s) => [Number(s.id), s]));
+  const linksByCase = new Map<number, Array<{ symbolId: number; confidence: string }>>();
+  for (const [symbolId, list] of linksBySymbol) {
+    for (const l of list) {
+      const arr = linksByCase.get(l.caseId) ?? [];
+      arr.push({ symbolId, confidence: l.confidence });
+      linksByCase.set(l.caseId, arr);
+    }
+  }
+
+  const inject = injectForStage('case_optimize', { library: lib.name });
+  const upgraded: string[] = [];
+  const failures: string[] = [];
+  for (let i = 0; i < batch.length; i++) {
+    const c = batch[i];
+    const caseId = Number(c.id);
+    const caseNo = String(c.case_no);
+    try {
+      const pagePath = String((JSON.parse(String(c.snapshot ?? '{}')) as { pagePath?: string }).pagePath ?? '');
+      const controls = pagesByPath.get(pagePath)?.controls ?? [];
+      // 关联到的接口：把签名、参数、异常摆给模型 —— 没有这份契约，模型只能写出"点了没报错"
+      const syms = (linksByCase.get(caseId) ?? [])
+        .map((l) => ({ l, s: symById.get(l.symbolId) }))
+        .filter((x) => x.s)
+        .map(({ l, s }) => {
+          const params = JSON.parse(String(s!.params_json || '[]')) as Array<{ name: string; type: string; optional: boolean; doc: string }>;
+          const throws = JSON.parse(String(s!.throws_json || '[]')) as unknown[];
+          return `接口 ${String(s!.name)}（${String(s!.kind)}，关联依据置信度 ${l.confidence}）\n` +
+            `  签名：${String(s!.signature)}\n` +
+            `  参数：${params.map((p) => `${p.name}: ${p.type}${p.optional ? '（可选）' : ''}${p.doc ? ` — ${p.doc}` : ''}`).join('；') || '（无）'}\n` +
+            `  声明异常：${throws.length > 0 ? JSON.stringify(throws).slice(0, 200) : '（无）'}`;
+        });
+      const res = await llmJson<{ name?: string; precondition?: string; steps?: string[]; expected?: string; oracles?: unknown; scenarioKind?: string; priority?: string }>(
+        llm,
+        {
+          system: INTEGRATE_CASE_SYSTEM,
+          user: [
+            `【三方库】${lib.name}（${lib.current_version}）`,
+            `【初版用例 ${caseNo}】${String(c.name)}`,
+            `当前步骤：${String(JSON.stringify(JSON.parse(String(c.steps || '[]'))))}`,
+            `当前预期：${String(c.expected)}`,
+            pagePath ? `【所属页面】${pagePath}` : '【所属页面】（未知）',
+            controls.length > 0
+              ? `【该页在真机上的控件清单（步骤里的控件必须逐字来自这里）】\n${controls.slice(0, 50).join('、')}`
+              : '【该页真机控件清单】（无遍历证据：步骤里不要臆造新控件）',
+            syms.length > 0
+              ? `【它关联到的接口（步骤要真正触发这些接口，判据要能证明接口行为正确）】\n${syms.join('\n')}`
+              : '【关联接口】（未能关联到具体接口：只按页面可观察结果写判据）',
+            '请把这条初版用例升级为**正式用例**：步骤对齐真机控件、补上可机器校验的判据、给出场景类型与优先级。',
+            inject.text ? `\n${inject.text}` : '',
+          ].filter(Boolean).join('\n\n'),
+          meta: { taskId: task.id, spanId: `integrate:${caseNo}`, kind: 'integrate_cases' },
+        },
+      );
+      const steps = Array.isArray(res.data?.steps) ? res.data.steps.map(String).filter(Boolean) : [];
+      if (steps.length === 0) { failures.push(`${caseNo}：模型未返回步骤，保持初版不变`); continue; }
+      const oracleProblems = validateOracles(res.data?.oracles);
+      if (oracleProblems.length > 0) {
+        failures.push(`${caseNo}：「${String(res.data?.name ?? c.name).slice(0, 30)}」判据不达标，未升级 —— ${oracleProblems.map((p) => p.reason).join('；').slice(0, 160)}`);
+        continue;
+      }
+      // 控件 guardrail：升级后的步骤不能引用该页没有的控件
+      const verdict = validateDraftsAgainstPages(
+        [{ name: String(res.data?.name ?? c.name), source: 'AI 生成', precondition: '', steps, expected: '', pagePath }],
+        pagesByPath,
+      );
+      if (verdict.dropped.length > 0) {
+        failures.push(`${caseNo}：升级后引用了该页不存在的控件，未升级 —— ${verdict.dropped[0].reason.slice(0, 140)}`);
+        continue;
+      }
+      const scenarioKind = ['happy', 'empty', 'boundary', 'bigdata'].includes(String(res.data?.scenarioKind))
+        ? String(res.data?.scenarioKind) : String(c.scenario_kind || 'happy');
+      const priority = ['P0', 'P1', 'P2'].includes(String(res.data?.priority)) ? String(res.data?.priority) : 'P1';
+      const next = Number(c.current_version ?? 1) + 1;
+      const t = now();
+      const name = String(res.data?.name ?? c.name).slice(0, 120);
+      const precondition = String(res.data?.precondition ?? '');
+      const expected = String(res.data?.expected ?? c.expected ?? '');
+      await db.prepare(`UPDATE cases SET name = ?, precondition = ?, steps = ?, expected = ?, oracle_json = ?,
+        scenario_kind = ?, priority = ?, source = ?, current_version = ?, updated_at = ? WHERE id = ?`)
+        .run(name, precondition, JSON.stringify(steps), expected, JSON.stringify(res.data?.oracles),
+          scenarioKind, priority, '遍历初版→正式', next, t, caseId);
+      await db.prepare(`INSERT INTO case_versions (case_id, version, snapshot, change_note, author, author_type, created_at)
+        VALUES (?, ?, ?, ?, 'AI 整合 Agent', 'ai', ?)`).run(caseId, next, JSON.stringify({
+        id: caseId, libraryId: lib.id, caseNo, name, precondition, steps, expected, pagePath,
+        oracles: res.data?.oracles, scenarioKind, priority, currentVersion: next,
+      }), `【P11 整合】初版草稿 → 正式用例：补可机器校验判据、步骤对齐真机控件${syms.length > 0 ? `、确认关联接口 ${syms.length} 个` : ''}（自 v${c.current_version}）`, t);
+      // 整合时确认过的接口写成显式关联（人工确认过的不覆盖）
+      const confirmed = steps.join('\n');
+      const explicitIds = (linksByCase.get(caseId) ?? [])
+        .filter((l) => l.confidence !== 'low')
+        .map((l) => l.symbolId);
+      await linkCaseToSymbols(caseId, explicitIds, `整合时按真机控件与接口契约确认（步骤关键字：${confirmed.slice(0, 40)}）`);
+      upgraded.push(`${caseNo} → v${next}（${scenarioKind}/${priority}，判据 ${Array.isArray(res.data?.oracles) ? res.data.oracles.length : 0} 条）`);
+    } catch (e) {
+      failures.push(`${caseNo}：${(e as Error).message.slice(0, 140)}`);
+    }
+    await db.prepare('UPDATE tasks SET progress = ?, updated_at = ? WHERE id = ?')
+      .run(20 + Math.round(((i + 1) / Math.max(1, batch.length)) * 55), now(), task.id);
+  }
+  if (upgraded.length > 0) await traceTask(task.id, '升级为正式用例', upgraded.join('\n'));
+  if (failures.length > 0) await traceTask(task.id, '未升级（保持初版，原因逐条写明）', failures.slice(0, 20).join('\n'));
+
+  // ---------- ③ 补缺：接口上一个用例都没有的，按用例计划生成 ----------
+  const midLinks = await loadLinksBySymbol(lib.id);
+  const coveredSymbolIds = new Set([...midLinks.entries()].filter(([, v]) => v.some((x) => x.confidence !== 'low')).map(([k]) => k));
+  const plan = await planLibraryCases(lib.id, {
+    maxTriggersPerSymbol: Number(getSetting('explore.matrixMaxTriggers', 3)) || 3,
+    maxCasesPerSymbol: Number(getSetting('explore.matrixMaxCasesPerSymbol', 12)) || 12,
+  });
+  const gapPlans = plan.plans.filter((p) => !coveredSymbolIds.has(p.symbolId));
+  const gapSampled = samplePlan(gapPlans, Math.max(1, budget - batch.length));
+  let createdCount = 0;
+  if (gapSampled.selected.length > 0) {
+    await traceTask(task.id, '缺口补生成', `接口上一个用例都没有：${new Set(gapPlans.map((p) => p.symbolId)).size} 个符号 → 计划 ${gapPlans.length} 条\n${gapSampled.report}`);
+    const drafts: DraftCase[] = [];
+    const genFailures: string[] = [];
+    await generateDraftsForPlan(task, llm, gapSampled.selected, inject.text, drafts, genFailures);
+    if (genFailures.length > 0) await traceTask(task.id, '补生成中的问题', genFailures.slice(0, 20).join('\n'));
+    const created = await insertDraftCases(lib.id, drafts, `P11 整合·缺口补生成（库版本 ${plan.version}）`, Math.max(1, budget - batch.length));
+    createdCount = created.length;
+    await traceTask(task.id, '缺口补写入库', `入库 ${created.length} 条（带 api_symbol_id，自动进入矩阵）`);
+  } else {
+    await traceTask(task.id, '缺口补生成', '接口粒度上没有缺口（每个可测接口都至少有一条用例关联）');
+  }
+
+  // ---------- ④ 复算矩阵 + 前后对比 ----------
+  await linkCasesForLibrary(lib.id);
   const after = await buildCoverageMatrix(lib.id);
-  await traceTask(task.id, '覆盖率变化（生成前 → 生成后）', [
+  await traceTask(task.id, '覆盖率变化（整合前 → 整合后）', [
     `接口覆盖率 ${before.summary.apiCoverage}% → ${after.summary.apiCoverage}%`,
     `已覆盖 ${before.summary.covered} → ${after.summary.covered} · 部分覆盖 ${before.summary.partial} → ${after.summary.partial}`,
-    `未覆盖 ${before.summary.notCovered} → ${after.summary.notCovered}`,
+    `未关联用例 ${before.summary.unlinkedCases} → ${after.summary.unlinkedCases}（共 ${after.summary.totalCases} 条用例）`,
   ].join('\n'));
   return [
-    `矩阵驱动生成完成：入库 ${created.length} 条用例（计划 ${sampled.selected.length} 条，其中 ${sampled.skipped.length} 条因预算未生成）`,
+    `整合完成：关联 ${linkRun.links} 条（未关联用例 ${linkRun.unlinkedCases} 条）`,
+    `升级为正式用例 ${upgraded.length} 条，缺口补生成 ${createdCount} 条`,
     `接口覆盖率 ${before.summary.apiCoverage}% → ${after.summary.apiCoverage}%`,
-    failures.length > 0 ? `有 ${failures.length} 个符号/条目未成功（见轨迹"生成中的问题"）` : '',
+    failures.length > 0 ? `${failures.length} 条未升级（原因见轨迹，初版保持原样）` : '',
   ].filter(Boolean).join('；');
 }
+
+const INTEGRATE_CASE_SYSTEM = `你是鸿蒙三方库的测试用例整合 Agent。你会拿到「一条真机遍历产出的初版用例 + 该页真机控件清单 + 它关联到的接口契约」。
+你的任务是把这条**草稿**升级为**正式用例**。
+纪律（违反即作废）：
+1. steps 里所有「控件文本」必须**逐字**来自给出的真机控件清单；清单里没有的控件不许出现；
+2. 句式限定为：打开应用 / 点击「X」/ 输入「X」到「Y」/ 等待 N 秒 / 上滑 / 下滑 / 返回 / 验证「X」；
+3. **必须给出可机器校验的 oracle（硬门槛，不达标这条用例就不会被升级）**，取值域：
+   - control_text：界面出现/消失指定控件文本 {control, expect}
+   - text_value：控件文本等于/包含某值 {control, op: contains|equals|matches, value}（value 必须是界面上真正会出现的文本，禁止"正常/成功/符合预期"这类无法核对的词）
+   - hilog_keyword：hilog 出现关键字 {keyword}
+   - state_flag：控件勾选状态 {control, state}
+   - no_crash：执行期间无崩溃 {}
+   - screenshot_diff：截图像素差异 {threshold}
+4. 判据要真正证明**接口行为**正确（例如校验失败场景要断言错误提示文本或错误码日志），不能只断言"界面还在"；
+5. 保持原用例的测试意图，可以补步骤、补断言，但不要换掉它在测的功能点；
+6. scenarioKind 取 happy|empty|boundary|bigdata，priority 取 P0|P1|P2（正向必跑用 P0，关键负向 P1，长尾 P2）。
+只输出一个 JSON 对象：{ name, precondition, steps[], expected, oracles[], scenarioKind, priority }，不要解释。`;
 
 const MATRIX_CASE_SYSTEM = `你是鸿蒙三方库的真机测试用例设计者。你会拿到「一条接口符号 + 已经算好的用例计划」。
 纪律（违反即作废）：

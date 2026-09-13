@@ -11,9 +11,10 @@
 //      否则又变成"看起来覆盖了"；
 //   3. 宁可判 partial/blocked 也不虚报 covered：把"没测"报成"测了"是本项目最严重的错误。
 import { getDb, now } from '../db/connection.js';
-import fs from 'node:fs';
-import path from 'node:path';
-import { workspaceDir } from './gitRepo.js';
+import { loadTraversalEvidence } from './traversalEvidence.js';
+// P11：矩阵的「用例」列以关联表为准（而不是只看 cases.api_symbol_id），
+// 这样真机遍历产出的初版用例也能进入矩阵。
+import { loadLinksBySymbol } from './caseLink.js';
 // ---------- 纯规则层 ----------
 /** 类型/接口类符号：没有运行时行为，真机 UI 上既触发不了也断言不了。 */
 export function isTypeSymbol(kind) {
@@ -156,6 +157,35 @@ export function computeRisks(input, status) {
     return flags;
 }
 /** 组装一行矩阵：状态 + 理由 + 风险 + 场景适用性 + 证据。 */
+/** 矩阵装配：该符号的用例（弱关联单列，不参与状态判定）。 */
+export function symbolCases(symbolId, caseRows, links) {
+    const byId = new Map(caseRows.map((c) => [Number(c.id), c]));
+    const trusted = [];
+    const weak = [];
+    const seen = new Set();
+    for (const l of links) {
+        const row = byId.get(l.caseId);
+        if (!row)
+            continue;
+        const item = {
+            id: Number(row.id), caseNo: row.case_no, name: row.name,
+            scenarioKind: row.scenario_kind, basis: l.basis, confidence: l.confidence,
+        };
+        if (l.confidence === 'low')
+            weak.push(item);
+        else {
+            trusted.push(item);
+            seen.add(row.case_no);
+        }
+    }
+    // 并上"生成时直接指定 api_symbol_id"的用例：关联表可能还没重建过，这条来源不能丢
+    for (const c of caseRows) {
+        if (c.api_symbol_id !== symbolId || seen.has(c.case_no))
+            continue;
+        trusted.push({ id: Number(c.id), caseNo: c.case_no, name: c.name, scenarioKind: c.scenario_kind, basis: 'explicit', confidence: 'high' });
+    }
+    return { cases: trusted, weakCases: weak };
+}
 export function buildMatrixRow(input) {
     const { symbol, demoCalls, testCalls, cases, traversal, paramPoints } = input;
     const { status, reason } = computeStatus(input);
@@ -179,12 +209,20 @@ export function buildMatrixRow(input) {
             caseNos: cases.map((c) => c.caseNo),
             negativeCaseNos: negative.map((c) => c.caseNo),
             paramPoints,
+            // P11：每条用例的来源（哪个阶段的用例、凭什么关联到本接口）——
+            // 否则"这个接口有 3 条用例"看不出是初版遍历得来的还是矩阵生成的。
+            caseRefs: cases.map((c) => ({
+                caseNo: c.caseNo, scenarioKind: c.scenarioKind,
+                basis: c.basis ?? '', confidence: c.confidence ?? 'high',
+                caseName: c.name,
+            })),
+            weakLinkCaseNos: (input.weakCases ?? []).map((c) => c.caseNo),
         },
         deviceReachable: device.routes.length > 0,
     };
 }
 /** 覆盖率统计（首页 KPI 与矩阵页头部用）。 */
-export function summarizeMatrix(rows) {
+export function summarizeMatrix(rows, extra = {}) {
     const total = rows.length;
     const testable = rows.filter((r) => r.status !== 'blocked').length;
     const withCase = rows.filter((r) => r.evidence.caseNos.length > 0).length;
@@ -204,58 +242,14 @@ export function summarizeMatrix(rows) {
         apiCoverage: testable === 0 ? 0 : Math.round((withCase / testable) * 1000) / 10,
         scenarioCoverage: applicable === 0 ? 0 : Math.round((coveredDims / applicable) * 1000) / 10,
         byRisk,
+        unlinkedCases: extra.unlinkedCases ?? 0,
+        totalCases: extra.totalCases ?? 0,
     };
 }
-/**
- * 从 P1 的遍历报告里取出「路由 → 该页控件文本」。
- *
- * 报告里页面记录用的是点击路径（人看得懂），而路由名在操作轨迹的
- * `进入判定 · 点击「X」→ 进入新页面 · pagePath=pages/Y` 这条 op 里。
- * 两者拼起来才能把 demo 源码里的 `pages/SimpleValidatePage` 对上真机页面。
- */
-export function loadTraversalEvidence(libName) {
-    const dir = path.join(workspaceDir(), 'explore', libName.replace(/[^\w.-]/g, '_'));
-    if (!fs.existsSync(dir))
-        return null;
-    const files = fs.readdirSync(dir).filter((f) => f.endsWith('.json')).sort();
-    if (files.length === 0)
-        return null;
-    const file = path.join(dir, files[files.length - 1]);
-    let report;
-    try {
-        report = JSON.parse(fs.readFileSync(file, 'utf8'));
-    }
-    catch {
-        return null;
-    }
-    // 从操作轨迹取出「点击的控件标签 → 路由名」。
-    // 遍历报告的页面记录只有点击路径（人看得懂），路由名只出现在这条 op 里，两者要拼起来。
-    const labelToRoute = new Map();
-    for (const op of report.ops ?? []) {
-        const m = /点击「(.+?)」[^]*?→ 进入新页面 · pagePath=(\S+)/.exec(String(op.detail ?? ''));
-        if (m)
-            labelToRoute.set(m[1], m[2]);
-    }
-    const routes = new Map();
-    const allControls = new Set();
-    for (const p of report.pages ?? []) {
-        const pageControls = (p.controls ?? [])
-            .map((c) => String(c.text || c.desc || '').trim())
-            .filter((s) => s.length > 1 && s.length < 40);
-        for (const c of pageControls)
-            allControls.add(c);
-        const labels = p.path ?? [];
-        const last = labels.length > 1 ? labels[labels.length - 1] : '';
-        const route = labelToRoute.get(last);
-        if (!route)
-            continue; // 首页等没有路由名的页面不进 routes，但控件已进 allControls
-        const controls = pageControls;
-        const prev = routes.get(route);
-        const merged = [...new Set([...(prev?.controls ?? []), ...controls])].slice(0, 40);
-        routes.set(route, { controls: merged, path: labels });
-    }
-    return { reportFile: file, routes, allControls: [...allControls] };
-}
+// ---------- 真机遍历证据的装载 ----------
+// 定义已移到 traversalEvidence.ts（矩阵与 P11 关联层共用，放在这里会形成循环依赖）；
+// 这里重新导出，保持既有引用（含 testability 的动态 import）不变。
+export { loadTraversalEvidence, controlsOfPage } from './traversalEvidence.js';
 /**
  * 装配并落库覆盖矩阵。同一库重复构建时**先删后插**（矩阵是快照，不是累积流水）。
  */
@@ -280,6 +274,15 @@ export async function buildCoverageMatrix(libraryId) {
     const callAssets = assets.filter((a) => a.kind === 'call' || a.kind === 'test_call');
     const caseRows = await db.prepare(`SELECT id, case_no, name, scenario_kind, api_symbol_id FROM cases WHERE library_id = ?`)
         .all(libraryId);
+    // P11：矩阵的「用例」列不再只看 cases.api_symbol_id（那一列只有矩阵自己生成的用例才有），
+    // 而是以 case_symbol_links 为准 —— 这样真机遍历产出的初版用例也能进入矩阵。
+    const linksBySymbol = await loadLinksBySymbol(libraryId);
+    const linkedCaseIds = new Set();
+    for (const list of linksBySymbol.values())
+        for (const l of list)
+            linkedCaseIds.add(l.caseId);
+    // 只看 api_symbol_id 时会漏掉"没建立关联的用例"，这里显式统计出来（可推动人去清理）
+    const unlinkedCases = caseRows.filter((c) => !linkedCaseIds.has(Number(c.id))).length;
     const traversal = loadTraversalEvidence(lib.name);
     const rows = [];
     for (const s of symbolRows) {
@@ -301,8 +304,7 @@ export async function buildCoverageMatrix(libraryId) {
             testCalls: calls.filter((a) => a.kind === 'test_call').map((a) => ({ sourceFile: a.source_file, sourceLine: a.source_line })),
             paramPoints: paramPoints.filter((p) => calls.some((c) => c.page_path && c.page_path === p.pagePath)),
             traversal,
-            cases: caseRows.filter((c) => c.api_symbol_id === Number(s.id))
-                .map((c) => ({ id: c.id, caseNo: c.case_no, name: c.name, scenarioKind: c.scenario_kind })),
+            ...symbolCases(Number(s.id), caseRows, linksBySymbol.get(Number(s.id)) ?? []),
         };
         rows.push(buildMatrixRow(input));
     }
@@ -316,7 +318,7 @@ export async function buildCoverageMatrix(libraryId) {
                 .run(libraryId, r.symbolId, r.evidence.demoCall ? `${r.evidence.demoCall.sourceFile}:${r.evidence.demoCall.sourceLine}` : '', r.evidence.demoCall?.pagePath ?? '', r.status, r.statusReason.slice(0, 250), JSON.stringify(r.riskFlags), JSON.stringify(r.evidence), JSON.stringify(r.scenarioFit), t);
         }
     });
-    return { libraryId, libraryName: lib.name, version, rows: rows.length, summary: summarizeMatrix(rows), matrix: rows };
+    return { libraryId, libraryName: lib.name, version, rows: rows.length, summary: summarizeMatrix(rows, { unlinkedCases, totalCases: caseRows.length }), matrix: rows };
 }
 /** 读取已落库的矩阵（带筛选），供前端列表与导出用。 */
 export async function loadCoverageMatrix(libraryId, opts = {}) {
@@ -338,7 +340,15 @@ export async function loadCoverageMatrix(libraryId, opts = {}) {
         deviceReachable: false,
     }));
     const filtered = all.filter((r) => (!opts.status || r.status === opts.status) && (!opts.risk || r.riskFlags.includes(opts.risk)));
-    return { version, summary: summarizeMatrix(all), rows: filtered };
+    // P11：未关联用例数要跟着矩阵一起给前端 —— 它是"这份矩阵为什么看起来覆盖率低"的常见原因
+    const totalCases = Number((await db.prepare('SELECT COUNT(*) AS n FROM cases WHERE library_id = ?')
+        .get(libraryId))?.n ?? 0);
+    const linked = await loadLinksBySymbol(libraryId);
+    const linkedCaseIds = new Set();
+    for (const list of linked.values())
+        for (const l of list)
+            linkedCaseIds.add(l.caseId);
+    return { version, summary: summarizeMatrix(all, { unlinkedCases: totalCases - linkedCaseIds.size, totalCases }), rows: filtered };
 }
 /** 导出 Markdown（评审用）。 */
 export function renderMatrixMarkdown(libName, version, rows, summary) {

@@ -20,6 +20,7 @@ import { listEvents } from '../services/events.js';
 import { exportLibrariesSheet, resolveSheetPath, syncLibrariesFromSheet } from '../services/librarySheet.js';
 import { loadStoredSymbols, runApiExtraction } from '../services/apiExtract.js';
 import { buildCoverageMatrix, loadCoverageMatrix, renderMatrixCsv, renderMatrixMarkdown } from '../services/coverageMatrix.js';
+import { linkCasesForLibrary, listLinks, setManualLink } from '../services/caseLink.js';
 import { planLibraryCases, samplePlan } from '../services/casePlan.js';
 import { applyCasePatch, revertCasePatch, runTestability } from '../services/testability.js';
 import { evaluateQuality, validateOracles } from '../services/oracle.js';
@@ -762,6 +763,42 @@ function defineRoutes(llm) {
         console.log(`[autotest] 覆盖矩阵导出 #${id} ${lib.name} → ${file}（${r.rows.length} 行）`);
         return { file, format, rows: r.rows.length, summary: r.summary, preview: content.slice(0, 1200) };
     });
+    // ---- P11：用例 ↔ 接口关联（接口覆盖矩阵的「用例」列以此为准）----
+    // 关联是纯确定性计算（不调 LLM），所以可以随时重算；人工确认过的关联不会被覆盖。
+    route('POST', '/libraries/:id/case-links', async ({ params }) => {
+        const id = Number(params.id);
+        const row = await getDb().prepare('SELECT id, name FROM libraries WHERE id = ?').get(id);
+        if (!row)
+            throw Object.assign(new Error('库不存在'), { statusCode: 404 });
+        const r = await linkCasesForLibrary(id);
+        console.log(`[autotest] 用例↔接口关联 #${id} ${row.name}：${r.links} 条 · 已关联 ${r.linkedCases}/${r.totalCases} · 未关联 ${r.unlinkedCases}`);
+        return { libraryName: row.name, ...r };
+    });
+    route('GET', '/libraries/:id/case-links', async ({ params, query }) => {
+        const id = Number(params.id);
+        const row = await getDb().prepare('SELECT id FROM libraries WHERE id = ?').get(id);
+        if (!row)
+            throw Object.assign(new Error('库不存在'), { statusCode: 404 });
+        return { libraryId: id, links: await listLinks(id, { includeWeak: query.get('weak') !== '0' }) };
+    });
+    // 人工确认/取消一条关联（basis=manual：重新关联时受保护）
+    route('POST', '/cases/:id/links', async ({ params, body }) => {
+        const caseId = Number(params.id);
+        const b = (body ?? {});
+        const symbolId = Number(b.symbolId);
+        if (!Number.isFinite(symbolId) || symbolId <= 0)
+            throw Object.assign(new Error('symbolId 必填'), { statusCode: 400 });
+        const r = await setManualLink(caseId, symbolId, b.linked !== false);
+        if (!r.ok)
+            throw Object.assign(new Error(r.message), { statusCode: 404 });
+        return { ok: true, message: r.message, links: await listLinks(Number((await getDb().prepare('SELECT library_id FROM cases WHERE id = ?').get(caseId))?.library_id ?? 0)) };
+    });
+    route('DELETE', '/cases/:id/links/:symbolId', async ({ params }) => {
+        const r = await setManualLink(Number(params.id), Number(params.symbolId), false);
+        if (!r.ok)
+            throw Object.assign(new Error(r.message), { statusCode: 404 });
+        return { ok: true, message: r.message };
+    });
     // ---- 库管理：新增 / 修改（含包名）/ 删除 ----
     //
     // 背景：此前 /libraries 只有 GET，没有写入路由。而 `libraries.package_name` 是遍历/执行的前提
@@ -1339,6 +1376,8 @@ function defineRoutes(llm) {
             pull_repo: '拉取仓库代码', update_repo: '更新仓库代码', write_cases: '编写测试用例',
             explore_cases: '真机遍历生成用例',
             update_cases: '更新测试用例', to_script: '用例转自动化脚本',
+            matrix_cases: '矩阵驱动生成用例',
+            integrate_cases: '整合初版用例为正式用例',
         };
         const title = b.title ?? titleByType[b.type] ?? b.type;
         const traceId = `tr-${Date.now()}-${Math.floor(Math.random() * 10000)}`;

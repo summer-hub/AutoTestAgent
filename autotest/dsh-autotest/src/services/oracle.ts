@@ -133,10 +133,18 @@ export function validateOracles(oracles: unknown): OracleProblem[] {
       case 'screenshot_diff':
         if (typeof o.threshold !== 'number' || o.threshold < 0 || o.threshold > 1) problems.push({ index, reason: 'screenshot_diff 缺少合法的阈值（0-1）' });
         break;
-      case 'script_assert':
-        if (!o.expr?.trim()) problems.push({ index, reason: 'script_assert 缺少断言表达式' });
-        else if (/^assert\s+(true|1)\b/i.test(o.expr.trim())) problems.push({ index, reason: 'script_assert 是恒真断言（assert true），等于没有断言' });
+      case 'script_assert': {
+        const expr = o.expr?.trim() ?? '';
+        if (!expr) problems.push({ index, reason: 'script_assert 缺少断言表达式' });
+        // 恒真断言等于没有断言。这里要挡住两种写法：
+        //   ① `assert true` —— 显式恒真；
+        //   ② 光秃秃一个常量（`true` / `1` / `pass`）—— Python 里表达式语句本身没有任何效果，
+        //      生成出来的脚本会在这一行"安然通过"，是比 ① 更隐蔽的假通过（旧规则漏掉了它）。
+        else if (/^assert\s+(true|1)\b/i.test(expr) || /^(true|false|none|pass|1|0|\.\.\.)$/i.test(expr)) {
+          problems.push({ index, reason: 'script_assert 是恒真断言（等于没有断言）' });
+        }
         break;
+      }
       default:
         break;
     }

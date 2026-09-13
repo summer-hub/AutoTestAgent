@@ -188,6 +188,27 @@ CREATE INDEX idx_cases_source ON cases(source);
 CREATE INDEX idx_cases_status ON cases(status);
 CREATE INDEX idx_cases_name ON cases(name);
 
+-- 用例 ↔ 接口符号的关联（P11）：一条用例可能覆盖多个接口，一个接口也需要多条用例
+-- （正向/空值/边界/大数据），单列 cases.api_symbol_id 表达不了这种多对多。
+-- 每条关联必须写出**依据**与置信度：没有依据的关联等于编造，宁可不关联。
+CREATE TABLE IF NOT EXISTS case_symbol_links (
+  id BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+  library_id BIGINT UNSIGNED NOT NULL,
+  case_id BIGINT UNSIGNED NOT NULL,
+  symbol_id BIGINT UNSIGNED NOT NULL,
+  -- 关联依据：explicit 生成时就指定 / page 用例所属页命中该接口的 demo 调用页 /
+  --           name 用例文本命中符号或方法名 / manual 人工确认（重新关联时不会被覆盖）
+  basis VARCHAR(16) NOT NULL,
+  -- high 直接证据（explicit/page/manual）· medium 名称命中 · low 仅弱证据（列出但不据此判 covered）
+  confidence VARCHAR(8) NOT NULL DEFAULT 'medium',
+  detail VARCHAR(500) NOT NULL DEFAULT '',
+  created_at VARCHAR(32) NOT NULL,
+  updated_at VARCHAR(32) NOT NULL,
+  UNIQUE KEY uk_case_symbol_links (case_id, symbol_id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+CREATE INDEX idx_case_symbol_links_lib ON case_symbol_links(library_id);
+CREATE INDEX idx_case_symbol_links_symbol ON case_symbol_links(symbol_id);
+
 -- 用例版本历史（快照式；每次更新插入新版本 + 主表 current_version+1）
 CREATE TABLE IF NOT EXISTS case_versions (
   id BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,

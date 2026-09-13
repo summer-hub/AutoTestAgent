@@ -90,6 +90,10 @@ jobs:
         working-directory: autotest/dsh-autotest
         run: npm run verify:knowledge
 
+      - name: Case link self-check（初版用例↔接口关联 / 矩阵看得见初版用例 / 人工确认不被覆盖）
+        working-directory: autotest/dsh-autotest
+        run: npm run verify:case-link
+
       - name: Oracle runtime self-check（需要装了 hypium 的 Python，缺失自动跳过）
         working-directory: autotest/dsh-autotest
         run: npm run verify:oracle-runtime

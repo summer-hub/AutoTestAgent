@@ -9,6 +9,7 @@ const PRESETS: Array<{ type: TaskType; icon: string; title: string; desc: string
   { type: 'write_cases', icon: '✍️', title: '编写测试用例（定向）', desc: '指定页面/场景/功能深挖设计；自动读取命中页面源码与真机遍历控件清单' },
   { type: 'explore_cases', icon: '📡', title: '真机遍历生成用例', desc: '真机 BFS 遍历页面 → 用例生成 Agent（Prompt+skill）设计用例 → 自审进化后入库（来源=AI 生成）' },
   { type: 'matrix_cases', icon: '🧭', title: '矩阵驱动生成用例（P4）', desc: '按覆盖矩阵 + 适用性规则逐条生成四类场景用例（正向/空值/边界/大数据），生成后自动重算覆盖率' },
+  { type: 'integrate_cases', icon: '🔗', title: '整合初版用例为正式用例（P11）', desc: '把初版用例关联到接口 → 结合真机控件与接口契约升级为正式用例（补可机器校验判据）→ 接口无用例的按计划补生成 → 重算覆盖率' },
 ];
 
 const STATUS_TAG: Record<string, string> = { pending: 'gray', running: 'blue', done: 'green', failed: 'red', stopped: 'gray' };
@@ -18,7 +19,7 @@ export default function TasksPage() {
   const [input, setInput] = useState('');
   const [error, setError] = useState('');
   const [repoDialog, setRepoDialog] = useState<null | { mode: 'input'; type: 'pull_repo' | 'update_repo' } | { mode: 'browse'; libId?: number; tab?: 'repos' | 'scripts' }>(null);
-  const [libTask, setLibTask] = useState<null | { type: 'write_cases' | 'explore_cases' | 'matrix_cases' }>(null);
+  const [libTask, setLibTask] = useState<null | { type: 'write_cases' | 'explore_cases' | 'matrix_cases' | 'integrate_cases' }>(null);
   const [libs, setLibs] = useState<Array<{ id: number; name: string; caseCount?: number }>>([]);
   const [libSel, setLibSel] = useState<number | ''>('');
   const [libPrompt, setLibPrompt] = useState('');
@@ -77,7 +78,7 @@ export default function TasksPage() {
   const onPreset = (p: { type: TaskType; title: string }) => {
     if (p.type === 'pull_repo' || p.type === 'update_repo') {
       setRepoDialog({ mode: 'input', type: p.type });
-    } else if (p.type === 'write_cases' || p.type === 'explore_cases' || p.type === 'matrix_cases') {
+    } else if (p.type === 'write_cases' || p.type === 'explore_cases' || p.type === 'matrix_cases' || p.type === 'integrate_cases') {
       setLibTask({ type: p.type });
       setLibSel('');
       setLibPrompt('');
@@ -103,6 +104,7 @@ export default function TasksPage() {
       const titles: Record<string, string> = {
         write_cases: '编写测试用例（定向）', explore_cases: '真机遍历生成用例',
         matrix_cases: '矩阵驱动生成用例',
+        integrate_cases: '整合初版用例为正式用例',
       };
       await api.createTask({ type: libTask.type, libraryId: libSel, input: libPrompt.trim() || undefined, title: titles[libTask.type] });
       setLibTask(null);
@@ -285,7 +287,8 @@ export default function TasksPage() {
               <span style={{ fontSize: 15, fontWeight: 600 }}>
                 {libTask.type === 'write_cases' ? '✍️ 编写测试用例（定向）'
                   : libTask.type === 'matrix_cases' ? '🧭 矩阵驱动生成用例（四类场景）'
-                    : '📡 真机遍历生成用例'}
+                    : libTask.type === 'integrate_cases' ? '🔗 整合初版用例为正式用例'
+                      : '📡 真机遍历生成用例'}
               </span>
               <span className="muted" style={{ fontSize: 12 }}>选择三方库并给 Agent 预置提示词</span>
               <div style={{ flex: 1 }} />
@@ -308,7 +311,9 @@ export default function TasksPage() {
                     ? '写明目标页面/场景/功能点，越具体越准。如：针对 TextLayer 页面的文本动态属性切换设计边界用例；或：柱状图数据为空/超大值时的异常表现'
                     : libTask.type === 'matrix_cases'
                       ? '可空。生成什么由覆盖矩阵与适用性规则决定（正向/空值/边界/大数据），这里只补充偏好，如：优先补边界异常；跳过大数据场景'
-                      : '如：重点为动画子页面补充边界场景；需真机在线，遍历数据将交给用例生成 Agent 设计并自审后入库'}
+                      : libTask.type === 'integrate_cases'
+                        ? '可空。会先把初版用例关联到接口，再结合该页真机控件与接口契约逐条升级为正式用例（补可机器校验判据）；接口无用例的按计划补生成'
+                        : '如：重点为动画子页面补充边界场景；需真机在线，遍历数据将交给用例生成 Agent 设计并自审后入库'}
                   value={libPrompt}
                   onChange={(e) => setLibPrompt(e.target.value)}
                 />

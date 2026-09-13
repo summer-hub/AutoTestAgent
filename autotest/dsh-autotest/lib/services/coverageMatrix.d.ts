@@ -64,6 +64,20 @@ export interface MatrixInput {
         caseNo: string;
         name: string;
         scenarioKind: string;
+        basis?: string;
+        confidence?: string;
+    }>;
+    /**
+     * P11：低置信度关联（如仅名称命中）的用例。**列出但不参与状态判定** ——
+     * 为了凑覆盖率把弱证据当强证据，就是自欺欺人的假覆盖。
+     */
+    weakCases?: Array<{
+        id: number;
+        caseNo: string;
+        name: string;
+        scenarioKind: string;
+        basis?: string;
+        confidence?: string;
     }>;
 }
 export interface MatrixRow {
@@ -88,6 +102,16 @@ export interface MatrixRow {
         devicePagePath: string;
         caseNos: string[];
         negativeCaseNos: string[];
+        /** P11：每条用例的来源与关联依据（前端"矩阵图"按它着色/展开） */
+        caseRefs?: Array<{
+            caseNo: string;
+            scenarioKind: string;
+            basis: string;
+            confidence: string;
+            caseName: string;
+        }>;
+        /** P11：仅弱证据关联的用例（列出，不计入覆盖率） */
+        weakLinkCaseNos?: string[];
         paramPoints: Array<{
             pagePath: string;
             name: string;
@@ -133,9 +157,28 @@ export declare function collectDeviceControls(input: MatrixInput): {
 /** 风险标记：只标能拿出依据的，不制造噪音。 */
 export declare function computeRisks(input: MatrixInput, status: CoverageStatus): RiskFlag[];
 /** 组装一行矩阵：状态 + 理由 + 风险 + 场景适用性 + 证据。 */
+/** 矩阵装配：该符号的用例（弱关联单列，不参与状态判定）。 */
+export declare function symbolCases(symbolId: number, caseRows: Array<{
+    id: number;
+    case_no: string;
+    name: string;
+    scenario_kind: string;
+    api_symbol_id: number | null;
+}>, links: Array<{
+    caseId: number;
+    caseNo: string;
+    basis: string;
+    confidence: string;
+}>): {
+    cases: MatrixInput['cases'];
+    weakCases: NonNullable<MatrixInput['weakCases']>;
+};
 export declare function buildMatrixRow(input: MatrixInput): MatrixRow;
 /** 覆盖率统计（首页 KPI 与矩阵页头部用）。 */
-export declare function summarizeMatrix(rows: MatrixRow[]): {
+export declare function summarizeMatrix(rows: MatrixRow[], extra?: {
+    unlinkedCases?: number;
+    totalCases?: number;
+}): {
     total: number;
     covered: number;
     partial: number;
@@ -145,28 +188,12 @@ export declare function summarizeMatrix(rows: MatrixRow[]): {
     apiCoverage: number;
     scenarioCoverage: number;
     byRisk: Record<string, number>;
+    /** P11：该库未关联到任何接口的用例数（关联是"接口↔用例"矩阵成立的前提） */
+    unlinkedCases: number;
+    totalCases: number;
 };
-export interface TraversalEvidence {
-    reportFile: string;
-    routes: Map<string, {
-        controls: string[];
-        path: string[];
-    }>;
-    /**
-     * 本次遍历**所有页面**收集到的控件文本（含首页入口项）。
-     * 判定"用例步骤里引用的控件在真机上是否存在"必须用它：用例通常先点首页入口再点目标页按钮，
-     * 而首页在 routes 里没有路由名（它不是"被进入"的页面），只用 routes 会把首页入口判成不存在。
-     */
-    allControls: string[];
-}
-/**
- * 从 P1 的遍历报告里取出「路由 → 该页控件文本」。
- *
- * 报告里页面记录用的是点击路径（人看得懂），而路由名在操作轨迹的
- * `进入判定 · 点击「X」→ 进入新页面 · pagePath=pages/Y` 这条 op 里。
- * 两者拼起来才能把 demo 源码里的 `pages/SimpleValidatePage` 对上真机页面。
- */
-export declare function loadTraversalEvidence(libName: string): TraversalEvidence | null;
+export { loadTraversalEvidence, controlsOfPage } from './traversalEvidence.js';
+export type { TraversalEvidence } from './traversalEvidence.js';
 export interface MatrixBuildResult {
     libraryId: number;
     libraryName: string;

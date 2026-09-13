@@ -21,6 +21,10 @@ interface MatrixRow {
     demoCall?: { pagePath: string; sourceFile: string; sourceLine: number; snippet: string };
     testCallCount: number; traversalReport: string; deviceControls: string[]; devicePagePath: string;
     caseNos: string[]; negativeCaseNos: string[];
+    /** P11：每条用例的来源与关联依据（矩阵图按它着色/展开） */
+    caseRefs?: Array<{ caseNo: string; caseName: string; scenarioKind: string; basis: string; confidence: string }>;
+    /** P11：仅弱证据关联的用例（列出，不计入覆盖率） */
+    weakLinkCaseNos?: string[];
     paramPoints: Array<{ pagePath: string; name: string; sourceFile: string; sourceLine: number }>;
   };
 }
@@ -30,6 +34,9 @@ interface MatrixPayload {
   summary: {
     total: number; covered: number; partial: number; notCovered: number; blocked: number;
     apiCoverage: number; scenarioCoverage: number; byRisk: Record<string, number>;
+    /** P11：未关联到任何接口的用例数（这些用例不参与接口覆盖率） */
+    unlinkedCases?: number;
+    totalCases?: number;
   };
   matrix: MatrixRow[];
 }
@@ -55,6 +62,15 @@ const RISK_LABEL: Record<string, string> = {
 };
 
 const SCENARIO_LABEL: Record<string, string> = { happy: '正向', empty: '空值', boundary: '边界异常', bigdata: '大数据' };
+const SCENARIO_ORDER = ['happy', 'empty', 'boundary', 'bigdata'] as const;
+
+/** P11：关联依据的人话说明 */
+const BASIS_LABEL: Record<string, string> = {
+  explicit: '生成时指定',
+  page: '页面命中',
+  name: '名称命中',
+  manual: '人工确认',
+};
 
 export default function CoveragePage() {
   const [libs, setLibs] = useState<Library[]>([]);
@@ -71,6 +87,10 @@ export default function CoveragePage() {
   const [planBusy, setPlanBusy] = useState(false);
   const [showPlans, setShowPlans] = useState(false);
   const [quality, setQuality] = useState<Awaited<ReturnType<typeof api.quality>> | null>(null);
+  // P11：表格 / 矩阵图两种视图（矩阵图 = 接口 × 场景 的着色网格，一眼看出哪里空着）
+  const [view, setView] = useState<'table' | 'grid'>('table');
+  const [cell, setCell] = useState<{ symbolId: number; scenario: string } | null>(null);
+  const [linkBusy, setLinkBusy] = useState(false);
 
   useEffect(() => {
     api.libraries({ pageSize: 300 }).then((r) => {
@@ -90,6 +110,25 @@ export default function CoveragePage() {
 
   useEffect(() => { load(libId, statusFilter, riskFilter); }, [libId, statusFilter, riskFilter, load]);
 
+  /**
+   * P11：重算「用例 ↔ 接口」关联。
+   * 关联是确定性计算（不花 token），所以可以随手点；点完重建矩阵，初版遍历用例就会进「用例」列。
+   */
+  const relink = async () => {
+    if (!libId) return;
+    setLinkBusy(true); setError(''); setMsg('');
+    try {
+      const r = await api.rebuildCaseLinks(libId);
+      const basis = Object.entries(r.byBasis).map(([k, v]) => `${BASIS_LABEL[k] ?? k} ${v}`).join(' · ') || '无';
+      setMsg(`关联完成：写入 ${r.links} 条（${basis}）· 已关联 ${r.linkedCases}/${r.totalCases} 条用例`
+        + (r.unlinkedCases > 0 ? ` · 仍有 ${r.unlinkedCases} 条未关联到任何接口` : '')
+        + (r.preservedManual > 0 ? ` · 保留人工确认 ${r.preservedManual} 条` : ''));
+      await api.buildCoverageMatrix(libId).catch(() => null);
+      load(libId);
+    } catch (e) { setError(String((e as Error).message)); }
+    finally { setLinkBusy(false); }
+  };
+
   const build = async () => {
     if (!libId) return;
     setBusy(true); setError(''); setMsg('');
@@ -106,8 +145,7 @@ export default function CoveragePage() {
     api.quality(libId).then(setQuality).catch(() => setQuality(null));
   }, [libId, msg]);
 
-  const exportAs = async (format: 'md' | 'csv') => {
-    if (!libId) return;
+  const exportAs = async (format: 'md' | 'csv') => {    if (!libId) return;
     setError(''); setMsg('');
     try {
       const r = await api.exportCoverageMatrix(libId, format);
@@ -131,6 +169,16 @@ export default function CoveragePage() {
   const rows = data?.matrix ?? [];
   const risks = s ? Object.keys(s.byRisk).sort() : [];
 
+  // ---- P11 矩阵图：接口（行）× 场景（列） ----
+  // 单元格的三种状态必须能区分开，否则这张图只会制造错觉：
+  //   绿色 = 该接口在这个场景下已有用例；
+  //   黄色 = 该场景适用但还没有用例（这就是"该补哪里"）；
+  //   灰色 = 该场景对这个接口不适用（不适用不等于没测，不能标黄吓人）。
+  const gridRows = rows.filter((r) => r.kind !== 'type' && r.kind !== 'interface');
+  const cellCases = (row: MatrixRow, scenario: string) =>
+    (row.evidence.caseRefs ?? []).filter((c) => c.scenarioKind === scenario);
+  const selectedRow = cell ? gridRows.find((r) => r.symbolId === cell.symbolId) : undefined;
+
   return (
     <>
       <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
@@ -150,6 +198,9 @@ export default function CoveragePage() {
         </button>
         <button className="btn" disabled={rows.length === 0} onClick={() => void exportAs('md')}>导出 Markdown</button>
         <button className="btn" disabled={rows.length === 0} onClick={() => void exportAs('csv')}>导出 CSV</button>
+        <button className="btn" disabled={linkBusy || !libId} onClick={() => void relink()}>
+          {linkBusy ? '关联中…' : '重算用例关联'}
+        </button>
         <button className="btn" disabled={planBusy || !libId} onClick={() => void previewPlan()}>
           {planBusy ? '计算中…' : '生成用例计划'}
         </button>
@@ -170,6 +221,17 @@ export default function CoveragePage() {
               <div className="muted" style={{ fontSize: 12 }}>场景维度覆盖率</div>
               <div style={{ fontSize: 22, fontWeight: 600 }}>{s.scenarioCoverage}%</div>
               <div className="muted" style={{ fontSize: 11 }}>已覆盖维度 / 适用维度</div>
+            </div>
+            <div className="card">
+              <div className="muted" style={{ fontSize: 12 }}>用例 ↔ 接口关联</div>
+              <div style={{ fontSize: 22, fontWeight: 600, color: (s.unlinkedCases ?? 0) > 0 ? 'var(--amber)' : undefined }}>
+                {s.totalCases ? `${(s.totalCases - (s.unlinkedCases ?? 0))}/${s.totalCases}` : '—'}
+              </div>
+              <div className="muted" style={{ fontSize: 11 }}>
+                {(s.unlinkedCases ?? 0) > 0
+                  ? <>仍有 <b>{s.unlinkedCases}</b> 条用例没关联到任何接口，不计入覆盖率（点「重算用例关联」）</>
+                  : '全部用例都已关联到接口'}
+              </div>
             </div>
             <div className="card">
               <div className="muted" style={{ fontSize: 12 }}>共 {s.total} 个符号</div>
@@ -310,13 +372,18 @@ export default function CoveragePage() {
 
       <div className="card" style={{ marginTop: 12 }}>
         <div style={{ display: 'flex', gap: 8, marginBottom: 10, alignItems: 'center', flexWrap: 'wrap' }}>
+          <button className={`btn sm ${view === 'table' ? 'primary' : ''}`} onClick={() => setView('table')}>表格</button>
+          <button className={`btn sm ${view === 'grid' ? 'primary' : ''}`} onClick={() => setView('grid')}>矩阵图</button>
+          <div style={{ width: 10 }} />
           <button className={`btn sm ${statusFilter === '' ? 'primary' : ''}`} onClick={() => setStatusFilter('')}>全部</button>          {(Object.keys(STATUS_META) as Status[]).map((k) => (
             <button key={k} className={`btn sm ${statusFilter === k ? 'primary' : ''}`} onClick={() => setStatusFilter(k)}>
               {STATUS_META[k].label}
             </button>
           ))}
           <div style={{ flex: 1 }} />
-          <span className="muted" style={{ fontSize: 11.5 }}>点行展开证据</span>
+          <span className="muted" style={{ fontSize: 11.5 }}>
+            {view === 'grid' ? '行=接口，列=场景；绿=已有用例 / 黄=适用但缺用例 / 灰=不适用。点格子看用例' : '点行展开证据'}
+          </span>
         </div>
 
         {loading ? (
@@ -324,6 +391,90 @@ export default function CoveragePage() {
         ) : rows.length === 0 ? (
           <div className="loading">
             {data ? '当前筛选下没有数据。' : '还没有覆盖矩阵。先在「接口清单」页采集接口，再点右上角「构建覆盖矩阵」。'}
+          </div>
+        ) : view === 'grid' ? (
+          <div>
+            {gridRows.length === 0 ? (
+              <div className="loading">当前筛选下没有可测接口（类型符号不参与矩阵图）。</div>
+            ) : (
+              <div style={{ overflowX: 'auto', maxHeight: 460, overflowY: 'auto' }}>
+                <table style={{ minWidth: 620 }}>
+                  <thead>
+                    <tr>
+                      <th style={{ width: 240 }}>接口</th>
+                      <th style={{ width: 80 }}>状态</th>
+                      {SCENARIO_ORDER.map((k) => (
+                        <th key={k} style={{ width: 90, textAlign: 'center' }}>{SCENARIO_LABEL[k]}</th>
+                      ))}
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {gridRows.map((r) => (
+                      <tr key={r.symbolId}>
+                        <td className="mono" style={{ fontSize: 11.5 }}>
+                          {r.symbolName}
+                          <div className="muted" style={{ fontSize: 10.5 }}>{r.kind}</div>
+                        </td>
+                        <td><span className="tag" style={{ color: STATUS_META[r.status].color }}>{STATUS_META[r.status].label}</span></td>
+                        {SCENARIO_ORDER.map((k) => {
+                          const list = cellCases(r, k);
+                          const fit = Boolean(r.scenarioFit[k]);
+                          const active = cell?.symbolId === r.symbolId && cell?.scenario === k;
+                          // 不适用 → 灰；适用且有用例 → 绿；适用但没用例 → 黄（要补的就是这些）
+                          const color = !fit ? 'var(--text3)' : list.length > 0 ? 'var(--green)' : 'var(--amber)';
+                          const bg = !fit ? 'transparent' : list.length > 0 ? 'var(--green-dim)' : 'var(--amber-dim)';
+                          return (
+                            <td
+                              key={k}
+                              style={{ textAlign: 'center', cursor: 'pointer', background: bg, outline: active ? '1px solid var(--blue)' : 'none' }}
+                              title={fit ? (list.length > 0 ? list.map((c) => `${c.caseNo} ${c.caseName}`).join('\n') : '该场景适用但还没有用例') : '该场景对这个接口不适用'}
+                              onClick={() => setCell(active ? null : { symbolId: r.symbolId, scenario: k })}
+                            >
+                              <span style={{ color, fontWeight: 600 }}>{fit ? (list.length > 0 ? list.length : '缺') : '—'}</span>
+                            </td>
+                          );
+                        })}
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
+            {selectedRow && cell && (
+              <div style={{ marginTop: 10, borderTop: '1px solid var(--border)', paddingTop: 8 }}>
+                <div style={{ fontSize: 12.5, marginBottom: 6 }}>
+                  <b className="mono">{selectedRow.symbolName}</b>
+                  <span className="muted"> · {SCENARIO_LABEL[cell.scenario] ?? cell.scenario}场景 ·
+                    {cellCases(selectedRow, cell.scenario).length} 条用例</span>
+                </div>
+                {cellCases(selectedRow, cell.scenario).length === 0 ? (
+                  <div className="muted" style={{ fontSize: 12 }}>
+                    该场景适用但还没有用例。可在「任务管理」发起「矩阵驱动生成用例」，或用「整合初版用例为正式用例」把初版草稿升级并挂到本接口。
+                  </div>
+                ) : (
+                  <table>
+                    <thead>
+                      <tr><th style={{ width: 110 }}>用例号</th><th style={{ width: 260 }}>名称</th><th style={{ width: 120 }}>关联依据</th><th>置信度</th></tr>
+                    </thead>
+                    <tbody>
+                      {cellCases(selectedRow, cell.scenario).map((c) => (
+                        <tr key={c.caseNo}>
+                          <td className="mono" style={{ fontSize: 11.5 }}>{c.caseNo}</td>
+                          <td style={{ fontSize: 12 }}>{c.caseName}</td>
+                          <td><span className="tag gray">{BASIS_LABEL[c.basis] ?? c.basis ?? '—'}</span></td>
+                          <td className="muted" style={{ fontSize: 11.5 }}>{c.confidence === 'low' ? '弱（不参与判定）' : c.confidence}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                )}
+                {(selectedRow.evidence.weakLinkCaseNos?.length ?? 0) > 0 && (
+                  <div className="muted" style={{ fontSize: 11.5, marginTop: 6 }}>
+                    另有弱关联用例（仅名称命中，不参与覆盖率判定）：{selectedRow.evidence.weakLinkCaseNos!.join('、')}
+                  </div>
+                )}
+              </div>
+            )}
           </div>
         ) : (
           <table>
@@ -390,6 +541,25 @@ function RowView({ row, expanded, onToggle }: { row: MatrixRow; expanded: boolea
                   ? <span>{row.evidence.caseNos.join('、')}{row.evidence.negativeCaseNos.length > 0 ? `（负向：${row.evidence.negativeCaseNos.join('、')}）` : '（全为正向）'}</span>
                   : <span className="muted">没有针对该接口的用例</span>}
               </div>
+              {(row.evidence.caseRefs?.length ?? 0) > 0 && (
+                <div>
+                  <b>用例来源与关联依据</b>（初版遍历用例也会出现在这里）：
+                  <div className="muted" style={{ fontSize: 11.5 }}>
+                    {row.evidence.caseRefs!.map((c) => (
+                      <div key={c.caseNo}>
+                        <span className="mono">{c.caseNo}</span> {c.caseName} ·
+                        <span className="tag gray" style={{ marginLeft: 4 }}>{BASIS_LABEL[c.basis] ?? c.basis ?? '—'}</span>
+                        <span className="muted"> {c.confidence === 'low' ? '弱关联（不计入覆盖率）' : c.confidence}</span>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+              {(row.evidence.weakLinkCaseNos?.length ?? 0) > 0 && (
+                <div className="muted" style={{ fontSize: 11.5 }}>
+                  弱关联用例（仅名称命中，不参与覆盖率判定）：{row.evidence.weakLinkCaseNos!.join('、')}
+                </div>
+              )}
               {row.evidence.paramPoints.length > 0 && (
                 <div>
                   <b>可注入参数点</b>：

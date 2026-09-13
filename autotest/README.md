@@ -95,14 +95,14 @@ cd dsh-autotest && npm pack                # 产出 dsh-autotest-<version>.tgz
 ```jsonc
 // ~/.dsh/profiles/<name>/package.json
 // 版本号与 dsh-autotest/package.json 的 version 保持一致（CI 会校验 tag 与版本一致）
-"dsh-autotest": "https://github.com/summer-hub/AutoTestAgent/releases/download/v0.1.59/dsh-autotest-0.1.59.tgz"
+"dsh-autotest": "https://github.com/summer-hub/AutoTestAgent/releases/download/v0.1.60/dsh-autotest-0.1.60.tgz"
 ```
 
-仓库已配好 GitHub Actions（打 `v*` tag 自动构建并发布 Release + tarball）。发布前会跑类型检查、三套自检、`lib/` 产物一致性与 tag/版本一致性校验：
+仓库已配好 GitHub Actions（打 `v*` tag 自动构建并发布 Release + tarball）。发布前会跑类型检查、16 套自检、`lib/` 产物一致性与 tag/版本一致性校验：
 
 ```bash
 # 先改 dsh-autotest/package.json 的 version，并 npm run build:plugin 提交产物，再打 tag
-git tag v0.1.59 && git push origin v0.1.59
+git tag v0.1.60 && git push origin v0.1.60
 ```
 
 ## 目录结构
@@ -169,6 +169,7 @@ Redis 缓存与连接池已落地；分表路由层存在但未启用（当前 S
 ## 核心业务语义
 
 - **版本迭代（单条用例粒度）**：每次更新自动递增版本号（V1→V2→V3…，无上限）；回滚恢复目标快照并产生新版本记录；`case_versions` 存全量快照，支持任意时间点审计。
+- **初版用例 ↔ 接口整合（P11）**：真机遍历产出的**初版用例**此前不与接口挂钩（`api_symbol_id` 只有矩阵驱动生成时才写），因此既进不了覆盖矩阵也不算覆盖率。P11 补上这条链：① `case_symbol_links` 多对多关联（每条关联都带**依据**与置信度：生成时指定 / 页面命中 / 名称命中 / 人工确认，弱证据只列出不计入覆盖率，人工确认**不被自动重算覆盖**）；② 矩阵的「用例」列改为取并集，初版用例也能看见，并新增**未关联用例数**指标；③ 任务「整合初版用例为正式用例」：先关联 → 把初版草稿连同**该页真机控件清单**与**关联接口的签名/参数/异常**回灌 LLM 升级为正式用例（补可机器校验判据、升版 V2 并保留初版快照、来源标 `遍历初版→正式`）→ 接口无用例的按计划补生成 → 重算覆盖率并给前后对比；④ 覆盖矩阵页新增「**矩阵图**」视图：行=接口、列=场景，绿=已有用例 / 黄=适用但缺用例 / 灰=不适用，点格子看用例与各自的关联依据。
 - **来源分类**：新需求引入 / 老库存量 / 问题单跟踪 / AI 生成（由生成任务与 Excel 导入决定，不再预设比例）。
 - **大模型可自定义**：设置 → 模型 支持添加任意 OpenAI 兼容端点（DeepSeek/OpenAI/Ollama/自定义），连通性测试真实调用；任务执行自动走默认模型（未配 Key 时失败并提示，配置后一键重试）。
 - **执行计划**：五种类型（立即/定时/单独/批量/全量），定时用 node-cron 注册（删除计划会同步注销定时任务）；同一计划**同一时刻只会执行一份**（原子占位 + 重入保护），执行体异常也必定落到终态，不会永久停在 running；失败用例可进入调试会话查看与追问；无在线真机时直接失败并写明原因（**没有模拟回退**）。
@@ -184,19 +185,32 @@ Redis 缓存与连接池已落地；分表路由层存在但未启用（当前 S
 
 ## 自检（提交前 / CI 门禁）
 
-三套自检都**不连 MySQL、不调 LLM**；无设备时真机相关分组自动跳过。CI 在打包发布前强制运行。
+16 套自检都**不连 MySQL、不调 LLM**（用临时 SQLite 库与临时工作区，不碰你的数据）；无设备时真机相关分组自动跳过，无 hypium 时判据运行期那套自动跳过。CI 在打包发布前强制运行。
 
 ```bash
 cd autotest
 npm run typecheck     # web + 插件类型检查
-npm run verify:all    # 构建 + 15 套自检（无设备 / 无 hypium 的项自动跳过）
+npm run verify:all    # 构建 + 16 套自检（无设备 / 无 hypium 的项自动跳过）
 ```
 
 | 命令 | 覆盖内容 |
 |---|---|
 | `npm run verify:data` | 事务隔离与串行（SQLite 单连接并发）、归档表列对齐并真跑一次归档、种子不写死工作区、密钥脱敏与防回写、残留 running 清理与计划重入保护、`llmJson` 并发隔离 |
 | `npm run verify:api` | 进程内起真实 HTTP 服务挂业务 handler：同源闸门（Origin/Sec-Fetch-Site）、Content-Type 白名单、请求体体积上限、坏 JSON 拒绝、出参脱敏、模型端点协议/元数据地址校验、`limit` 钳制、用例 `steps` 入参校验、读写缓存一致性、列表信封 `nextCursor` |
-| `node scripts/verify-step-contract.mjs` | 步骤句式 → Hypium 调用映射、控件引用 guardrail、执行端 dry-run 真机判定（无设备自动跳过） |
+| `npm run verify:explorer` | 遍历候选判定（用 `clickable` 而非"有文本"）、去重键、控件分类、预算、覆盖率报告、无文本控件不丢 |
+| `npm run verify:repo-paths` | 仓库地址拆分、子目录穿越防护、同仓共享克隆、legacy 克隆接管、子目录版本号 |
+| `npm run verify:sheet` | xlsx 解析/表头识别/diff、同步幂等、**不覆盖 Agent 字段**、绝不删库 |
+| `npm run verify:api-extract` | 导出链解析、定义提取（TS 与打包 JS 两种形态）、JSDoc 与参数表、三类假覆盖防护 |
+| `npm run verify:coverage` | 矩阵状态判定规则表、风险标记、设备控件匹配、导出格式 |
+| `npm run verify:case-plan` | 四类场景适用性、数量模型、优先级、★ 每接口 ≥1 正向、★ 报告↔计划一致、★ 抽样条数守恒 |
+| `npm run verify:testability` | A/B/C/D 判定、补丁生成与应用/回退、越界路径拒绝、原仓库不被改动 |
+| `npm run verify:oracle` | oracle 校验、含糊期望值拦截、★ 断言为空/恒真判为假通过、验证步骤跳过判弱通过 |
+| `npm run verify:automation` | 分流规则（auto/human 与 9 类阻塞）、时长阈值、每阶段单独提问、归属明确 |
+| `npm run verify:binding` | 未映射步骤即失败、空断言脚本拒绝写入、用例升版→stale、人工改过→manual 且不覆盖 |
+| `npm run verify:knowledge` | LLM wiki front-matter/检索/注入预算、生命周期、agent 阶段契约、MCP 工具 |
+| `npm run verify:case-link` | **P11**：初版用例↔接口关联的依据与优先级、面包屑↔路由名对齐、★ 初版用例进入矩阵「用例」列、人工确认不被覆盖、关联幂等、未关联用例统计 |
+| `npm run verify:oracle-runtime` | 把判据支持模块与一条覆盖全部句式的用例脚本**真编译、真 import**，再用假 driver 真跑 24 项断言（★ 反静默通过）；同时校验解释器探测不会选中没有 hypium 的 python。**需要装了 hypium 的 Python，缺失自动跳过** |
+| `node scripts/verify-step-contract.mjs` | 步骤句式 → Hypium 调用映射、生成脚本的 driver API 白名单（防"调用不存在的 API"）、控件引用 guardrail、执行端 dry-run 真机判定（无设备自动跳过） |
 
 改动生成端句式或执行端映射后，务必跑 `verify:contract`：两端脱节会让脚本退化成注释，或让 dry-run 产生系统性假失败。
 

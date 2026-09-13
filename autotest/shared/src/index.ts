@@ -139,6 +139,7 @@ export type TaskType =
   | 'write_cases'    // 编写测试用例
   | 'explore_cases'  // 真机遍历生成用例（遍历数据 → 用例生成 Agent 优化）
   | 'matrix_cases'   // 覆盖矩阵驱动生成用例（四类场景，LLM 只负责把计划写成用例）
+  | 'integrate_cases' // 整合：初版用例关联接口 → 结合真机控件与接口契约升级为正式用例（P11）
   | 'update_cases'   // 更新测试用例
   | 'to_script';     // 用例转自动化脚本
 

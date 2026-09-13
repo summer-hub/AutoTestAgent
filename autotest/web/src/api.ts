@@ -124,6 +124,17 @@ export const api = {
     }>;
     demoAssets: Array<{ kind: string; name: string; pagePath: string; sourceFile: string; sourceLine: number; snippet: string; mutability: string }>;
   }>(`${API_BASE}/libraries/${id}/api-symbols${version ? `?version=${encodeURIComponent(version)}` : ''}`),
+  // P11 用例 ↔ 接口关联（矩阵的「用例」列以此为准：初版遍历用例也在此列）
+  rebuildCaseLinks: (id: number) => req<{
+    libraryId: number; libraryName: string; links: number; linkedCases: number;
+    totalCases: number; unlinkedCases: number; byBasis: Record<string, number>; preservedManual: number;
+  }>(`${API_BASE}/libraries/${id}/case-links`, { method: 'POST' }),
+  caseLinks: (id: number) => req<{
+    libraryId: number;
+    links: Array<{ caseId: number; caseNo: string; caseName: string; scenarioKind: string; symbolId: number; symbolName: string; basis: string; confidence: string; detail: string }>;
+  }>(`${API_BASE}/libraries/${id}/case-links`),
+  linkCase: (caseId: number, symbolId: number, linked = true) =>
+    req<{ ok: boolean; message: string }>(`${API_BASE}/cases/${caseId}/links`, { method: 'POST', body: JSON.stringify({ symbolId, linked }) }),
   // P3 覆盖矩阵
   buildCoverageMatrix: (id: number) => req<CoveragePayload>(`${API_BASE}/libraries/${id}/coverage-matrix`, { method: 'POST' }),
   coverageMatrix: (id: number, f: { status?: string; risk?: string } = {}) => {
