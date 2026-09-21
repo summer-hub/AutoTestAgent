@@ -42,6 +42,10 @@ jobs:
         working-directory: autotest/dsh-autotest
         run: npm run build && npm run verify:data
 
+      - name: Data dir self-check（落点迁出 node_modules / 旧数据迁移 / 失败退回）
+        working-directory: autotest/dsh-autotest
+        run: npm run verify:data-dir
+
       - name: API guard self-check（同源闸门 / 体积上限 / 入参校验 / 缓存一致性）
         working-directory: autotest/dsh-autotest
         run: npm run verify:api
@@ -89,6 +93,18 @@ jobs:
       - name: Script binding self-check（未映射即失败 / 空断言拦截 / 版本联动）
         working-directory: autotest/dsh-autotest
         run: npm run verify:binding
+
+      - name: Task lane self-check（同库串行 / 抢占锁 / 排队与运行中取消 / 卸载 abort）
+        working-directory: autotest/dsh-autotest
+        run: npm run verify:task-lane
+
+      - name: Task events self-check（seq 分配 / 并发追加不丢不重 / 快照与事件流一致）
+        working-directory: autotest/dsh-autotest
+        run: npm run verify:task-events
+
+      - name: LLM fallback + token budget + rate limit self-check（重试换模型 / 预算 / Redis 全局计数）
+        working-directory: autotest/dsh-autotest
+        run: npm run verify:llm-fallback
 
       - name: Knowledge + agent binding self-check（无向量检索 / 生命周期 / 阶段契约 / MCP 工具）
         working-directory: autotest/dsh-autotest

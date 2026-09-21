@@ -11,7 +11,7 @@
     "build:embed": "npm run build:embed -w web",
     "build:plugin": "npm run build:embed && cd dsh-autotest && npm run build",
     "typecheck": "npm run typecheck -w web && cd dsh-autotest && npm run typecheck",
-    "verify:all": "npm run build:plugin && cd dsh-autotest && npm run verify:data && npm run verify:api && npm run verify:explorer && npm run verify:repo-paths && npm run verify:sheet && npm run verify:api-extract && npm run verify:coverage && npm run verify:case-plan && npm run verify:testability && npm run verify:oracle && npm run verify:automation && npm run verify:binding && npm run verify:knowledge && npm run verify:case-link && npm run verify:oracle-runtime && node scripts/verify-step-contract.mjs"
+    "verify:all": "npm run build:plugin && cd dsh-autotest && npm run verify:all"
   },
   "engines": {
     "node": ">=20"
