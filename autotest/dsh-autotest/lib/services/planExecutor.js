@@ -151,7 +151,7 @@ async function runPlanOnce(planId, plan, t) {
         ensureHypiumProject({ name: libName, packageName: pkgRow?.package_name || libName }, deviceSerial);
         for (let idx = 0; idx < boundItems.length; idx++) {
             const item = boundItems[idx];
-            const cls = caseClassName(item.row.case_no);
+            const cls = caseClassName(libName, item.row.case_no);
             await setProgress(2 + (done / total) * 95, `${done}/${total} · 正在执行 ${item.row.case_no}（${cls}）…`);
             const t0 = Date.now();
             let result = await runHypiumModule(pythonCmd, item.projDir, item.moduleStem, 10 * 60_000);

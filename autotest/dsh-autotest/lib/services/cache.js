@@ -88,3 +88,34 @@ export async function cacheDel(prefix) {
             lru.delete(k);
     }
 }
+/**
+ * 计数器 +1（固定窗口限流用，全局限流必须落在共享存储上才有多节点意义）。
+ * 限流计数**故意不写内存 LRU**：多节点部署下各节点各算一份等于没限。
+ * Redis 未启用或出错时返回 null，由调用方回退到进程内计数。
+ */
+export async function cacheIncr(key, ttlMs) {
+    const r = await redis();
+    if (!r)
+        return null;
+    try {
+        const n = await r.incr(`autotest:${key}`);
+        if (n === 1) {
+            // 新建键才设 TTL：续不上就删键并放弃 Redis 计数，
+            // 否则无 TTL 的窗口键会永远留在 Redis 里，把这个限流项永久卡死
+            try {
+                await r.pexpire(`autotest:${key}`, ttlMs);
+            }
+            catch {
+                try {
+                    await r.del(`autotest:${key}`);
+                }
+                catch { /* 忽略 */ }
+                return null;
+            }
+        }
+        return n;
+    }
+    catch {
+        return null;
+    }
+}

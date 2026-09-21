@@ -11,7 +11,7 @@ import os from 'node:os';
 import path from 'node:path';
 import {
   generateCaseScript, scriptHasAssertion, oracleToPython, oracleSupportModuleSource,
-  UnmappedStepError, NoAssertionError,
+  UnmappedStepError, NoAssertionError, caseClassName,
 } from '../lib/services/hypiumGen.js';
 import { computeBindingStatus, hashScript, BINDING_LABEL } from '../lib/services/scriptBinding.js';
 
@@ -83,7 +83,11 @@ console.log('\n— oracle → 断言映射（7 种取值域）—');
     { type: 'no_crash' },
   ]);
   check(script.includes('可机器校验判据：2 条'), '脚本头部标注判据条数（人一眼看到）');
-  check(script.includes('from autotest_oracle import ('), '按需 import oracle 支持模块');
+  // 约定：判据断言模块归位到共享 aw/ 包（单工程多库，不再放工程根）
+  check(script.includes('from aw.autotest_oracle import ('), '按需 import aw/ 下的判据断言模块');
+  // 约定：文件名 = 类名 = 模块名（xdevice 用 -l <模块名> 加载，类名必须与之一致）
+  check(script.includes(`class ${caseClassName(LIB.name, 'C-1')}(TestCase):`),
+    '类名 = 模块名 <lib>_<caseNo>（四方一致）', caseClassName(LIB.name, 'C-1'));
   check(script.includes('assert_text_value') && script.includes('assert_no_crash'), '两种 oracle 的断言都写进脚本');
   check(!script.includes('assert_control_text'), '未用到的断言函数不会被 import（保持脚本干净）');
 

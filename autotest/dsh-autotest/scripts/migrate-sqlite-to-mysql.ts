@@ -1,18 +1,18 @@
-// 一次性迁移脚本：SQLite（data/autotest.sqlite3）→ MySQL（db.mysqlUrl / AUTOTEST_MYSQL_URL）
+// 一次性迁移脚本：SQLite（数据目录/autotest.sqlite3）→ MySQL（db.mysqlUrl / AUTOTEST_MYSQL_URL）
 // 用法：npx tsx scripts/migrate-sqlite-to-mysql.ts
 // 步骤：建业务表（幂等）→ 按依赖序批量迁移 → 行数校验
 import fs from 'node:fs';
 import path from 'node:path';
-import { fileURLToPath } from 'node:url';
 import Database from 'better-sqlite3';
 import mysql from 'mysql2/promise';
 import { schemaStatements } from '../src/db/schema.js';
+import { dataDir } from '../src/db/sqlite.js';
 
-const __dirname = path.dirname(fileURLToPath(import.meta.url));
 // 库文件名必须是 autotest.sqlite3（与 db/sqlite.ts 一致）。
 // 历史坑：这里曾写成 autotest.db，better-sqlite3 会"热心地"新建一个空库，
 // 于是脚本报"每张表 0 行（跳过）"并正常退出 —— 看起来迁移成功，实际什么都没搬。
-const DB_PATH = process.env.AUTOTEST_SQLITE_DB || path.resolve(__dirname, '../data/autotest.sqlite3');
+// 路径走 dataDir()：库可能在安装根/autotest-data，也可能被 AUTOTEST_DATA_DIR 指到别处。
+const DB_PATH = process.env.AUTOTEST_SQLITE_DB || path.join(dataDir(), 'autotest.sqlite3');
 const MYSQL_URL = process.env.AUTOTEST_MYSQL_URL || 'mysql://root:123456@127.0.0.1:3306/autotest';
 
 const TABLES = [
@@ -35,7 +35,7 @@ async function main(): Promise<void> {
     throw new Error(
       `源库看起来不是有效的 AutoTest 业务库：${DB_PATH}\n` +
       `  表数 ${srcTables.length}、libraries ${srcLibs} 行、缺失表 ${missing.join(', ') || '无'}\n` +
-      `  请确认路径（默认 data/autotest.sqlite3），或用 AUTOTEST_SQLITE_DB 指定。`,
+      `  请确认路径（默认取数据目录，可用 AUTOTEST_SQLITE_DB 指定）。`,
     );
   }
   const pool = mysql.createPool({
@@ -96,7 +96,7 @@ async function main(): Promise<void> {
   src.close();
   console.log(ok ? '\n✅ 迁移完成，行数全部一致' : '\n⚠️ 存在不一致，请检查！');
   // 4. 写入连接串引导文件（供插件启动读取）
-  const guidePath = path.resolve(__dirname, '../data/.mysql-url');
+  const guidePath = path.join(dataDir(), '.mysql-url');
   fs.mkdirSync(path.dirname(guidePath), { recursive: true });
   fs.writeFileSync(guidePath, MYSQL_URL, 'utf8');
   console.log(`[migrate] 已写入连接引导：${guidePath}`);

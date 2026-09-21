@@ -36,8 +36,12 @@ export async function reapStaleRuns(opts = {}) {
 /** 启动清理：清理上一次进程遗留的 running（本进程内不可能有正在跑的任务）。 */
 export async function reapOnStartup() {
     const r = await reapStaleRuns({ reason: '进程重启中断' });
-    if (r.tasks > 0 || r.plans > 0) {
-        console.log(`[dsh-autotest] 启动清理：${r.tasks} 个任务 / ${r.plans} 个计划标记为中断（上次运行残留）`);
+    // 遗留的 pending：入队后没轮到执行（lane 是进程内队列，重启即消失）。
+    // 不标记的话它会永远停在 pending，前端永远转圈，且重试入口都不给（重试仅限 failed/cancelled）
+    const orphan = await getDb().prepare(`UPDATE tasks SET status='failed', error=?, progress=0, updated_at=? WHERE status='pending'`).run('进程重启中断（任务在队列中未执行）', now());
+    const n = Number(orphan.changes) || 0;
+    if (r.tasks > 0 || r.plans > 0 || n > 0) {
+        console.log(`[dsh-autotest] 启动清理：${r.tasks} 个任务 / ${r.plans} 个计划标记为中断（上次运行残留），${n} 个未执行任务标记为中断`);
     }
     return r;
 }

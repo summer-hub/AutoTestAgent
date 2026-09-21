@@ -6,6 +6,7 @@
 import { execFile } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
+import { AsyncLocalStorage } from 'node:async_hooks';
 import { promisify } from 'node:util';
 import { getSetting } from './settings.js';
 import { workspaceDir } from './gitRepo.js';
@@ -13,13 +14,22 @@ const execFileAsync = promisify(execFile);
 const HDC = process.env.AUTOTEST_HDC || 'hdc';
 const DUMP_PATH = '/data/local/tmp/autotest_ui.xml';
 let dumpMode = null;
+// 当前设备操作的取消信号（dry-run / 真机遍历入口用 withDeviceSignal 设置一次，
+// 任务 lane 取消时中断 hdc 子进程）。未设置（设备扫描等常驻轮询）时行为不变。
+const deviceSignalStore = new AsyncLocalStorage();
+/** 在「可取消的设备操作」上下文里执行 fn。 */
+export function withDeviceSignal(signal, fn) {
+    return deviceSignalStore.run(signal, fn);
+}
 async function runHdc(args, timeoutMs = 15000) {
+    const signal = deviceSignalStore.getStore();
     try {
         const { stdout, stderr } = await execFileAsync(HDC, args, {
             timeout: timeoutMs,
             maxBuffer: 8 * 1024 * 1024,
             env: { ...process.env },
             windowsHide: true,
+            ...(signal ? { signal } : {}),
         });
         return { stdout: stdout.trim(), stderr: stderr.trim() };
     }

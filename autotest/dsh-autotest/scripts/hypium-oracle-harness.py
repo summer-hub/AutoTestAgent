@@ -37,10 +37,14 @@ class Comp(object):
 class FakeDriver(object):
     """按需假装出的 UiDriver：只实现支持模块真正调用的那几个方法。"""
 
-    def __init__(self, texts=(), pkg="com.demo.lib", logs="", screen_color=None):
+    #: 假装"设备侧当前时间"；日志里的时间戳要 >= 它，才算"本次执行期间的日志"
+    DEVICE_NOW = "09-20 23:00:00"
+
+    def __init__(self, texts=(), pkg="com.demo.lib", logs="", screen_color=None, pid="1234"):
         self.texts = set(texts)
         self.pkg = pkg
         self.logs = logs
+        self.pid = pid
         self.screen_color = screen_color
         self.current_app_ok = True
         self.disappear_noop = False  # True = 假装"消失成功"但仍留在界面上（用于验证二次复核）
@@ -79,6 +83,12 @@ class FakeDriver(object):
         return (self.pkg, self.pkg + ".MainAbility")
 
     def shell(self, cmd, timeout=60):
+        """支持模块只用三类设备命令：读时间 / 查进程号 / 读 hilog。"""
+        c = str(cmd).strip()
+        if c.startswith("date"):
+            return self.DEVICE_NOW
+        if c.startswith("pidof"):
+            return self.pid
         return self.logs
 
     def capture_screen(self, save_path, in_pc=True, area=None):
@@ -139,16 +149,31 @@ def main():
     drv2.get_component_property = lambda component, prop: False if prop == "checked" else None
     expect_raise(mod, "state_flag 勾选状态不一致 -> 抛错", lambda: mod.assert_state_flag(drv2, "开关", True), "勾选状态不符")
 
-    # 4. hilog_keyword
-    expect_pass("hilog 含关键字 -> 通过", lambda: mod.assert_hilog_keyword(FakeDriver(logs="08-01 10:00:00 1 1 I json: validate ok"), "validate ok"))
-    expect_raise(mod, "hilog 不含关键字 -> 抛错", lambda: mod.assert_hilog_keyword(FakeDriver(logs="nothing here"), "validate ok"), "未出现关键字")
+    # 4. hilog_keyword（只看本次执行期间的日志）
+    expect_pass("hilog 含关键字 -> 通过", lambda: mod.assert_hilog_keyword(FakeDriver(logs="09-20 23:00:05.100  1234  1234 I C02d00/json: validate ok"), "validate ok"))
+    expect_raise(mod, "hilog 不含关键字 -> 抛错", lambda: mod.assert_hilog_keyword(FakeDriver(logs="09-20 23:00:05.100  1234  1234 I C02d00/json: nothing here"), "validate ok"), "未出现关键字")
+    expect_raise(mod, "★ 关键字只出现在**历史**日志里（3 天前）-> 抛错（不拿历史当本次结果）",
+                 lambda: mod.assert_hilog_keyword(FakeDriver(logs="09-17 20:11:18.495  1234  1234 I C02d00/json: validate ok"), "validate ok"), "未出现关键字")
 
-    # 5. no_crash
-    clean = "08-01 10:00:00 100 100 I C02d00/com.demo.lib: all good"
-    dirty = "08-01 10:00:00 100 100 E C02d00/com.demo.lib: boom"
-    expect_pass("no_crash 前台正常、无 E 级日志 -> 通过", lambda: mod.assert_no_crash(FakeDriver(logs=clean), "com.demo.lib"))
-    expect_raise(mod, "no_crash 日志出现该应用 E 级错误 -> 抛错", lambda: mod.assert_no_crash(FakeDriver(logs=dirty), "com.demo.lib"), "E 级错误")
-    expect_raise(mod, "no_crash 应用已不在前台 -> 抛错", lambda: mod.assert_no_crash(FakeDriver(pkg="com.other.app", logs=clean), "com.demo.lib"), "不在前台")
+    # 5. no_crash：应用在前台 + 按 PID + 只认本次时间窗
+    clean = "09-20 23:00:10.100  1234  1234 I C02d00/com.demo.lib: all good"
+    dirty = "09-20 23:00:10.100  1234  1234 E C02d00/com.demo.lib: boom"
+    old_err = "09-17 20:11:18.495  1234  1234 E C02d00/com.demo.lib: three days ago"
+    other_proc = "09-20 23:00:10.100  9999  9999 E C02d00/light_sensor: system noise"
+    expect_pass("no_crash 前台正常、本次窗口内无该应用 E 级日志 -> 通过",
+                lambda: mod.assert_no_crash(FakeDriver(logs=clean), "com.demo.lib"))
+    expect_raise(mod, "no_crash 本次执行期间出现该应用 E 级错误 -> 抛错",
+                 lambda: mod.assert_no_crash(FakeDriver(logs=dirty), "com.demo.lib"), "E 级错误")
+    expect_pass("★ 只有**历史**（3 天前）E 级日志 -> 通过（历史不算本次崩溃，这是实测踩过的假阳性）",
+                lambda: mod.assert_no_crash(FakeDriver(logs=old_err), "com.demo.lib"))
+    expect_pass("★ 只有**别的进程**的 E 级日志（整机噪音）-> 通过（真机上永远有系统 E 级日志）",
+                lambda: mod.assert_no_crash(FakeDriver(logs=other_proc), "com.demo.lib"))
+    expect_raise(mod, "no_crash 应用已不在前台 -> 抛错",
+                 lambda: mod.assert_no_crash(FakeDriver(pkg="com.other.app", logs=clean), "com.demo.lib"), "不在前台")
+    expect_raise(mod, "no_crash 取不到进程号（应用疑似已退出）-> 抛错",
+                 lambda: mod.assert_no_crash(FakeDriver(logs=clean, pid=""), "com.demo.lib"), "取不到")
+    expect_raise(mod, "★ no_crash 缺少 package_name -> 抛错（否则整机日志都会被算作崩溃）",
+                 lambda: mod.assert_no_crash(FakeDriver(logs=clean), ""), "package_name")
     bad_app = FakeDriver(logs=clean)
     bad_app.current_app_ok = False
     expect_raise(mod, "no_crash 读不到前台应用 -> 抛错（无法判定就不能算通过）", lambda: mod.assert_no_crash(bad_app, "com.demo.lib"), "无法判定")
@@ -160,12 +185,17 @@ def main():
     expect_raise(mod, "截图与基线不一致 -> 抛错", lambda: mod.assert_screenshot_diff(FakeDriver(screen_color=(200, 200, 200)), 0.05, "case1"), "超过阈值")
 
     # 7. 生成的用例脚本本身：能否被 devicetest 导入（方法/参数名写错在这里就会炸）
+    # 目录照真工程：<root>/aw/ 是包（脚本 `from aw.autotest_oracle import ...` 靠它解析），
+    # 用例脚本在 <root>/testcases/<lib>/ 下，模块名 = <lib>_<caseNo>。
     sys.path.insert(0, workdir)
+    sys.path.insert(0, os.path.join(workdir, "testcases", "json_schema"))
+    module_name = "json_schema_C_AI_001"
     try:
         import importlib
-        case = importlib.import_module("gen_case_probe")
-        classes = [c for c in dir(case) if c.startswith("Case_")]
+        case = importlib.import_module(module_name)
+        classes = [c for c in dir(case) if c.startswith("json_schema")]
         record("生成的用例脚本可被 import（devicetest/hypium 依赖齐全）", len(classes) == 1, "classes=%s" % classes)
+        record("模块里的类名与模块名一致（xdevice -l 靠它加载）", classes == [module_name], "module=%s classes=%s" % (module_name, classes))
         from devicetest.core.test_case import TestCase
         record("生成的用例类是 devicetest TestCase 子类", bool(classes) and issubclass(getattr(case, classes[0]), TestCase))
     except Exception as e:  # noqa: BLE001

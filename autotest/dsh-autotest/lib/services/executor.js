@@ -6,7 +6,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { getDb, now } from '../db/connection.js';
-import { ensureLibraryByRepoUrl, inspectRepo, pullRepo, recentChanges, refreshPackageInfo, updateRepo, workspaceDir, workspaceNotice } from './gitRepo.js';
+import { ensureLibraryByRepoUrl, inspectRepo, pullRepo, recentChanges, refreshPackageInfo, updateRepo, workspaceDir, workspaceNotice, withGitSignal } from './gitRepo.js';
 import { getSetting } from './settings.js';
 import { llmJson } from './llmHarness.js';
 import { exploreApp, ensureDeviceOnline, saveExploreReport } from './uiExplorer.js';
@@ -20,6 +20,7 @@ import { validateOracles } from './oracle.js';
 import { bindCaseScript, markBindingStaleOnCaseBump } from './scriptBinding.js';
 import { injectForStage } from './knowledge.js';
 import { bindingTraceLine, resolveBinding } from './agentBinding.js';
+import { appendTrace } from './taskEvents.js';
 // ---------- 定向用例设计（write_cases）辅助 ----------
 const normKey = (s) => s.toLowerCase().replace(/[\s_\-./\\()（）]/g, '');
 /** 从任务输入提取关键词（中英文词元）。 */
@@ -71,43 +72,52 @@ function spanMeta(task, kind) {
         kind,
     };
 }
-/** 往任务的 AI 执行轨迹追加一条记录（tasks.trace JSON 数组）。 */
+/** 往任务的 AI 执行轨迹追加一条（append-only 事件流 + 快照刷新，调用点零改动）。 */
 async function traceTask(taskId, title, detail = '') {
-    const db = getDb();
-    const row = await db.prepare('SELECT trace FROM tasks WHERE id = ?').get(taskId);
-    if (!row)
-        return;
-    const trace = JSON.parse(row.trace || '[]');
-    trace.push({ seq: trace.length + 1, at: now(), title, detail });
-    await db.prepare('UPDATE tasks SET trace = ? WHERE id = ?').run(JSON.stringify(trace), taskId);
+    await appendTrace(taskId, title, detail);
 }
-export async function runTask(taskId, llm) {
+export async function runTask(taskId, llm, signal) {
     const db = getDb();
     const task = await db.prepare('SELECT * FROM tasks WHERE id = ?').get(taskId);
     if (!task)
         return;
+    // 原子占位：只有把 status 从非 running 改成 running 的这一次调用才真正执行。
+    // 否则重试接口与并发创建（或 lane 重复入队）会让同一任务跑两份，trace 交错、结果互相覆盖。
+    const claim = await db.prepare(`UPDATE tasks SET status='running', progress=10, error=NULL, updated_at=? WHERE id=? AND status <> 'running'`).run(now(), taskId);
+    if (!Number(claim.changes)) {
+        console.warn(`[task #${taskId}] 已有实例在执行中，本次触发跳过`);
+        return;
+    }
     const set = async (patch) => {
         const fields = Object.entries(patch).filter(([k]) => k !== 'id');
         const sets = fields.map(([k]) => `${k} = ?`).join(', ');
-        await db.prepare(`UPDATE tasks SET ${sets}, updated_at = ? WHERE id = ?`).run(...fields.map(([, v]) => v), now(), taskId);
+        // 终态守卫：取消/中断已把行置为终态时，迟到的执行结果不得覆盖（status='running' 才允许写）
+        await db.prepare(`UPDATE tasks SET ${sets}, updated_at = ? WHERE id = ? AND status = 'running'`)
+            .run(...fields.map(([, v]) => v), now(), taskId);
     };
+    // 任务级取消信号注入每一次 LLM 调用（llmJson/llm 全部经这个包装器，调用点零改动）
+    const scopedLlm = signal
+        ? (input) => llm({ ...input, signal })
+        : llm;
     try {
-        await set({ status: 'running', progress: 10, error: null });
         await traceTask(taskId, '任务开始', `${task.title}（${task.type}）`);
         // 未配置工作区路径 → 明确提示（仍按回退目录继续执行）
         const wn = workspaceNotice();
         if (wn)
             await traceTask(taskId, '工作区提示', wn);
-        const result = await execute(task, llm);
+        const result = await execute(task, scopedLlm, signal);
         await set({ status: 'done', progress: 100, result_summary: result });
         await traceTask(taskId, '任务完成', result);
     }
     catch (e) {
-        await set({ status: 'failed', error: e.message.slice(0, 500), result_summary: null });
-        await traceTask(taskId, '任务失败', e.message.slice(0, 500));
+        const msg = e.message.slice(0, 500);
+        // 取消路径：用户取消时终态已是 cancelled（守卫命中 0 行不覆盖）；
+        // 插件卸载 abort 时无人置位，这里落 failed 收尾，避免留给 reaper 30 分钟盲扫。
+        await set({ status: 'failed', error: signal?.aborted ? `已取消：${msg}` : msg, result_summary: null });
+        await traceTask(taskId, signal?.aborted ? '任务已取消' : '任务失败', msg);
     }
 }
-async function execute(task, llm) {
+async function execute(task, llm, signal) {
     const db = getDb();
     const lib = task.library_id
         ? (await db.prepare('SELECT * FROM libraries WHERE id = ?').get(task.library_id))
@@ -118,11 +128,11 @@ async function execute(task, llm) {
     switch (task.type) {
         case 'pull_repo':
         case 'update_repo':
-            return await repoTask(task, lib);
+            return await repoTask(task, lib, signal);
         case 'write_cases':
-            return await writeCases(task, lib, llm);
+            return await writeCases(task, lib, llm, signal);
         case 'explore_cases':
-            return await exploreCases(task, lib, llm);
+            return await exploreCases(task, lib, llm, signal);
         case 'update_cases':
             return await updateCases(task, lib, llm);
         case 'to_script':
@@ -135,7 +145,7 @@ async function execute(task, llm) {
             throw new Error(`未知任务类型：${task.type}`);
     }
 }
-async function repoTask(task, lib) {
+async function repoTask(task, lib, signal) {
     const db = getDb();
     const url = (task.input || '').trim();
     const looksLikeUrl = /^(https?:\/\/|git@|ssh:\/\/|git:\/\/)/i.test(url);
@@ -153,7 +163,7 @@ async function repoTask(task, lib) {
     if (!target)
         throw new Error('请选择三方库，或输入仓库地址（http/https/git/ssh URL）后重试。');
     const [r] = await withProgress(task.id, [
-        [25, async () => (task.type === 'pull_repo' ? pullRepo(target) : updateRepo(target))],
+        [25, async () => withGitSignal(signal, () => (task.type === 'pull_repo' ? pullRepo(target) : updateRepo(target)))],
     ]);
     await traceTask(task.id, task.type === 'pull_repo' ? 'git clone/pull 完成' : 'git 更新完成', r.summary);
     return r.summary;
@@ -564,7 +574,7 @@ ${STEP_CONTRACT}
  * 入库用例在设备上真跑一遍，把失败证据（含当时界面真实控件清单）回灌 LLM 重写。
  * harness 核心：执行器为真 —— 真机执行结果比任何 LLM 自审都硬。
  */
-async function dryRunAndRepair(taskId, llm, lib, created, packageName) {
+async function dryRunAndRepair(taskId, llm, lib, created, packageName, signal) {
     const none = { ran: 0, passed: 0, repaired: 0 };
     if (getSetting('agent.dryRunEnabled', true) !== true || created.length === 0)
         return none;
@@ -592,6 +602,7 @@ async function dryRunAndRepair(taskId, llm, lib, created, packageName) {
                 perStepTimeoutMs: perStep,
                 failStreakStop: streakStop,
                 trace: { taskId, spanId: `${taskId}:dryrun-${Date.now()}-${Math.floor(Math.random() * 10000)}` },
+                signal,
             });
             if (r.passed)
                 passed++;
@@ -613,11 +624,11 @@ async function dryRunAndRepair(taskId, llm, lib, created, packageName) {
     await traceTask(taskId, 'dry-run 闭环完成', `${batch.length} 条试跑：${passed} 条通过，${failedCases.length} 条失败，依据真机证据重写 ${repaired} 条（脚本已重新绑定）`);
     return { ran: batch.length, passed, repaired };
 }
-async function writeCases(task, lib, llm) {
+async function writeCases(task, lib, llm, signal) {
     // 确保仓库已下载到本地（真实代码上下文）
     const insp0 = inspectRepo(lib);
     if (!fs.existsSync(path.join(insp0.dir, '.git')) && lib.repo_url) {
-        await pullRepo(lib);
+        await withGitSignal(signal, () => pullRepo(lib));
         await traceTask(task.id, '拉取仓库', lib.repo_url);
     }
     const insp = inspectRepo(lib);
@@ -722,7 +733,7 @@ ${loadLessons(lib.name).map((l, i) => `${i + 1}. ${l}`).join('\n') || '（暂无
  * 真机遍历生成用例（explore_cases）：真机 BFS 遍历 → 遍历数据交给「用例生成 Agent」（Prompt 管理 content+skill）
  * 设计用例 → 自审进化循环修订 → 入库（来源=AI 生成）→ 同步产出遍历报告与 Hypium 工程。
  */
-async function exploreCases(task, lib, llm) {
+async function exploreCases(task, lib, llm, signal) {
     const db = getDb();
     // 1. 设备与启动入口
     const online = await db.prepare(`SELECT serial FROM devices WHERE status = 'online' ORDER BY id LIMIT 1`).get();
@@ -768,7 +779,10 @@ async function exploreCases(task, lib, llm) {
     const bundle = pkg.split('/')[0] || launchAbility.split('/')[0] || lib.name;
     await traceTask(task.id, '真机遍历开始', `设备 ${serial} · bundle=${bundle} · 入口=${launchAbility} · 参数读系统配置 explore.*`);
     // 2. 真机 BFS 遍历（含双向滚动探索、状态栏过滤）
-    const result = await exploreApp(serial, bundle, { launchAbility, trace: spanMeta(task, 'explore_app') });
+    const result = await exploreApp(serial, bundle, { launchAbility, trace: spanMeta(task, 'explore_app'), signal });
+    // 遍历可能被取消中途收手：partial 结果不再送往生成/入库，直接让上层走取消收尾
+    if (signal?.aborted)
+        throw new Error('任务已取消（真机遍历中断）');
     saveExploreReport(lib.name, result);
     await refreshPackageInfo(lib);
     await getDb().prepare('UPDATE tasks SET progress = 40, updated_at = ? WHERE id = ?').run(now(), task.id);
@@ -919,7 +933,7 @@ ${lessonsText}`;
     // 6. dry-run 闭环：真机/模拟器试跑 → 失败证据回灌重写（执行器为真）
     let dr = { ran: 0, passed: 0, repaired: 0 };
     try {
-        dr = await dryRunAndRepair(task.id, llm, lib, created, bundle);
+        dr = await dryRunAndRepair(task.id, llm, lib, created, bundle, signal);
     }
     catch (e) {
         await traceTask(task.id, 'dry-run 闭环异常', `${e.message.slice(0, 200)}（用例已按生成结果入库，不受影响）`);
@@ -1472,6 +1486,10 @@ const MATRIX_CASE_SYSTEM = `你是鸿蒙三方库的真机测试用例设计者�
 async function toScript(task, lib, llm) {
     void llm; // 确定性模板生成，不消耗 token
     const db = getDb();
+    // P10：把本阶段实际生效的绑定写进轨迹 —— 手工用例转自动化脚本也是"有 agent 在干活"的一步，
+    // 换了技能/外部命令之后必须能追溯（与用例生成阶段同一纪律）。
+    const binding = await resolveBinding('script_gen', lib.id);
+    await traceTask(task.id, '生效的 Agent 绑定', bindingTraceLine(binding));
     const cases = await db.prepare(`SELECT id, case_no, name FROM cases WHERE library_id = ? AND script_status = '未绑定' ORDER BY id LIMIT 50`).all(lib.id);
     if (cases.length === 0)
         return '没有未绑定脚本的用例，无需转换。';

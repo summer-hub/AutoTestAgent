@@ -133,30 +133,89 @@ export async function runHypiumModule(
     stdout = (err.stdout || '') + (err.stderr || '') + `\n[process] ${err.message ?? ''}`;
   }
 
-  // 定位本次新生成的报告目录
+  // 定位本次新生成的报告目录（只认本次新增，避免把上一次的结果当成本次 —— 这是最隐蔽的假通过）
   let latest = '';
   if (fs.existsSync(reportsDir)) {
     const fresh = fs.readdirSync(reportsDir).filter((d) => !knownReports.has(d));
     latest = (fresh.length > 0 ? fresh : fs.readdirSync(reportsDir)).sort().pop() ?? '';
   }
-  const resultXml = path.join(reportsDir, latest, 'result', `${moduleStem}.xml`);
-  if (!fs.existsSync(resultXml)) {
-    return { status: 'failed', log: `未找到结果报告 ${path.relative(projDir, resultXml)}；输出尾部：${stdout.slice(-400)}` };
+  const reportDir = path.join(reportsDir, latest);
+  return parseHypiumReport(reportDir, moduleStem, stdout);
+}
+
+/** XML 实体的反向解码（报告里的 message 是转义过的，含 &#10; 换行与 &gt; 等）。 */
+function decodeXmlText(s: string): string {
+  return s
+    .replace(/&#(\d+);/g, (_m, d: string) => String.fromCharCode(Number(d)))
+    .replace(/&#x([0-9a-f]+);/gi, (_m, h: string) => String.fromCharCode(parseInt(h, 16)))
+    .replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&quot;/g, '"').replace(/&apos;/g, "'")
+    .replace(/&amp;/g, '&');
+}
+
+/**
+ * 解析 Hypium 运行报告。
+ *
+ * ⚠️ 真实布局与早期假设不同（实测 xdevice 6.0.7.210）：
+ *   真：`reports/<时间戳>/summary_report.xml`（还有 details/、log/、result/）
+ *   旧假设：`reports/latest/result/<module>.xml` —— **不存在**，于是所有执行都被报成
+ *   "未找到结果报告"，真正的失败原因（比如设备锁屏导致启动失败）被埋在日志里看不见。
+ * 这里两种布局都认，并且**把失败原因原文提出来**。
+ */
+export function parseHypiumReport(reportDir: string, moduleStem: string, stdout: string): HypiumRunResult {
+  const attrOf = (xml: string, k: string): string => new RegExp(`${k}="([^"]*)"`).exec(xml)?.[1] ?? '';
+  // 1) 找结果文件：summary_report.xml 优先，其次 result/<module>.xml，再退到任意 result/*.xml
+  const candidates = [
+    path.join(reportDir, 'summary_report.xml'),
+    path.join(reportDir, 'result', `${moduleStem}.xml`),
+    path.join(reportDir, 'result', 'summary_report.xml'),
+  ];
+  let resultXml = candidates.find((p) => fs.existsSync(p)) ?? '';
+  if (!resultXml) {
+    const resultDir = path.join(reportDir, 'result');
+    if (fs.existsSync(resultDir)) {
+      const any = fs.readdirSync(resultDir).filter((f) => f.endsWith('.xml')).sort()[0];
+      if (any) resultXml = path.join(resultDir, any);
+    }
   }
+  if (!resultXml) {
+    return {
+      status: 'failed',
+      log: `未找到结果报告（目录 ${reportDir}）；可能是 hypium/xdevice 未真正执行，输出尾部：${stdout.slice(-400)}`,
+      reportDir,
+    };
+  }
+
   const xml = fs.readFileSync(resultXml, 'utf8');
-  const attr = (k: string): string => new RegExp(`${k}="([^"]*)"`).exec(xml)?.[1] ?? '';
-  const failures = Number(attr('failures') || 0) + Number(attr('errors') || 0);
-  const unavailable = attr('unavailable') === '1';
-  const message = (attr('message') || '').replace(/&#\d+;/g, '').slice(0, 200);
-  if (unavailable) {
-    return { status: 'failed', log: `环境不可用：${message || '设备条件不满足'}`, reportDir: path.join(reportsDir, latest) };
+  // 2) 该模块的用例条目（summary_report.xml 里每个模块一条）
+  //    必须**精确匹配**：找不到就是"四方一致性"破了，绝不能拿别的模块条目顶替 ——
+  //    那等于用别的用例的结果冒充这一条（最隐蔽的假通过之一）。
+  const testcases = [...xml.matchAll(/<testcase\b[^>]*>/g)].map((m) => m[0]);
+  const mine = testcases.find((t) => attrOf(t, 'classname') === moduleStem || attrOf(t, 'name') === moduleStem) ?? '';
+  const message = decodeXmlText(mine ? attrOf(mine, 'message') : attrOf(xml, 'message')).trim();
+  const failures = Number(attrOf(xml, 'failures') || 0) + Number(attrOf(xml, 'errors') || 0);
+  const tests = attrOf(xml, 'tests') || String(testcases.length || '?');
+  const time = mine ? attrOf(mine, 'time') : attrOf(xml, 'time');
+
+  // 3) 模块名对不上：四方一致性破了（文件名 / 类名 / -l 任意一处不一致都会这样）
+  if (testcases.length > 0 && !mine) {
+    const names = testcases.map((t) => attrOf(t, 'classname') || attrOf(t, 'name')).filter(Boolean);
+    return {
+      status: 'failed',
+      log: `报告里没有模块 ${moduleStem}（报告里是：${names.join(', ') || '无'}）—— 检查文件名 / Python 类名 / -l 参数是否一致（四方一致性）；报告见 ${path.basename(resultXml)}`,
+      reportDir,
+    };
   }
-  if (failures > 0) {
-    return { status: 'failed', log: `Hypium 执行失败（failures/errors=${failures}）${message ? `：${message}` : ''}；输出尾部：${stdout.slice(-300)}`, reportDir: path.join(reportsDir, latest) };
+  // 4) 环境不可用 / 失败 / 通过
+  if (attrOf(xml, 'unavailable') === '1') {
+    return { status: 'failed', log: `环境不可用：${message || '设备条件不满足'}`, reportDir };
   }
-  return {
-    status: 'passed',
-    log: `Hypium 通过（${attr('tests') || '?'} tests, ${attr('time') || '0'}s）`,
-    reportDir: path.join(reportsDir, latest),
-  };
+  const moduleResult = mine ? attrOf(mine, 'result') : '';
+  if (failures > 0 || moduleResult === 'false') {
+    return {
+      status: 'failed',
+      log: `Hypium 执行失败（failures/errors=${failures}）${message ? `：${message.slice(0, 400)}` : ''}${stdout.length > 0 ? `；输出尾部：${stdout.slice(-200)}` : ''}`,
+      reportDir,
+    };
+  }
+  return { status: 'passed', log: `Hypium 通过（${tests} tests, ${time || '0'}s）`, reportDir };
 }

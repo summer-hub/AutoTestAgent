@@ -5,6 +5,8 @@ export interface LlmTextInput {
     temperature?: number;
     maxTokens?: number;
     timeoutMs?: number;
+    /** 任务级取消信号（任务 lane 的 AbortController）：触发后立即放弃，不再重试 */
+    signal?: AbortSignal;
     meta?: {
         taskId?: number;
         spanId?: string;
@@ -47,8 +49,7 @@ export interface LlmTraceEvent {
     error?: string;
 }
 export declare function setLlmTraceHook(fn: ((e: LlmTraceEvent) => void) | null): void;
-/** 读取 DSH 设置（~/.dsh/settings.yaml）里的 agent-default-model，即 DSH 当前实际默认模型。 */
-export declare function readDshDefaultModel(): {
+/** 读取 DSH 设置（~/.dsh/settings.yaml）里的 agent-default-model，即 DSH 当前实际默认模型。 */ export declare function readDshDefaultModel(): {
     provider: string;
     model: string;
 } | null;
@@ -57,7 +58,8 @@ export declare function readDshDefaultModel(): {
  *  - 优先使用「系统配置 → 默认模型」（若存在于 DSH 模型列表）
  *  - 未配置时跟随 DSH 实际默认模型（agent-default-model）
  *  - 都没有则用第一个可用模型
- * 确定性执行：只调用选定模型（最多 3 次重试），不跨模型切换。
+ * 重试会跨模型：首选失败后顺次切换到其他候选（最多 3 次），不再 3 次全打在同一个模型上；
+ * 候选不足 3 个时绕回首选（退化为同模型重试）。任务取消信号触发时立即放弃，不重试。
  */
 export declare function makeLlm(ctx: Context): LlmCall;
 /**

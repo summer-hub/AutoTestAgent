@@ -12,7 +12,7 @@ const PRESETS: Array<{ type: TaskType; icon: string; title: string; desc: string
   { type: 'integrate_cases', icon: '🔗', title: '整合初版用例为正式用例（P11）', desc: '把初版用例关联到接口 → 结合真机控件与接口契约升级为正式用例（补可机器校验判据）→ 接口无用例的按计划补生成 → 重算覆盖率' },
 ];
 
-const STATUS_TAG: Record<string, string> = { pending: 'gray', running: 'blue', done: 'green', failed: 'red', stopped: 'gray' };
+const STATUS_TAG: Record<string, string> = { pending: 'gray', running: 'blue', done: 'green', failed: 'red', cancelled: 'amber', stopped: 'gray' };
 
 export default function TasksPage() {
   const [tasks, setTasks] = useState<Task[]>([]);
@@ -89,6 +89,11 @@ export default function TasksPage() {
 
   const retry = async (id: number) => {
     try { await api.retryTask(id); load(); } catch (e) { setError((e as Error).message); }
+  };
+
+  const cancel = async (t: Task) => {
+    if (!window.confirm(`确认取消任务 ${t.taskNo}（${t.title}）？`)) return;
+    try { await api.cancelTask(t.id); load(); } catch (e) { setError((e as Error).message); }
   };
 
   const removeTask = async (t: Task) => {
@@ -192,7 +197,8 @@ export default function TasksPage() {
                 {(t.trace?.length ?? 0) > 0 && (
                   <span className="link" style={{ fontSize: 12 }} onClick={() => { setTraceTab('trace'); setEventsData(null); setTraceView(t); void api.events(t.id).then((r) => setEventsData(r.rows)).catch(() => setEventsData([])); }}>查看轨迹</span>
                 )}
-                {t.status === 'failed' && <button className="btn sm" onClick={() => retry(t.id)}>重试</button>}
+                {(t.status === 'failed' || t.status === 'cancelled') && <button className="btn sm" onClick={() => retry(t.id)}>重试</button>}
+                {(t.status === 'pending' || t.status === 'running') && <button className="btn sm" onClick={() => void cancel(t)}>取消</button>}
                 <span className="link" style={{ fontSize: 12, color: 'var(--red)' }} onClick={() => void removeTask(t)}>删除</span>
               </div>
             </div>
@@ -206,7 +212,7 @@ export default function TasksPage() {
           <div style={{ position: 'relative', zIndex: 1, width: 760, maxWidth: 'calc(100vw - 40px)', maxHeight: 'calc(100vh - 40px)', background: 'var(--panel)', border: '1px solid var(--border2)', borderRadius: 16, boxShadow: '0 24px 80px rgba(0,0,0,.55)', display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
             <div style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '14px 18px', borderBottom: '1px solid var(--border)' }}>
               <span style={{ fontSize: 15, fontWeight: 600 }}>🤖 {traceView.taskNo} · {traceView.title} 执行轨迹</span>
-              <span className={`tag ${traceView.status === 'done' ? 'green' : traceView.status === 'failed' ? 'red' : 'blue'}`}>{traceView.status}</span>
+              <span className={`tag ${traceView.status === 'done' ? 'green' : traceView.status === 'failed' ? 'red' : traceView.status === 'cancelled' ? 'amber' : 'blue'}`}>{traceView.status}</span>
               <span style={{ marginLeft: 12, display: 'flex', gap: 4 }}>
                 {(['trace', 'events'] as const).map((t) => (
                   <button key={t} className={`btn sm ${traceTab === t ? 'primary' : ''}`} style={{ padding: '3px 10px' }} onClick={() => setTraceTab(t)}>

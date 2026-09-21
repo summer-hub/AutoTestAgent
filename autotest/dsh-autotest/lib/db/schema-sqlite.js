@@ -375,6 +375,44 @@ CREATE TABLE IF NOT EXISTS agent_events (
 );
 CREATE INDEX IF NOT EXISTS idx_agent_events_task ON agent_events(task_id, created_at);
 CREATE INDEX IF NOT EXISTS idx_agent_events_kind ON agent_events(kind, created_at);
+
+-- 任务轨迹事件流（append-only）：tasks.trace 只是它物化出来的快照（MySQL 版见 schema.ts）
+CREATE TABLE IF NOT EXISTS task_events (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  task_id INTEGER NOT NULL,
+  seq INTEGER NOT NULL,
+  type TEXT NOT NULL DEFAULT 'trace',
+  title TEXT NOT NULL,
+  detail TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  UNIQUE (task_id, seq)
+);
+CREATE INDEX IF NOT EXISTS idx_task_events_task ON task_events(task_id, seq);
+
+-- 场景级覆盖度（Demo 场景 × Demo 代码）：行 = 场景（P01/N07…），由
+-- workspace/coverage/<库>/<库>Demo场景.md 与 <库>Demo场景覆盖率报告.md 解析而来。
+-- md 是唯一事实来源，本表只是可查询的快照（先删后插，可随时重建）。
+CREATE TABLE IF NOT EXISTS demo_scenario_coverage (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  library_id INTEGER NOT NULL,
+  library_version TEXT NOT NULL DEFAULT '',
+  scenario_no TEXT NOT NULL,
+  name TEXT NOT NULL DEFAULT '',
+  kind TEXT NOT NULL DEFAULT 'positive',
+  module TEXT NOT NULL DEFAULT '',
+  status TEXT NOT NULL,
+  api_covered INTEGER NOT NULL DEFAULT 0,
+  api_total INTEGER NOT NULL DEFAULT 0,
+  evidence TEXT NOT NULL DEFAULT '',
+  gap TEXT NOT NULL DEFAULT '',
+  note TEXT NOT NULL DEFAULT '',
+  scenario_doc TEXT NOT NULL DEFAULT '',
+  report_doc TEXT NOT NULL DEFAULT '',
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  UNIQUE (library_id, library_version, scenario_no)
+);
+CREATE INDEX IF NOT EXISTS idx_demo_scenario_lib ON demo_scenario_coverage(library_id, status);
 `;
 /** 建表语句拆分（better-sqlite3 exec 支持多语句，这里仍按分号拆便于逐条容错）。 */
 export function sqliteSchemaStatements() {

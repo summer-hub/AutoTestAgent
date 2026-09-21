@@ -16,6 +16,7 @@ const CFG_SECTIONS: Record<string, Array<{ key: string; label: string; type: 'te
   agent: [
     { key: 'agent.defaultModel', label: '默认模型', type: 'text' },
     { key: 'agent.maxCasesPerTask', label: '单任务用例上限', type: 'number' },
+    { key: 'agent.maxTokensPerTask', label: '单任务 token 上限', type: 'number', hint: '0=不限制' },
     { key: 'exec.llmTemperature', label: 'LLM 温度（0-1）', type: 'number' },
     { key: 'exec.llmTimeoutMs', label: 'LLM 超时（毫秒）', type: 'number' },
   ],

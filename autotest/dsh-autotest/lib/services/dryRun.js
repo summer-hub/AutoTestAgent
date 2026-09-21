@@ -3,7 +3,7 @@
 // harness 的核心原则「执行器为真（execution as ground truth）」：跑起来，拿真实失败喂回生成端迭代。
 // 与 executeCaseSteps 的区别——后者是黑盒整批执行（用于执行计划），本模块逐步执行并在每个失败点
 // 抓取「界面上实际有什么控件」，这是回灌给优化 Agent 最有价值的证据（模型据此知道真实界面长什么样）。
-import { execShell, launchArgs, parseNodes, runStepWithTimeout, uiDump } from './hdc.js';
+import { execShell, launchArgs, parseNodes, runStepWithTimeout, uiDump, withDeviceSignal } from './hdc.js';
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 /** 抓取当前界面可见控件文本（失败诊断用，失败不影响主流程）。 */
 async function visibleTexts(serial, limit = 25) {
@@ -54,55 +54,64 @@ export async function dryRunCase(caseNo, caseName, steps, serial, opts = {}) {
     const out = [];
     let passed = true;
     let streak = 0;
-    if (opts.launch) {
-        try {
-            const r = await execShell(serial, launchArgs(opts.launch));
-            logs.push(`[dry-run] 启动应用 ${opts.launch}：${r}`);
-            await sleep(2000);
+    // 设备操作统一挂取消信号：任务取消时在途的 hdc 子进程立即中断
+    if (opts.signal)
+        return withDeviceSignal(opts.signal, () => dryRunInner());
+    return dryRunInner();
+    async function dryRunInner() {
+        if (opts.launch) {
+            try {
+                const r = await execShell(serial, launchArgs(opts.launch));
+                logs.push(`[dry-run] 启动应用 ${opts.launch}：${r}`);
+                await sleep(2000);
+            }
+            catch (e) {
+                logs.push(`[dry-run] 启动应用失败（继续尝试步骤）：${e.message}`);
+            }
         }
-        catch (e) {
-            logs.push(`[dry-run] 启动应用失败（继续尝试步骤）：${e.message}`);
+        for (let i = 0; i < steps.length; i++) {
+            // 取消及时收手：在途子进程已被 abort 打断，这里直接抛出，避免带着失败结果继续空烧设备时间
+            if (opts.signal?.aborted)
+                throw new Error('任务已取消（dry-run 中断）');
+            const desc = steps[i] ?? `步骤 ${i + 1}`;
+            if (streak >= stopAfter) {
+                out.push({ seq: i + 1, desc, status: 'skipped', log: '前序连续失败，界面已偏离，跳过', durationMs: 0 });
+                continue;
+            }
+            const r = await runStepWithTimeout(serial, desc, perStep);
+            // 全链 traceId：dry-run 每步一条事件（kind=dry_run_step），与任务/span 关联
+            if (opts.trace) {
+                void import('./events.js').then(({ appendEvent }) => appendEvent({
+                    taskId: opts.trace?.taskId ?? null,
+                    spanId: opts.trace?.spanId ?? '',
+                    kind: 'dry_run_step',
+                    status: r.ok ? 'ok' : 'error',
+                    detail: `${caseNo} · 步骤${i + 1}「${desc}」→ ${r.ok ? '通过' : `失败：${r.log}`}`.slice(0, 500),
+                }));
+            }
+            if (r.ok) {
+                streak = 0;
+                out.push({ seq: i + 1, desc, status: 'passed', log: r.log, durationMs: r.durationMs });
+                logs.push(`[${String(i + 1).padStart(2, '0')}] ${desc} → 通过：${r.log}`);
+            }
+            else {
+                passed = false;
+                streak++;
+                const visible = await visibleTexts(serial);
+                out.push({ seq: i + 1, desc, status: 'failed', log: r.log, durationMs: r.durationMs, visibleControls: visible });
+                logs.push(`[${String(i + 1).padStart(2, '0')}] ${desc} → 失败：${r.log}；界面可见控件 ${visible.length} 个`);
+            }
         }
+        const first = out.find((s) => s.status === 'failed')?.seq;
+        logs.push(`[dry-run] ${caseNo} 执行结束：${passed ? '全部通过' : `存在失败步骤（首个失败于第 ${first} 步）`}`);
+        return {
+            passed,
+            steps: out,
+            logs,
+            failureBrief: passed ? '' : buildFailureBrief(caseNo, caseName, out),
+            ...(first ? { firstFailureAt: first } : {}),
+        };
     }
-    for (let i = 0; i < steps.length; i++) {
-        const desc = steps[i] ?? `步骤 ${i + 1}`;
-        if (streak >= stopAfter) {
-            out.push({ seq: i + 1, desc, status: 'skipped', log: '前序连续失败，界面已偏离，跳过', durationMs: 0 });
-            continue;
-        }
-        const r = await runStepWithTimeout(serial, desc, perStep);
-        // 全链 traceId：dry-run 每步一条事件（kind=dry_run_step），与任务/span 关联
-        if (opts.trace) {
-            void import('./events.js').then(({ appendEvent }) => appendEvent({
-                taskId: opts.trace?.taskId ?? null,
-                spanId: opts.trace?.spanId ?? '',
-                kind: 'dry_run_step',
-                status: r.ok ? 'ok' : 'error',
-                detail: `${caseNo} · 步骤${i + 1}「${desc}」→ ${r.ok ? '通过' : `失败：${r.log}`}`.slice(0, 500),
-            }));
-        }
-        if (r.ok) {
-            streak = 0;
-            out.push({ seq: i + 1, desc, status: 'passed', log: r.log, durationMs: r.durationMs });
-            logs.push(`[${String(i + 1).padStart(2, '0')}] ${desc} → 通过：${r.log}`);
-        }
-        else {
-            passed = false;
-            streak++;
-            const visible = await visibleTexts(serial);
-            out.push({ seq: i + 1, desc, status: 'failed', log: r.log, durationMs: r.durationMs, visibleControls: visible });
-            logs.push(`[${String(i + 1).padStart(2, '0')}] ${desc} → 失败：${r.log}；界面可见控件 ${visible.length} 个`);
-        }
-    }
-    const first = out.find((s) => s.status === 'failed')?.seq;
-    logs.push(`[dry-run] ${caseNo} 执行结束：${passed ? '全部通过' : `存在失败步骤（首个失败于第 ${first} 步）`}`);
-    return {
-        passed,
-        steps: out,
-        logs,
-        failureBrief: passed ? '' : buildFailureBrief(caseNo, caseName, out),
-        ...(first ? { firstFailureAt: first } : {}),
-    };
 }
 /** 汇总多条用例的 dry-run 结果，产出一次性回灌给 LLM 的修复简报。 */
 export function mergeFailureBriefs(results) {

@@ -4,6 +4,7 @@
 import { execFile, execFileSync } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
+import { AsyncLocalStorage } from 'node:async_hooks';
 import { promisify } from 'node:util';
 import { getDb, now } from '../db/connection.js';
 import { getSetting } from './settings.js';
@@ -138,12 +139,24 @@ export async function migrateRepoSubpaths(): Promise<number> {
   return changed;
 }
 
-async function runGit(args: string[], cwd?: string, timeoutMs = 180000): Promise<string> {  const { stdout } = await execFileAsync('git', args, {
+// 当前 git 操作的取消信号（AsyncLocalStorage：pullRepo/updateRepo 入口设置一次，
+// 内部所有 runGit 调用自动带上；未设置时行为不变）。与 connection.ts 的事务上下文同一模式。
+const gitSignalStore = new AsyncLocalStorage<AbortSignal | undefined>();
+
+/** 在「可取消的 git 操作」上下文里执行 fn（任务 lane 取消时中断 clone/pull 等子进程）。 */
+export function withGitSignal<T>(signal: AbortSignal | undefined, fn: () => Promise<T>): Promise<T> {
+  return gitSignalStore.run(signal, fn);
+}
+
+async function runGit(args: string[], cwd?: string, timeoutMs = 180000): Promise<string> {
+  const signal = gitSignalStore.getStore();
+  const { stdout } = await execFileAsync('git', args, {
     cwd,
     timeout: timeoutMs,
     maxBuffer: 16 * 1024 * 1024,
     env: { ...process.env },
     windowsHide: true,
+    ...(signal ? { signal } : {}),
   });
   return stdout.trim();
 }

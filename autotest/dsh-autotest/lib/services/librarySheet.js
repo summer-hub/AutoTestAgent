@@ -136,7 +136,8 @@ export function diffLibrarySheet(entries, existing, problems = []) {
 export function resolveSheetPath(explicit) {
     const configured = String(explicit ?? getSetting('libraries.xlsxPath', '') ?? '').trim();
     if (configured) {
-        const file = path.isAbsolute(configured) ? configured : path.resolve(dataDir(), '..', configured);
+        // 相对路径按数据目录解析（数据目录已迁出插件包，见 db/sqlite.ts）
+        const file = path.isAbsolute(configured) ? configured : path.resolve(dataDir(), configured);
         return { file, exists: fs.existsSync(file), tried: [file] };
     }
     const candidates = [

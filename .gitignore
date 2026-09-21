@@ -19,6 +19,10 @@ schtasks-test.txt
 
 # SQLite 种子库（首次启动自动建表 + 种子，不入库）
 autotest/dsh-autotest/data/
+# 数据目录迁出插件包时的旧目录留底（不入库）
+autotest/dsh-autotest/data.migrated-*/
+# 数据目录自检沙箱（假安装树）
+autotest/dsh-autotest/.verify-data-dir-*/
 
 # 运行时工作区（仓库克隆 / 自动化脚本落盘）
 workspace/

@@ -143,7 +143,7 @@ export type TaskType =
   | 'update_cases'   // 更新测试用例
   | 'to_script';     // 用例转自动化脚本
 
-export type TaskStatus = 'pending' | 'running' | 'done' | 'failed' | 'stopped';
+export type TaskStatus = 'pending' | 'running' | 'done' | 'failed' | 'cancelled' | 'stopped';
 
 /** AI 任务 */
 export interface Task {

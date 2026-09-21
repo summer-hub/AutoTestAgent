@@ -31,6 +31,30 @@ export interface CoveragePayload {
 }
 
 
+/** 场景级覆盖度（Demo 场景 × Demo 代码）：行 = 场景 P01/N07…，与接口级矩阵并列的第二个维度。 */
+export interface DemoScenarioPayload {
+  libraryId: number;
+  libraryName: string;
+  sources: { scenarioDoc: string; reportDoc: string };
+  missing: string[];
+  rows: number;
+  summary: {
+    total: number; covered: number; partial: number; uncovered: number;
+    positive: number; negative: number;
+    overall: number; positiveRate: number; negativeRate: number;
+    apiExecuted: number; apiConditional: number; apiMissing: number; apiRate: number;
+    byModule: Array<{ module: string; total: number; covered: number; partial: number; uncovered: number; rate: number }>;
+    byStatusEvidence: Record<string, number>;
+  };
+  warnings: string[];
+  scenarios: Array<{
+    no: string; name: string; kind: 'positive' | 'negative'; module: string; interfaces: string[];
+    status: 'covered' | 'partial' | 'uncovered';
+    apiCovered: number; apiTotal: number;
+    evidence: string; gap: string; note: string;
+  }>;
+}
+
 /** P4 用例计划的返回结构。 */
 export interface CasePlanPayload {
   libraryId: number; name: string; version: string;
@@ -147,6 +171,13 @@ export const api = {
   exportCoverageMatrix: (id: number, format: 'md' | 'csv') =>
     req<{ file: string; format: string; rows: number; summary: CoveragePayload['summary']; preview: string }>(
       `${API_BASE}/libraries/${id}/coverage-matrix/export`, { method: 'POST', body: JSON.stringify({ format }) }),
+  // 场景级覆盖度（Demo 场景 × Demo 代码）：md 是唯一事实来源，这里按需解析
+  demoScenarios: (id: number) => req<DemoScenarioPayload>(`${API_BASE}/libraries/${id}/demo-scenarios`),
+  syncDemoScenarios: (id: number) =>
+    req<DemoScenarioPayload>(`${API_BASE}/libraries/${id}/demo-scenarios/sync`, { method: 'POST' }),
+  exportDemoScenarios: (id: number, format: 'md' | 'csv') =>
+    req<{ file: string; format: string; rows: number; summary: DemoScenarioPayload['summary']; warnings: string[]; preview: string }>(
+      `${API_BASE}/libraries/${id}/demo-scenarios/export`, { method: 'POST', body: JSON.stringify({ format }) }),
   // P4 用例计划（dry-run：不调 LLM、不写用例，先看数量报告）
   casePlan: (id: number, b: { budget?: number } = {}) => req<CasePlanPayload>(`${API_BASE}/libraries/${id}/case-plan`, {
     method: 'POST', body: JSON.stringify(b),
@@ -316,6 +347,7 @@ export const api = {
   createTask: (b: { type: string; libraryId?: number; input?: string; title?: string }) =>
     req<Task>(`${API_BASE}/tasks`, { method: 'POST', body: JSON.stringify(b) }),
   retryTask: (id: number) => req<{ ok: boolean }>(`${API_BASE}/tasks/${id}/retry`, { method: 'POST' }),
+  cancelTask: (id: number) => req<{ ok: boolean; result: string }>(`${API_BASE}/tasks/${id}/cancel`, { method: 'POST' }),
   deleteTask: (id: number) => req<{ ok: boolean; deletedTaskNo: string }>(`${API_BASE}/tasks/${id}`, { method: 'DELETE' }),
 
   // 仓库本地目录

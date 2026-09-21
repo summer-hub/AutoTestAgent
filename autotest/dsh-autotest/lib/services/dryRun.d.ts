@@ -30,6 +30,8 @@ export declare function dryRunCase(caseNo: string, caseName: string, steps: stri
         taskId?: number;
         spanId?: string;
     };
+    /** 任务级取消信号：中断在途 hdc 子进程，并在步骤间隙及时收手（不再空烧设备时间） */
+    signal?: AbortSignal;
 }): Promise<DryRunResult>;
 /** 汇总多条用例的 dry-run 结果，产出一次性回灌给 LLM 的修复简报。 */
 export declare function mergeFailureBriefs(results: Array<{

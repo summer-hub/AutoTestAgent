@@ -75,6 +75,8 @@ export interface ExploreOpts {
         taskId?: number;
         spanId?: string;
     };
+    /** 任务级取消信号：中断在途 hdc 子进程，BFS 循环间隙及时收手 */
+    signal?: AbortSignal;
 }
 /**
  * BFS 遍历：从首页出发，逐个点击可交互控件进入子页面，keyBack 返回；去重页面签名。

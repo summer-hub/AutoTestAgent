@@ -1,3 +1,5 @@
+/** 在「可取消的设备操作」上下文里执行 fn。 */
+export declare function withDeviceSignal<T>(signal: AbortSignal | undefined, fn: () => Promise<T>): Promise<T>;
 export declare function hdcAvailable(): Promise<boolean>;
 export declare function listTargets(): Promise<string[]>;
 export declare function deviceInfo(serial: string): Promise<{

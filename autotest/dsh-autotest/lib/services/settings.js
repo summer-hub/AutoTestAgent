@@ -14,6 +14,7 @@ export const SETTING_DEFAULTS = {
     'agent.dryRunMaxCases': 5, // 单次任务最多 dry-run 的用例数（真机执行慢，需限流）
     'agent.dryRunPerStepTimeoutMs': 15000,
     'agent.dryRunFailStreakStop': 2, // 连续失败多少步后停止该用例（界面已偏离，后续证据不可信）
+    'agent.maxTokensPerTask': 300000, // 单任务 token 成本闸门（tokens_in+out 累计，0=不限制）
     'exec.llmTemperature': 0.4,
     'exec.llmTimeoutMs': 180000,
     'exec.llmRatePerMin': 10, // 每用户每分钟 LLM 调用上限（任务/分析/追问）
@@ -37,7 +38,7 @@ export const SETTING_DEFAULTS = {
     'explore.systemBundles': 'com.ohos.sceneboard,com.huawei.systemui,com.ohos.systemui,com.android.systemui',
     'exec.schedulerEnabled': true, // 多节点部署时仅主节点开启调度器（防定时计划/统计预热重复执行）
     // ---- 三方库测试表（人维护的 xlsx，库管理页「从表同步」用它作为库清单来源）----
-    'libraries.xlsxPath': '', // 留空 = <插件>/data/三方库测试表.xlsx；相对路径按插件 data 目录解析
+    'libraries.xlsxPath': '', // 留空 = <数据目录>/三方库测试表.xlsx；相对路径按数据目录解析
     // ---- 服务器化 ----
     'db.mysqlUrl': '',
 };

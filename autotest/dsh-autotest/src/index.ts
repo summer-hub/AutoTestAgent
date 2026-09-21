@@ -17,6 +17,7 @@ import { makeStaticHandler } from './static.js';
 import { migrateRepoSubpaths, refreshPackageInfo, reconcileRepos, repoDirFor, workspaceNotice } from './services/gitRepo.js';
 import { installLlmTracing } from './services/events.js';
 import { reapOnStartup } from './services/reaper.js';
+import { stopAllTaskLanes } from './services/taskLane.js';
 import { getSetting } from './services/settings.js';
 
 declare module '@deepseek-ai/cordis' {
@@ -96,6 +97,8 @@ export function apply(ctx: Context): void {
     return () => {
       disposeRoute();
       disposeWeb();
+      // 任务 lane：abort 在跑任务并清空队列（进程内队列不持久化，DB 行由 reaper 下次启动收尸）
+      stopAllTaskLanes();
       // 定时计划 / 每日归档 / 每分钟预热 / 设备轮询都必须停掉：
       // 不清理的话插件每次重载都会叠加一份后台任务（cron 与 interval 都是进程级句柄）
       stopAllSchedulers();

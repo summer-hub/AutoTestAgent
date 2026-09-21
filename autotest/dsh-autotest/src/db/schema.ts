@@ -390,6 +390,47 @@ CREATE TABLE IF NOT EXISTS agent_events (
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 CREATE INDEX idx_agent_events_task ON agent_events(task_id, created_at);
 CREATE INDEX idx_agent_events_kind ON agent_events(kind, created_at);
+
+-- 任务轨迹事件流（append-only）：tasks.trace 只是它物化出来的快照
+--  - seq 每任务从 1 递增，由 INSERT..SELECT MAX(seq)+1 一条语句原子分配（不读改写整个 JSON 列）
+--  - 唯一键 (task_id, seq) 兜底：并发追加撞键时报错，而不是静默丢一条轨迹
+--  - 前端可 ?afterSeq= 增量拉取（SSE 的地基）；快照丢了可随时从事件流重建
+CREATE TABLE IF NOT EXISTS task_events (
+  id BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+  task_id BIGINT UNSIGNED NOT NULL,
+  seq INT NOT NULL,
+  type VARCHAR(64) NOT NULL DEFAULT 'trace',
+  title VARCHAR(255) NOT NULL,
+  detail MEDIUMTEXT NOT NULL,
+  created_at VARCHAR(32) NOT NULL,
+  UNIQUE KEY uk_task_events (task_id, seq)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+CREATE INDEX idx_task_events_task ON task_events(task_id, seq);
+
+-- 场景级覆盖度（Demo 场景 × Demo 代码）：行 = 场景（P01/N07…），由
+-- workspace/coverage/<库>/<库>Demo场景.md 与 <库>Demo场景覆盖率报告.md 解析而来。
+-- md 是唯一事实来源，本表只是可查询的快照（先删后插，可随时重建）。
+CREATE TABLE IF NOT EXISTS demo_scenario_coverage (
+  id BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+  library_id BIGINT UNSIGNED NOT NULL,
+  library_version VARCHAR(64) NOT NULL DEFAULT '',
+  scenario_no VARCHAR(16) NOT NULL,
+  name VARCHAR(255) NOT NULL DEFAULT '',
+  kind VARCHAR(16) NOT NULL DEFAULT 'positive',
+  module VARCHAR(128) NOT NULL DEFAULT '',
+  status VARCHAR(16) NOT NULL,
+  api_covered INT NOT NULL DEFAULT 0,
+  api_total INT NOT NULL DEFAULT 0,
+  evidence VARCHAR(512) NOT NULL DEFAULT '',
+  gap VARCHAR(512) NOT NULL DEFAULT '',
+  note VARCHAR(256) NOT NULL DEFAULT '',
+  scenario_doc VARCHAR(512) NOT NULL DEFAULT '',
+  report_doc VARCHAR(512) NOT NULL DEFAULT '',
+  created_at VARCHAR(32) NOT NULL,
+  updated_at VARCHAR(32) NOT NULL,
+  UNIQUE KEY uk_demo_scenario (library_id, library_version, scenario_no)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+CREATE INDEX idx_demo_scenario_lib ON demo_scenario_coverage(library_id, status);
 `;
 
 /** 建表语句拆分（MySQL 不允许一条 query 跑多语句）。 */

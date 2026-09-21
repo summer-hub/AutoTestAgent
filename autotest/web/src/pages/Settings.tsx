@@ -15,6 +15,7 @@ const SECTIONS: Array<{ title: string; desc: string; fields: Array<{ key: string
     title: 'Agent 与任务', desc: 'AI 任务执行参数', fields: [
       { key: 'agent.defaultModel', label: '默认模型', type: 'text', hint: '留空 = 跟随 DSH 当前默认模型' },
       { key: 'agent.maxCasesPerTask', label: '单任务用例上限', type: 'number' },
+      { key: 'agent.maxTokensPerTask', label: '单任务 token 上限', type: 'number', hint: '成本闸门：单任务累计 tokens_in+out 达到即中止后续模型调用，0=不限制，默认 300000' },
       { key: 'agent.caseReviewRounds', label: '用例自审进化轮次', type: 'number', hint: '0-4，生成后评审 Agent 自动修订（真实可操作/逻辑合理/预期清晰），教训沉淀复用' },
       { key: 'exec.llmTemperature', label: 'LLM 温度（0-1）', type: 'number' },
       { key: 'exec.llmTimeoutMs', label: 'LLM 超时（毫秒）', type: 'number' },

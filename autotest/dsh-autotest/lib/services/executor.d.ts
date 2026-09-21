@@ -1,6 +1,6 @@
 import { type LlmCall } from './llmHarness.js';
 import { type Oracle } from './oracle.js';
-export declare function runTask(taskId: number, llm: LlmCall): Promise<void>;
+export declare function runTask(taskId: number, llm: LlmCall, signal?: AbortSignal): Promise<void>;
 export interface DraftCase {
     name: string;
     source: string;

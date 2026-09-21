@@ -26,3 +26,13 @@ export interface HypiumRunResult {
 }
 /** 运行单个 Hypium 模块并解析结果 XML（result/<module>.xml）。 */
 export declare function runHypiumModule(pythonCmd: string, projDir: string, moduleStem: string, timeoutMs: number): Promise<HypiumRunResult>;
+/**
+ * 解析 Hypium 运行报告。
+ *
+ * ⚠️ 真实布局与早期假设不同（实测 xdevice 6.0.7.210）：
+ *   真：`reports/<时间戳>/summary_report.xml`（还有 details/、log/、result/）
+ *   旧假设：`reports/latest/result/<module>.xml` —— **不存在**，于是所有执行都被报成
+ *   "未找到结果报告"，真正的失败原因（比如设备锁屏导致启动失败）被埋在日志里看不见。
+ * 这里两种布局都认，并且**把失败原因原文提出来**。
+ */
+export declare function parseHypiumReport(reportDir: string, moduleStem: string, stdout: string): HypiumRunResult;

@@ -15,7 +15,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
-import { oracleSupportModuleSource, generateCaseScript } from '../lib/services/hypiumGen.js';
+import { oracleSupportModuleSource, generateCaseScript, caseClassName } from '../lib/services/hypiumGen.js';
 import { probePythons, detectPython, describePythonProbe } from '../lib/services/hypiumRunner.js';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
@@ -74,11 +74,19 @@ console.log(`      使用解释器：${py.spec}（hypium ${py.version}）`);
 }
 
 // ---------- 2. 生成支持模块 + 一条覆盖全部句式的用例脚本 ----------
+// 目录结构照真工程：<root>/aw/autotest_oracle.py（判据断言模块归位 aw/ 包）
+// 与 <root>/testcases/<lib>/<lib>_<caseNo>.py（脚本 import aw.xxx，所以必须放在包里跑）
 const work = fs.mkdtempSync(path.join(os.tmpdir(), 'autotest-oracle-'));
-const modPath = path.join(work, 'autotest_oracle.py');
+const awDir = path.join(work, 'aw');
+fs.mkdirSync(awDir, { recursive: true });
+fs.writeFileSync(path.join(awDir, '__init__.py'), '', 'utf8');
+const modPath = path.join(awDir, 'autotest_oracle.py');
 fs.writeFileSync(modPath, oracleSupportModuleSource(), 'utf8');
 
-const casePath = path.join(work, 'gen_case_probe.py');
+const caseDir = path.join(work, 'testcases', 'json_schema');
+fs.mkdirSync(caseDir, { recursive: true });
+const caseModule = caseClassName('json-schema', 'C-AI-001');
+const casePath = path.join(caseDir, `${caseModule}.py`);
 const caseSrc = generateCaseScript(
   { name: 'json-schema', packageName: 'com.openharmony.jsonschemavalidator' },
   {
@@ -95,6 +103,9 @@ const caseSrc = generateCaseScript(
   },
 );
 fs.writeFileSync(casePath, caseSrc, 'utf8');
+check(caseModule === 'json_schema_C_AI_001', '模块名 = <lib>_<caseNo>', caseModule);
+check(caseSrc.includes(`class ${caseModule}(TestCase):`), '类名与模块名一致（xdevice -l 才能加载）');
+check(caseSrc.includes('from aw.autotest_oracle import ('), '脚本从 aw/ 包 import 判据断言模块');
 
 // 先做语法编译：连语法都过不去就不必谈运行了
 const [pyCmd, ...pyPre] = py.spec.split(' ');

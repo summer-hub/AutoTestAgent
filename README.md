@@ -13,7 +13,7 @@
 - **数据分析 / 归因**：从 GitCode 拉取真实 PR，AI 分析用例更新点、影响范围与风险；失败执行支持自由勾选（可跨库）归因；可指定 #PR 单独分析、实时进度动画、结果小卡片放大查看
 - **前端插件化**：DSH client 插件侧边栏入口 + 主区 iframe 嵌入，复用 DSH 深色风格
 - **并发与缓存**：LRU/Redis 缓存（写路径按前缀失效）、MySQL 连接池；`repository.ts` 预留了 `library_id % 16` 分表路由层，**当前仍是单表**（`caseTableFor()` 恒返回 `cases`），README 中的 QPS 数字来自开发期单机 SQLite 压测
-- **可回归自检**：`npm run verify:all` 覆盖 16 套离线自检（事务隔离 / 归档列 / 密钥脱敏 / 运行态清理 / API 门禁 / 遍历候选规则 / 仓库路径 / xlsx 同步 / 接口面提取 / 覆盖矩阵 / 用例计划 / 可测性与补丁 / oracle 与反假通过 / 分流规则 / 脚本绑定 / 知识库 / **用例↔接口关联** / 判据运行期真跑 / 步骤句式契约），CI 逐个接入（详见[autotest/README.md](autotest/README.md)）
+- **可回归自检**：`npm run verify:all` 覆盖 22 套离线自检（事务隔离 / 归档列 / 密钥脱敏 / 运行态清理 / 数据目录迁出 / API 门禁 / 遍历候选规则 / 仓库路径 / xlsx 同步 / 接口面提取 / 覆盖矩阵 / demo 场景 / 用例计划 / 可测性与补丁 / oracle 与反假通过 / 分流规则 / 脚本绑定 / 任务 lane 与取消 / 轨迹事件流 / LLM 重试换模型与 token 预算与限流 / 知识库 / 用例↔接口关联 / Hypium 工程布局与命名契约 / 判据运行期真跑 / 步骤句式契约），CI 逐个接入（详见[autotest/README.md](autotest/README.md)）
 
 ## 安装
 
@@ -57,7 +57,7 @@ dsh plugin --profile web install
 
 ```powershell
 # 1. 声明依赖：编辑 ~/.dsh/profiles/web/package.json 的 dependencies 加：
-#    "dsh-autotest": "https://github.com/summer-hub/AutoTestAgent/releases/download/v0.1.60/dsh-autotest-0.1.60.tgz"
+#    "dsh-autotest": "https://github.com/summer-hub/AutoTestAgent/releases/download/v1.0.0-rc.0/dsh-autotest-1.0.0-rc.0.tgz"
 #    然后必须执行安装（光写不装等于没写）：
 cd $env:USERPROFILE\.dsh\profiles\web
 pnpm install
@@ -83,7 +83,7 @@ Invoke-RestMethod http://localhost:3080/api/autotest/health
 - 之前装过旧 tarball → pnpm 会缓存旧包，需 `pnpm update dsh-autotest` 或删掉 `node_modules/dsh-autotest` 重装（旧包缺 `cordis.patch.yml`，装了也起不来）。
 - **接口报 404 但页面能打开** → 前端产物与后端进程版本不一致（只替换了 `lib/web`、没重启宿主）。重启 DSH 即可；新前端已兼容新旧两种列表返回，不会白屏。
 
-也可以把 tgz 下载到本地后用 `"dsh-autotest": "file:./dsh-autotest-0.1.60.tgz"` 或 `pnpm add ./dsh-autotest-0.1.60.tgz`，离线环境更稳；第 2~5 步不变。
+也可以把 tgz 下载到本地后用 `"dsh-autotest": "file:./dsh-autotest-1.0.0-rc.0.tgz"` 或 `pnpm add ./dsh-autotest-1.0.0-rc.0.tgz`，离线环境更稳；第 2~5 步不变。
 
 安装成功后：
 
@@ -94,7 +94,7 @@ Invoke-RestMethod http://localhost:3080/api/autotest/health
 
 ### 迁移环境 / 数据分析轮次说明
 
-- **迁移到新机器**：插件数据（`~/.dsh/profiles/web/node_modules/dsh-autotest/data/autotest.sqlite3`）携带了三方库、用例、分析记录；启动时会自动对账——本地没有对应仓库克隆目录（`<workspace>/repos/<lib>`）的库，会清空 `last_commit` / `last_synced_at`，界面显示「未同步」，不会残留旧机器的拉取记录。仓库克隆目录不随 DB 迁移，首次「拉取仓库代码」会自动 clone。
+- **迁移到新机器**：插件数据（`autotest.sqlite3`，默认在 `<DSH profile>/autotest-data/`，见下）携带了三方库、用例、分析记录；启动时会自动对账——本地没有对应仓库克隆目录（`<workspace>/repos/<lib>`）的库，会清空 `last_commit` / `last_synced_at`，界面显示「未同步」，不会残留旧机器的拉取记录。仓库克隆目录不随 DB 迁移，首次「拉取仓库代码」会自动 clone。
 - **多次扫描**：每次「拉取并分析 PR / 用例更新分析」都会生成一个新的扫描轮次（`round`，如 `R-<时间戳>-<随机数>`），旧轮次记录保留、按轮次分组展示，可「删除本轮」或「清空该库」。
 - **换仓库互不影响**：所有分析记录按三方库（`library_id`）隔离，切换/更换仓库只影响该库自己的记录。
 
@@ -103,7 +103,7 @@ Invoke-RestMethod http://localhost:3080/api/autotest/health
 业务数据放服务器 MySQL（`libraries/cases/tasks/...` 业务表）；Redis 作缓存。无需账号登录，打开即用。
 
 ```powershell
-# 系统配置里填好（或直接改 ~/.dsh/profiles/web/node_modules/dsh-autotest/data/autotest.sqlite3 的 settings 表）：
+# 系统配置里填好（或直接改 autotest-data/autotest.sqlite3 的 settings 表，数据目录见上一节）：
 #    db.mysqlUrl   = mysql://用户:密码@127.0.0.1:3306/autotest   （库需已创建，启动自动建表）
 #    data.redisUrl = redis://127.0.0.1:6379
 #    data.redisCache = true
@@ -117,13 +117,26 @@ SQLite → MySQL 一次性迁移（保留原 id，行数校验，可重复执行
 # 前置：MySQL 已建库 autotest；settings 表里 db.mysqlUrl 已配置（或环境变量 AUTOTEST_MYSQL_URL）
 cd $env:USERPROFILE\.dsh\profiles\node_modules\dsh-autotest
 npx tsx scripts/migrate-sqlite-to-mysql.ts
-# 源库默认取 data/autotest.sqlite3（可用 AUTOTEST_SQLITE_DB 覆盖）；
+# 源库默认取数据目录里的 autotest.sqlite3（可用 AUTOTEST_SQLITE_DB 覆盖）；
 # 脚本会先做源库体检：库文件不存在或不是有效业务库时直接报错退出，不会"迁移 0 行却显示成功"
-# 成功后日志逐表打印行数校验结果，并写入 data/.mysql-url 连接引导文件
+# 成功后日志逐表打印行数校验结果，并在数据目录写入 .mysql-url 连接引导文件
 # 重启 DSH 即从 MySQL 读写（旧 SQLite 文件保留为备份）
 ```
 
 迁移覆盖 13 张表（三方库/用例/版本/任务/计划/执行/执行归档/设备/Prompt/模型/分析/链路事件/配置），多机共享时只需共享 MySQL 数据。
+
+### 数据目录在哪（重要）
+
+SQLite 本地库、`.mysql-url` 连接引导、`三方库测试表.xlsx` 都落在**数据目录**里，优先级：
+
+1. `AUTOTEST_DATA_DIR` 环境变量（自检 / CI / 想自己指定位置时用）；
+2. 默认 `<DSH profile>/autotest-data/`（如 `~/.dsh/profiles/web/autotest-data/`）——**插件包外**，`pnpm install` / 升级 / 重装都不会动它。
+
+> 早期版本把数据放在插件包内的 `node_modules/dsh-autotest/data/`，`pnpm install` 或升级会连库一起删掉。
+> 现在首次启动会**自动把旧目录整体搬过来**（库里数据、xlsx、`.mysql-url` 都搬），旧目录改名成
+> `data.migrated-<时间戳>` 留底，不会删。搬不动（库被别的进程占着、目标不可写）时会继续用旧目录并在日志里说明，不会拿空库启动。
+
+想确认当前落点：启动日志会打印 `业务库就绪（SQLite 本地模式 · <路径>/autotest.sqlite3）`。
 
 ### 一键部署（阶段 2：Docker Compose 数据服务）
 
@@ -152,7 +165,8 @@ powershell -ExecutionPolicy Bypass -File docs/deploy/fix-dsh-community-plugin.ps
 
 ### 加固能力（阶段 2）
 
-- **LLM 限流**：进程级每分钟调用上限（系统配置 `exec.llmRatePerMin`，默认 10），超限返回 429；模型连通性测试也计入。
+- **LLM 限流**：每分钟调用上限（系统配置 `exec.llmRatePerMin`，默认 10），超限返回 429；配了 Redis（`data.redisUrl` + `data.redisCache`）时用 `INCR` 做**跨节点共享**的固定窗口计数，未配则退回进程内滑动窗口。模型连通性测试也计入。
+- **token 成本闸门**：每次模型调用按任务记账到 `agent_events`（成功/失败都带 tokens），单任务累计超过 `agent.maxTokensPerTask`（默认 300000，0=不限制）即中止该任务后续模型调用；重试改为**跨模型切换**（首选 → 其余候选 → 不足 3 个绕回首选）。
 - **keyset 深分页**：三方库 / 任务 / 执行 / 分析列表支持 `cursor` 参数（上一页最后 id），响应为 `{ items, nextCursor }`。
 - **执行记录归档**：每日凌晨自动把 6 个月前的执行记录移入 `executions_archive`，主表保持小。
 - **统计预聚合**：每分钟预热首页统计 / 分片缓存，覆盖率卡片不实时 COUNT。
@@ -175,7 +189,7 @@ powershell -ExecutionPolicy Bypass -File docs/deploy/fix-dsh-community-plugin.ps
 │   ├── dsh-autotest/     # DSH 服务端插件（Cordis）：API / DB / 调度 / 服务 / 自检脚本
 │   ├── web/              # 前端 React 18 + Vite（嵌入 DSH 主区）
 │   └── shared/           # 前后端共享领域类型
-├── docs/                 # 部署方案、优化计划、修复记录
+├── docs/                 # 部署方案（deploy/）、架构评审与参考架构分析
 ├── preview/              # 高保真交互原型与预览图
 └── .github/workflows/    # 打 tag 自动跑门禁 → 构建 → 发布 Release + tarball
 ```
@@ -185,10 +199,10 @@ powershell -ExecutionPolicy Bypass -File docs/deploy/fix-dsh-community-plugin.ps
 ```bash
 cd autotest
 npm run typecheck     # web + 插件 类型检查
-npm run verify:all    # 构建 + 16 套自检（离线可跑；无设备/无 hypium 的项自动跳过）
+npm run verify:all    # 构建 + 22 套自检（离线可跑；无设备/无 hypium 的项自动跳过）
 ```
 
-详见 [autotest/README.md](autotest/README.md)：构建命令、数据库设计、里程碑状态、自检覆盖范围；本轮的修复明细见 [docs/修复记录-2026-09-12.md](docs/修复记录-2026-09-12.md)。
+详见 [autotest/README.md](autotest/README.md)：构建命令、数据库设计、里程碑状态、自检覆盖范围；架构问题与整改进展见 [docs/架构评审-2026-09-21.md](docs/架构评审-2026-09-21.md)。
 
 ## 发布新版本
 
@@ -197,7 +211,7 @@ npm run verify:all    # 构建 + 16 套自检（离线可跑；无设备/无 hyp
 3. 打 tag 推送：
 
 ```bash
-git tag v0.1.60 && git push origin v0.1.60   # GitHub Actions 自动构建 Release + tarball
+git tag v1.0.0-rc.0 && git push origin v1.0.0-rc.0   # GitHub Actions 自动构建 Release + tarball
 ```
 
 发布前 CI 会依次跑：类型检查 → 数据层自检 → API 门禁自检 → 步骤契约自检 → `lib/` 产物一致性 → tag 与版本一致性。
@@ -206,5 +220,5 @@ git tag v0.1.60 && git push origin v0.1.60   # GitHub Actions 自动构建 Relea
 
 ```jsonc
 // ~/.dsh/profiles/web/package.json
-"dsh-autotest": "https://github.com/summer-hub/AutoTestAgent/releases/download/v0.1.60/dsh-autotest-0.1.60.tgz"
+"dsh-autotest": "https://github.com/summer-hub/AutoTestAgent/releases/download/v1.0.0-rc.0/dsh-autotest-1.0.0-rc.0.tgz"
 ```

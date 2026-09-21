@@ -3,13 +3,16 @@ import path from 'node:path';
 import XLSX from 'xlsx';
 import { ensureReady, dbMode, getDb, now, withRead } from '../db/connection.js';
 import { caseTableFor, shardOf, shardStats } from '../db/repository.js';
-import { runTask, optimizeCaseById, insertDraftCases } from '../services/executor.js';
+import { optimizeCaseById, insertDraftCases } from '../services/executor.js';
+import { cancelTask, enqueueTask } from '../services/taskLane.js';
 import { executePlan } from '../services/planExecutor.js';
 import { registerScheduledPlan, unregisterScheduledPlan } from '../services/scheduler.js';
 import { analyzeAttribution, analyzeCaseUpdates, analyzePrChanges, fetchPr, fetchPrs, fetchPrsFromGit, parseRepoPath, } from '../services/analyzer.js';
 import { getAllSettings, getSetting, maskSettingValue, SECRET_SETTING_KEYS, setSetting } from '../services/settings.js';
 import { isMaskedSecret, maskSecret, resolveSecretInput } from '../services/secrets.js';
 import { cacheDel, cacheGet, cacheSet } from '../services/cache.js';
+// LLM 限流单独一个模块：Redis 可用时多节点共享计数，模块级数组在多节点下形同虚设
+import { checkLlmRate } from '../services/llmLimit.js';
 import { readDshDefaultModel } from '../services/llmHarness.js';
 import { autoScanDevices } from '../services/deviceScanner.js';
 import { guessBundleFor, hdcAvailable, listTargets } from '../services/hdc.js';
@@ -17,9 +20,12 @@ import { spawn } from 'node:child_process';
 import { normalizeSubpath, pullRepo, repoDirFor, splitRepoUrl, workspaceConfigured, workspaceDir, workspaceNotice } from '../services/gitRepo.js';
 import { hypiumProjectDir, writeCaseScript, ensureHypiumProject } from '../services/hypiumGen.js';
 import { listEvents } from '../services/events.js';
+import { readTaskEvents } from '../services/taskEvents.js';
 import { exportLibrariesSheet, resolveSheetPath, syncLibrariesFromSheet } from '../services/librarySheet.js';
 import { loadStoredSymbols, runApiExtraction } from '../services/apiExtract.js';
 import { buildCoverageMatrix, loadCoverageMatrix, renderMatrixCsv, renderMatrixMarkdown } from '../services/coverageMatrix.js';
+// 场景级覆盖度（Demo 场景 × Demo 代码）：与接口级矩阵并列的第二个覆盖维度
+import { loadScenarioCoverage, syncScenarioCoverage, renderScenarioCoverageMarkdown } from '../services/demoScenarios.js';
 import { linkCasesForLibrary, listLinks, setManualLink } from '../services/caseLink.js';
 import { planLibraryCases, samplePlan } from '../services/casePlan.js';
 import { applyCasePatch, revertCasePatch, runTestability } from '../services/testability.js';
@@ -45,17 +51,6 @@ function compile(pattern) {
 function route(method, pattern, handler, opts) {
     const { regex, keys } = compile(pattern);
     routes.push({ method, keys, regex, handler, llm: opts?.llm });
-}
-// ---------- LLM 限流（全局滑动窗口，防刷模型额度） ----------
-let llmCalls = [];
-function checkLlmRate() {
-    const max = Math.max(1, Number(getSetting('exec.llmRatePerMin', 10)) || 10);
-    const nowMs = Date.now();
-    llmCalls = llmCalls.filter((t) => nowMs - t < 60_000);
-    if (llmCalls.length >= max) {
-        throw Object.assign(new Error(`LLM 调用过于频繁（${max} 次/分钟），请稍后再试`), { statusCode: 429 });
-    }
-    llmCalls.push(nowMs);
 }
 /** 读缓存 → 未命中执行并回填。 */
 async function withCache(key, fn) {
@@ -254,7 +249,7 @@ export function makeApiHandler(llm) {
             }
             const body = ['POST', 'PUT', 'PATCH'].includes(method) ? await readBody(req) : {};
             if (matched.llm)
-                checkLlmRate();
+                await checkLlmRate();
             const data = await matched.handler({ params, query, body, req });
             if (Buffer.isBuffer(data)) {
                 res.writeHead(200, {
@@ -762,6 +757,42 @@ function defineRoutes(llm) {
         fs.writeFileSync(file, content, 'utf8');
         console.log(`[autotest] 覆盖矩阵导出 #${id} ${lib.name} → ${file}（${r.rows.length} 行）`);
         return { file, format, rows: r.rows.length, summary: r.summary, preview: content.slice(0, 1200) };
+    });
+    // ---- 场景级覆盖度（Demo 场景 × Demo 代码）----
+    // 与接口级矩阵互补：矩阵行是导出符号，这里的行是场景（P01/N07…）。
+    // md（场景清单 + 覆盖率报告）是唯一事实来源，GET 直接解析；sync 才落快照。
+    route('GET', '/libraries/:id/demo-scenarios', async ({ params }) => {
+        const r = await loadScenarioCoverage(Number(params.id));
+        return r;
+    });
+    route('POST', '/libraries/:id/demo-scenarios/sync', async ({ params }) => {
+        const r = await syncScenarioCoverage(Number(params.id));
+        if (r.missing.length > 0) {
+            throw Object.assign(new Error(`缺少产出文档：${r.missing.join('；')}`), { statusCode: 400 });
+        }
+        console.log(`[autotest] 场景覆盖度同步 #${r.libraryId} ${r.libraryName}：${r.rows} 条 · 整体 ${r.summary.overall}% · 告警 ${r.warnings.length} 条`);
+        return r;
+    });
+    route('POST', '/libraries/:id/demo-scenarios/export', async ({ params, body }) => {
+        const id = Number(params.id);
+        const lib = await getDb().prepare('SELECT id, name FROM libraries WHERE id = ?').get(id);
+        if (!lib)
+            throw Object.assign(new Error('库不存在'), { statusCode: 404 });
+        const format = String(body?.format ?? 'md').toLowerCase() === 'csv' ? 'csv' : 'md';
+        const r = await loadScenarioCoverage(id);
+        if (r.rows === 0)
+            throw Object.assign(new Error('该库还没有场景清单/覆盖率报告，请先跑 demo 场景与覆盖分析两个阶段。'), { statusCode: 400 });
+        const dir = path.join(workspaceDir(), 'coverage', lib.name.replace(/[^\w.-]/g, '_'));
+        fs.mkdirSync(dir, { recursive: true });
+        const file = path.join(dir, format === 'csv' ? 'Demo场景覆盖度.csv' : 'Demo场景覆盖度.md');
+        const content = format === 'csv'
+            ? ['编号,场景,类型,模块,状态,接口覆盖率,匹配文件,差距说明',
+                ...r.scenarios.map((s) => [s.no, s.name, s.kind === 'negative' ? '反向' : '正向', s.module,
+                    s.status, `${s.apiCovered}/${s.apiTotal}`, s.evidence.replace(/,/g, '，'), s.gap.replace(/,/g, '，')].join(','))].join('\n') + '\n'
+            : renderScenarioCoverageMarkdown(lib.name, r.scenarios, r.summary, r.warnings, r.sources);
+        fs.writeFileSync(file, content, 'utf8');
+        console.log(`[autotest] 场景覆盖度导出 #${id} ${lib.name} → ${file}（${r.rows} 行）`);
+        return { file, format, rows: r.rows, summary: r.summary, warnings: r.warnings, preview: content.slice(0, 1200) };
     });
     // ---- P11：用例 ↔ 接口关联（接口覆盖矩阵的「用例」列以此为准）----
     // 关联是纯确定性计算（不调 LLM），所以可以随时重算；人工确认过的关联不会被覆盖。
@@ -1384,7 +1415,8 @@ function defineRoutes(llm) {
         const res = await db.prepare(`INSERT INTO tasks (task_no, type, title, library_id, input, trace, trace_id, status, progress, created_at, updated_at)
       VALUES (?, ?, ?, ?, ?, '[]', ?, 'pending', 0, ?, ?)`).run(taskNo, b.type, title, b.libraryId ?? null, b.input ?? '', traceId, t, t);
         const id = Number(res.lastInsertRowid);
-        setImmediate(() => { runTask(id, llm).catch(() => { }); });
+        // 入任务 lane：同库串行、跨库并行（替代裸 setImmediate —— 无串行时同库任务互相踩工作区）
+        enqueueTask(id, b.libraryId ?? null, llm);
         return mapTask(await db.prepare('SELECT * FROM tasks WHERE id = ?').get(id));
     }, { llm: true });
     route('GET', '/tasks', async ({ query }) => {
@@ -1410,17 +1442,37 @@ function defineRoutes(llm) {
             throw Object.assign(new Error('任务不存在'), { statusCode: 404 });
         return mapTask(row);
     });
+    // 任务轨迹事件流（append-only，增量读）：tasks.trace 只是它的快照。
+    // afterSeq 让客户端只拉新事件——#6 SSE 推送的读接口就是这一个。
+    route('GET', '/tasks/:id/events', async ({ params, query }) => {
+        const id = Number(params.id);
+        const row = await getDb().prepare('SELECT id FROM tasks WHERE id = ?').get(id);
+        if (!row)
+            throw Object.assign(new Error('任务不存在'), { statusCode: 404 });
+        const afterSeq = Number(query.get('afterSeq')) || 0;
+        const limit = clampInt(query.get('limit'), 500, 1, 1000);
+        return { ok: true, rows: await readTaskEvents(id, { afterSeq, limit }) };
+    });
     route('POST', '/tasks/:id/retry', async ({ params }) => {
         const id = Number(params.id);
         const db = getDb();
-        const row = await db.prepare('SELECT * FROM tasks WHERE id = ?').get(id);
+        const row = await db.prepare('SELECT status, library_id FROM tasks WHERE id = ?').get(id);
         if (!row)
             throw Object.assign(new Error('任务不存在'), { statusCode: 404 });
-        if (row.status !== 'failed')
-            throw Object.assign(new Error('仅失败任务可重试'), { statusCode: 400 });
+        if (row.status !== 'failed' && row.status !== 'cancelled')
+            throw Object.assign(new Error('仅失败/已取消任务可重试'), { statusCode: 400 });
         await db.prepare(`UPDATE tasks SET status='pending', progress=0, error=NULL, updated_at=? WHERE id=?`).run(now(), id);
-        setImmediate(() => { runTask(id, llm).catch(() => { }); });
+        enqueueTask(id, row.library_id, llm);
         return { ok: true };
+    });
+    route('POST', '/tasks/:id/cancel', async ({ params }) => {
+        const id = Number(params.id);
+        const r = await cancelTask(id);
+        if (r === 'not_found')
+            throw Object.assign(new Error('任务不存在'), { statusCode: 404 });
+        if (r === 'already_finished')
+            throw Object.assign(new Error('任务已终态，无需取消'), { statusCode: 400 });
+        return { ok: true, result: r };
     });
     route('DELETE', '/tasks/:id', async ({ params }) => {
         const id = Number(params.id);
@@ -1428,6 +1480,8 @@ function defineRoutes(llm) {
         const row = await db.prepare('SELECT * FROM tasks WHERE id = ?').get(id);
         if (!row)
             throw Object.assign(new Error('任务不存在'), { statusCode: 404 });
+        // 事件流一并删掉：任务没了还留着一堆 task_events 只是垃圾（且占用唯一键空间）
+        await db.prepare('DELETE FROM task_events WHERE task_id = ?').run(id);
         await db.prepare('DELETE FROM tasks WHERE id = ?').run(id);
         return { ok: true, deletedTaskNo: row.task_no };
     });

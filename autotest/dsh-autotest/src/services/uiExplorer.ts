@@ -5,7 +5,7 @@
 //  - 输出：页面清单（路径/控件/动画/滑动次数），供自动生成用例与 Hypium 脚本
 import fs from 'node:fs';
 import path from 'node:path';
-import { dumpMeta, execShell, findKeyword, inputText, isSystemBundle, keyBack, launchArgs, listTargets, parseDump, parseNodes, resolveMainAbility, screenSize, tap, uiDump, type UiNode } from './hdc.js';
+import { dumpMeta, execShell, findKeyword, inputText, isSystemBundle, keyBack, launchArgs, listTargets, parseDump, parseNodes, resolveMainAbility, screenSize, tap, uiDump, withDeviceSignal, type UiNode } from './hdc.js';
 import {
   budgetCheck, classifyControl, CoverageTracker, coverageHealth, dedupKey, isClickCandidate,
   isInteractive, nodeIdentity, nodeLabel, pageSignature, type ControlKind, type CoverageReport, type ExploreBudget,
@@ -82,6 +82,8 @@ export interface ExploreOpts {
   statusBarFilter?: boolean; // 不传时读系统配置 explore.statusBarFilter
   /** 链路追踪上下文：把遍历 op 写入 agent_events（kind=explore_op） */
   trace?: { taskId?: number; spanId?: string };
+  /** 任务级取消信号：中断在途 hdc 子进程，BFS 循环间隙及时收手 */
+  signal?: AbortSignal;
 }
 
 /**
@@ -210,6 +212,15 @@ async function swipePage(serial: string, dir: 'up' | 'down'): Promise<void> {
  * 每页若存在越界控件/动画区域，自动向上滑动直到完整可见（maxSwipePerPage 次）。
  */
 export async function exploreApp(
+  serial: string,
+  packageName: string,
+  opts: ExploreOpts = {},
+): Promise<ExploreResult> {
+  // 设备操作统一挂取消信号：任务取消时在途的 hdc 子进程立即中断
+  return withDeviceSignal(opts.signal, () => exploreAppInner(serial, packageName, opts));
+}
+
+async function exploreAppInner(
   serial: string,
   packageName: string,
   opts: ExploreOpts = {},
@@ -425,6 +436,8 @@ export async function exploreApp(
   let stopReason = '';
 
   while (queue.length > 0) {
+    // 任务取消：BFS 间隙收手（在途 hdc 已被 abort 中断），不再驱动设备
+    if (opts.signal?.aborted) { stopReason = '任务已取消'; op('遍历中断', '任务已取消'); break; }
     const b = budgetCheck({ pages: pages.length, clicksOnPage: 0, steps: tracker.steps, elapsedMs: Date.now() - t0 }, budget);
     if (b.exhausted) { stopReason = b.reason; op('预算耗尽停止', b.reason); break; }
     if (guard++ > Math.max(200, maxPages * 8)) { stopReason = 'guard'; op('遍历步数保护触发', `${guard}`); break; }

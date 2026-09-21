@@ -66,6 +66,10 @@ jobs:
         working-directory: autotest/dsh-autotest
         run: npm run verify:coverage
 
+      - name: Demo scenario coverage self-check（场景清单×覆盖率报告解析 / 自洽核对 / 不静默给 0）
+        working-directory: autotest/dsh-autotest
+        run: npm run verify:demo-scenarios
+
       - name: Case plan self-check（适用性 / 数量模型 / 优先级 / 显式抽样）
         working-directory: autotest/dsh-autotest
         run: npm run verify:case-plan
@@ -93,6 +97,10 @@ jobs:
       - name: Case link self-check（初版用例↔接口关联 / 矩阵看得见初版用例 / 人工确认不被覆盖）
         working-directory: autotest/dsh-autotest
         run: npm run verify:case-link
+
+      - name: Hypium layout self-check（单工程多库 / 命名四方一致 / 成对 json / 骨架不被覆盖 / 旧布局迁移）
+        working-directory: autotest/dsh-autotest
+        run: npm run verify:hypium-layout
 
       - name: Oracle runtime self-check（需要装了 hypium 的 Python，缺失自动跳过）
         working-directory: autotest/dsh-autotest
@@ -122,7 +130,7 @@ jobs:
           fi
           echo "lib/ 产物与源码一致"
 
-      # tag 与 package.json 版本必须对齐：否则会出现 v0.1.60 的 Release 里装着 0.1.58 的 tgz
+      # tag 与 package.json 版本必须对齐：否则会出现 tag 与 tgz 版本不一致的 Release
       - name: Verify tag matches package version
         run: |
           PKG_VERSION=$(node -p "require('./autotest/dsh-autotest/package.json').version")

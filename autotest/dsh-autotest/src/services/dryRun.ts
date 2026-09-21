@@ -3,7 +3,7 @@
 // harness 的核心原则「执行器为真（execution as ground truth）」：跑起来，拿真实失败喂回生成端迭代。
 // 与 executeCaseSteps 的区别——后者是黑盒整批执行（用于执行计划），本模块逐步执行并在每个失败点
 // 抓取「界面上实际有什么控件」，这是回灌给优化 Agent 最有价值的证据（模型据此知道真实界面长什么样）。
-import { execShell, launchArgs, parseNodes, runStepWithTimeout, tailHilog, uiDump } from './hdc.js';
+import { execShell, launchArgs, parseNodes, runStepWithTimeout, tailHilog, uiDump, withDeviceSignal } from './hdc.js';
 
 export interface DryRunStep {
   seq: number;
@@ -80,6 +80,8 @@ export async function dryRunCase(
     perStepTimeoutMs?: number;
     failStreakStop?: number;
     trace?: { taskId?: number; spanId?: string };   // 链路追踪：逐步写入 agent_events
+    /** 任务级取消信号：中断在途 hdc 子进程，并在步骤间隙及时收手（不再空烧设备时间） */
+    signal?: AbortSignal;
   } = {},
 ): Promise<DryRunResult> {
   const perStep = opts.perStepTimeoutMs ?? 15000;
@@ -89,6 +91,11 @@ export async function dryRunCase(
   let passed = true;
   let streak = 0;
 
+  // 设备操作统一挂取消信号：任务取消时在途的 hdc 子进程立即中断
+  if (opts.signal) return withDeviceSignal(opts.signal, () => dryRunInner());
+  return dryRunInner();
+
+  async function dryRunInner(): Promise<DryRunResult> {
   if (opts.launch) {
     try {
       const r = await execShell(serial, launchArgs(opts.launch));
@@ -100,6 +107,8 @@ export async function dryRunCase(
   }
 
   for (let i = 0; i < steps.length; i++) {
+    // 取消及时收手：在途子进程已被 abort 打断，这里直接抛出，避免带着失败结果继续空烧设备时间
+    if (opts.signal?.aborted) throw new Error('任务已取消（dry-run 中断）');
     const desc = steps[i] ?? `步骤 ${i + 1}`;
     if (streak >= stopAfter) {
       out.push({ seq: i + 1, desc, status: 'skipped', log: '前序连续失败，界面已偏离，跳过', durationMs: 0 });
@@ -140,6 +149,7 @@ export async function dryRunCase(
     failureBrief: passed ? '' : buildFailureBrief(caseNo, caseName, out),
     ...(first ? { firstFailureAt: first } : {}),
   };
+  }
 }
 
 /** 汇总多条用例的 dry-run 结果，产出一次性回灌给 LLM 的修复简报。 */

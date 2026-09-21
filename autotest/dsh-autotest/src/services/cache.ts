@@ -9,7 +9,7 @@ interface Entry { value: unknown; expiresAt: number }
 const lru = new Map<string, Entry>();
 const LRU_MAX = 5000;
 
-let redisClient: { get(k: string): Promise<string | null>; set(...args: unknown[]): Promise<unknown>; del(...keys: string[]): Promise<unknown>; keys(p: string): Promise<string[]> } | null = null;
+let redisClient: { get(k: string): Promise<string | null>; set(...args: unknown[]): Promise<unknown>; del(...keys: string[]): Promise<unknown>; keys(p: string): Promise<string[]>; incr(k: string): Promise<number>; pexpire(k: string, ms: number): Promise<number> } | null = null;
 let redisResolved = false;
 
 async function redis(): Promise<typeof redisClient> {
@@ -78,5 +78,31 @@ export async function cacheDel(prefix: string): Promise<void> {
   }
   for (const k of [...lru.keys()]) {
     if (k.startsWith(prefix)) lru.delete(k);
+  }
+}
+
+/**
+ * 计数器 +1（固定窗口限流用，全局限流必须落在共享存储上才有多节点意义）。
+ * 限流计数**故意不写内存 LRU**：多节点部署下各节点各算一份等于没限。
+ * Redis 未启用或出错时返回 null，由调用方回退到进程内计数。
+ */
+export async function cacheIncr(key: string, ttlMs: number): Promise<number | null> {
+  const r = await redis();
+  if (!r) return null;
+  try {
+    const n = await r.incr(`autotest:${key}`);
+    if (n === 1) {
+      // 新建键才设 TTL：续不上就删键并放弃 Redis 计数，
+      // 否则无 TTL 的窗口键会永远留在 Redis 里，把这个限流项永久卡死
+      try {
+        await r.pexpire(`autotest:${key}`, ttlMs);
+      } catch {
+        try { await r.del(`autotest:${key}`); } catch { /* 忽略 */ }
+        return null;
+      }
+    }
+    return n;
+  } catch {
+    return null;
   }
 }

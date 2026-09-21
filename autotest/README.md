@@ -95,14 +95,14 @@ cd dsh-autotest && npm pack                # 产出 dsh-autotest-<version>.tgz
 ```jsonc
 // ~/.dsh/profiles/<name>/package.json
 // 版本号与 dsh-autotest/package.json 的 version 保持一致（CI 会校验 tag 与版本一致）
-"dsh-autotest": "https://github.com/summer-hub/AutoTestAgent/releases/download/v0.1.60/dsh-autotest-0.1.60.tgz"
+"dsh-autotest": "https://github.com/summer-hub/AutoTestAgent/releases/download/v1.0.0-rc.0/dsh-autotest-1.0.0-rc.0.tgz"
 ```
 
-仓库已配好 GitHub Actions（打 `v*` tag 自动构建并发布 Release + tarball）。发布前会跑类型检查、16 套自检、`lib/` 产物一致性与 tag/版本一致性校验：
+仓库已配好 GitHub Actions（打 `v*` tag 自动构建并发布 Release + tarball）。发布前会跑类型检查、22 套自检、`lib/` 产物一致性与 tag/版本一致性校验：
 
 ```bash
 # 先改 dsh-autotest/package.json 的 version，并 npm run build:plugin 提交产物，再打 tag
-git tag v0.1.60 && git push origin v0.1.60
+git tag v1.0.0-rc.0 && git push origin v1.0.0-rc.0
 ```
 
 ## 目录结构
@@ -164,7 +164,8 @@ Redis 缓存与连接池已落地；分表路由层存在但未启用（当前 S
 - ✅ **M7** 缓存（LRU + Redis 可选）/ 连接池 / 分表路由层（预留）/ 压测脚本（开发期单机 SQLite 实测：冷 1754 QPS → 热 3077 QPS）
 - ✅ **M8** 真实执行链路：hdc 真机识别 + 真实 git 拉取/更新（clone/pull + 变更解析）+ 脚本落盘与目录浏览
 - ✅ **M9** 脚本执行链路（Hypium 模块真机执行 + xdevice 结果解析）+ 失败策略（continue / retry_twice / abort_library）+ 用例版本对比 / 分页组件
-- ✅ **M10** 稳固性轮次（见 `docs/修复记录-2026-09-12.md`）：SQLite 事务隔离、归档列漂移、密钥出参脱敏、请求安全闸门、分页信封、计划生命周期与 reaper、`lib/` 与 CI 门禁
+- ✅ **M10** 稳固性轮次：SQLite 事务隔离、归档列漂移、密钥出参脱敏、请求安全闸门、分页信封、计划生命周期与 reaper、`lib/` 与 CI 门禁
+- ✅ **架构整改**（见 `docs/架构评审-2026-09-21.md`）：任务 lane + 取消、轨迹事件溯源、数据目录迁出 `node_modules`、LLM 重试换模型 / Redis 全局限流 / 单任务 token 预算
 
 ## 核心业务语义
 
@@ -178,37 +179,44 @@ Redis 缓存与连接池已落地；分表路由层存在但未启用（当前 S
 - **Excel 导入导出**：Cases 页「⬇ 导出 Excel / ⬆ 导入 Excel」；导出生成 xlsx（用例编号/名称/来源/前置/步骤/预期/状态/版本），导入解析后批量入库并生成 V1 版本快照（支持中文表头与英文键、步骤换行/JSON/分号分隔）。
 - **数据分析**：Analysis 页「拉取并分析 PR / 用例更新分析」——从 GitCode API 拉取仓库真实 PR（含变更文件），AI 产出更新点/影响范围/建议用例更新/风险，写入 analyses 表；示例库 `lottie_turbo`（CPF-ApplicationTPC/lottie_turbo）已内置真实仓库地址，可直接体验。
 - **归因分析**：Attribution 页自由勾选失败执行（支持跨库，整库失败会整库纳入）——基于失败执行记录与 AI 思考过程，AI 产出结论/根因/证据/建议。
-- **LLM 稳健性**：`ctx.llm` 选定模型后最多重试 3 次（**不跨模型切换**，行为确定性优先）；输出 JSON 做围栏剥离/换行/尾逗号容错，解析失败会把错误回灌模型修复一次；驱动分片生成的解析错误保存在**调用局部变量**里（并发分片之间不会互相污染）；LLM 不可用时降级为规则分析（source=fallback）。
+- **LLM 稳健性**：`ctx.llm` 选定模型后最多重试 3 次，**失败会跨模型切换**（首选打头 → 其余候选顺次 → 不足 3 个绕回首选），不再 3 次全打在同一个模型上；任务取消信号触发时立即收手不重试；输出 JSON 做围栏剥离/换行/尾逗号容错，解析失败会把错误回灌模型修复一次；驱动分片生成的解析错误保存在**调用局部变量**里（并发分片之间不会互相污染）；LLM 不可用时降级为规则分析（source=fallback）。
+- **成本与限流**：每次 LLM 调用按 `meta.taskId` 记账到 `agent_events`（成功/失败都带 tokens），单任务累计超过 `agent.maxTokensPerTask`（默认 300000，0=不限制）即中止后续模型调用；每分钟调用上限 `exec.llmRatePerMin` 在 Redis 可用时用 INCR 做**跨节点共享**的固定窗口计数（未配 Redis 退回进程内滑动窗口），计数只挂在 API 入口，任务内部的连环调用由 token 预算管。
 - **系统配置**：Settings 页读写 settings 表的配置键（工作区/单任务用例上限/LLM 温度与超时/计划抽样/Redis 与缓存 TTL/遍历参数/MySQL 连接串），保存立即生效。**敏感键（MySQL/Redis 连接串）出参只回传打码值**，且掩码原样回传会被识别为"不改动"，不会覆盖真实凭据。
 - **缓存与连接池**：内存 LRU（配置 `data.redisUrl` + `data.redisCache` 后自动切 Redis），写路径在**写库成功之后**按前缀失效（含单条用例键）；MySQL 连接池；`repository.ts` 的 `library_id % 16` 分表路由层**已预留但未启用**（`caseTableFor()` 恒返回 `cases`），压测脚本 `node scripts/stress.mjs` 用于冷/热缓存对比。
 - **前端插件化（步骤 2）**：`dsh-autotest` 增加 client 半边（`dsh.client.platform: web` + `./client` 导出），浏览器侧 DOM 注入侧边栏入口 + 主区 iframe（挂 `/autotest-web/`）。**嵌入布局为「左侧导航 + 右侧内容」**：左侧 176px 导航按分组竖排 11 个入口（可手动收起为 56px 图标轨道，状态记在 localStorage；窗口窄于 560px 时自动收起并隐藏折叠按钮），右侧顶部是「分组 / 当前页」面包屑、下方是页面详情。模型管理直接复用 DSH 设置（设置 → 模型）。
 
 ## 自检（提交前 / CI 门禁）
 
-16 套自检都**不连 MySQL、不调 LLM**（用临时 SQLite 库与临时工作区，不碰你的数据）；无设备时真机相关分组自动跳过，无 hypium 时判据运行期那套自动跳过。CI 在打包发布前强制运行。
+22 套自检都**不连 MySQL、不调 LLM**（用临时 SQLite 库与临时工作区，不碰你的数据；LLM 层用可观测的假 `ctx.llm`，Redis 用内存假 RESP 服务）；无设备时真机相关分组自动跳过，无 hypium 时判据运行期那套自动跳过。CI 在打包发布前强制运行。
 
 ```bash
 cd autotest
 npm run typecheck     # web + 插件类型检查
-npm run verify:all    # 构建 + 16 套自检（无设备 / 无 hypium 的项自动跳过）
+npm run verify:all    # 构建 + 22 套自检（无设备 / 无 hypium 的项自动跳过）
 ```
 
 | 命令 | 覆盖内容 |
 |---|---|
 | `npm run verify:data` | 事务隔离与串行（SQLite 单连接并发）、归档表列对齐并真跑一次归档、种子不写死工作区、密钥脱敏与防回写、残留 running 清理与计划重入保护、`llmJson` 并发隔离 |
+| `npm run verify:data-dir` | 默认落点不含 `node_modules`、`AUTOTEST_DATA_DIR` 覆盖优先且不触发迁移、★ 旧数据一条不少、已迁过不重复搬、★ 搬不动退回旧目录、★ WAL 数据不丢 |
 | `npm run verify:api` | 进程内起真实 HTTP 服务挂业务 handler：同源闸门（Origin/Sec-Fetch-Site）、Content-Type 白名单、请求体体积上限、坏 JSON 拒绝、出参脱敏、模型端点协议/元数据地址校验、`limit` 钳制、用例 `steps` 入参校验、读写缓存一致性、列表信封 `nextCursor` |
 | `npm run verify:explorer` | 遍历候选判定（用 `clickable` 而非"有文本"）、去重键、控件分类、预算、覆盖率报告、无文本控件不丢 |
 | `npm run verify:repo-paths` | 仓库地址拆分、子目录穿越防护、同仓共享克隆、legacy 克隆接管、子目录版本号 |
 | `npm run verify:sheet` | xlsx 解析/表头识别/diff、同步幂等、**不覆盖 Agent 字段**、绝不删库 |
 | `npm run verify:api-extract` | 导出链解析、定义提取（TS 与打包 JS 两种形态）、JSDoc 与参数表、三类假覆盖防护 |
 | `npm run verify:coverage` | 矩阵状态判定规则表、风险标记、设备控件匹配、导出格式 |
+| `npm run verify:demo-scenarios` | Demo 场景抽取、demo 资产与真假覆盖分离、场景级覆盖度渲染 |
 | `npm run verify:case-plan` | 四类场景适用性、数量模型、优先级、★ 每接口 ≥1 正向、★ 报告↔计划一致、★ 抽样条数守恒 |
 | `npm run verify:testability` | A/B/C/D 判定、补丁生成与应用/回退、越界路径拒绝、原仓库不被改动 |
 | `npm run verify:oracle` | oracle 校验、含糊期望值拦截、★ 断言为空/恒真判为假通过、验证步骤跳过判弱通过 |
 | `npm run verify:automation` | 分流规则（auto/human 与 9 类阻塞）、时长阈值、每阶段单独提问、归属明确 |
 | `npm run verify:binding` | 未映射步骤即失败、空断言脚本拒绝写入、用例升版→stale、人工改过→manual 且不覆盖 |
+| `npm run verify:task-lane` | 同库串行/跨库并行、抢占锁（重试与并发创建不跑两份）、排队中取消、★ 运行中取消与卸载 abort 贯穿 LLM 与子进程、终态不被迟到结果覆盖 |
+| `npm run verify:task-events` | seq 每任务独立递增、★ 20 条并发追加不丢不重、快照与事件流逐条一致、afterSeq 增量读、★ `LIMIT -1` 陷阱夹紧、快照可重建、终态后追加可见 |
+| `npm run verify:llm-fallback` | ★ 重试跨模型轮转（首选打头/候选去重/不足 3 个绕回）、取消不换模型重试、★ 成功与失败埋点都记 token、★ 单任务 token 预算阻断、限流进程内回退、★ Redis INCR 全局计数（两个子进程共享同一个键，第二个节点被第一个挡住） |
 | `npm run verify:knowledge` | LLM wiki front-matter/检索/注入预算、生命周期、agent 阶段契约、MCP 工具 |
 | `npm run verify:case-link` | **P11**：初版用例↔接口关联的依据与优先级、面包屑↔路由名对齐、★ 初版用例进入矩阵「用例」列、人工确认不被覆盖、关联幂等、未关联用例统计 |
+| `npm run verify:hypium-layout` | Hypium 工程布局与命名契约（目录结构/入口模块/模块名与用例编号对齐） |
 | `npm run verify:oracle-runtime` | 把判据支持模块与一条覆盖全部句式的用例脚本**真编译、真 import**，再用假 driver 真跑 24 项断言（★ 反静默通过）；同时校验解释器探测不会选中没有 hypium 的 python。**需要装了 hypium 的 Python，缺失自动跳过** |
 | `node scripts/verify-step-contract.mjs` | 步骤句式 → Hypium 调用映射、生成脚本的 driver API 白名单（防"调用不存在的 API"）、控件引用 guardrail、执行端 dry-run 真机判定（无设备自动跳过） |
 

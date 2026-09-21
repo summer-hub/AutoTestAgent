@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from 'react';
 import type { Library } from 'shared';
-import { api, type CasePlanPayload } from '../api';
+import { api, type CasePlanPayload, type DemoScenarioPayload } from '../api';
 
 /**
  * 覆盖矩阵（P3）：一张表回答"每个对外接口，在 demo 里有没有被用到？在真机上有没有对应控件？
@@ -91,6 +91,43 @@ export default function CoveragePage() {
   const [view, setView] = useState<'table' | 'grid'>('table');
   const [cell, setCell] = useState<{ symbolId: number; scenario: string } | null>(null);
   const [linkBusy, setLinkBusy] = useState(false);
+  // 场景级覆盖度（Demo 场景 × Demo 代码）：与接口级矩阵并列的第二个维度。
+  // 它的分母是"场景"（P01/N07…），能看出"接口有调用点但流程没执行"这类接口维度看不见的问题。
+  const [demo, setDemo] = useState<DemoScenarioPayload | null>(null);
+  const [demoBusy, setDemoBusy] = useState(false);
+
+  const loadDemo = useCallback((id: number) => {
+    if (!id) return;
+    setDemoBusy(true);
+    api.demoScenarios(id)
+      .then((r) => setDemo(r))
+      .catch(() => setDemo(null))
+      .finally(() => setDemoBusy(false));
+  }, []);
+
+  useEffect(() => { loadDemo(libId); }, [libId, loadDemo]);
+
+  /** 落库快照：md 仍是唯一事实来源，这一步只是把当前解析结果存进 DB 便于列表/趋势查询。 */
+  const syncDemo = async () => {
+    if (!libId) return;
+    setDemoBusy(true); setError(''); setMsg('');
+    try {
+      const r = await api.syncDemoScenarios(libId);
+      setDemo(r);
+      setMsg(`已落库场景覆盖度快照：${r.rows} 条 · 整体 ${r.summary.overall}%`
+        + (r.warnings.length > 0 ? ` · ⚠️ ${r.warnings.length} 条自洽告警需要处理` : ''));
+    } catch (e) { setError(String((e as Error).message)); }
+    finally { setDemoBusy(false); }
+  };
+
+  const exportDemo = async (format: 'md' | 'csv') => {
+    if (!libId) return;
+    setError(''); setMsg('');
+    try {
+      const r = await api.exportDemoScenarios(libId, format);
+      setMsg(`已导出场景覆盖度 ${r.rows} 行到 ${r.file}`);
+    } catch (e) { setError(String((e as Error).message)); }
+  };
 
   useEffect(() => {
     api.libraries({ pageSize: 300 }).then((r) => {
@@ -303,8 +340,147 @@ export default function CoveragePage() {
         </div>
       )}
 
-      {plan && showPlans && (
-        <div className="card" style={{ marginTop: 12, borderColor: 'var(--accent-dim)' }}>
+      {/* 场景级覆盖度（Demo 场景 × Demo 代码）
+          —— 与上面的接口级矩阵互补：分母是"场景"，所以能看见"接口有调用点、但流程其实没执行"这类
+          接口维度发现不了的问题（json-schema 的 P11 规则增删就是这样被判出来的）。 */}
+      <div className="card" style={{ marginTop: 12 }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap', marginBottom: 8 }}>
+          <b style={{ fontSize: 13 }}>场景覆盖度（Demo 场景 × Demo 代码）</b>
+          {demo && demo.rows > 0 && (
+            <span className="muted" style={{ fontSize: 11.5 }}>
+              {demo.rows} 条场景 · 正向 {demo.summary.positive} / 反向 {demo.summary.negative}
+            </span>
+          )}
+          <div style={{ flex: 1 }} />
+          <button className="btn sm" disabled={demoBusy || !libId} onClick={() => loadDemo(libId)}>
+            {demoBusy ? '解析中…' : '重新解析'}
+          </button>
+          <button className="btn sm" disabled={demoBusy || !libId || !demo || demo.rows === 0} onClick={() => void syncDemo()}>
+            落库快照
+          </button>
+          <button className="btn sm" disabled={!demo || demo.rows === 0} onClick={() => void exportDemo('md')}>导出 MD</button>
+          <button className="btn sm" disabled={!demo || demo.rows === 0} onClick={() => void exportDemo('csv')}>导出 CSV</button>
+        </div>
+
+        {(!demo || demo.rows === 0) ? (
+          <div className="muted" style={{ fontSize: 12 }}>
+            还没有场景覆盖度产物。先跑「demo 解析」（产出 <span className="mono">{'{库名}'}Demo场景.md</span>），
+            再跑「覆盖矩阵」阶段的 ohos-demo-coverage-analyzer（产出 <span className="mono">{'{库名}'}Demo场景覆盖率报告.md</span>），
+            两份文档都在 <span className="mono">workspace/coverage/{'{库名}'}/</span> 下；本卡片只解析、不臆造。
+            {demo && demo.missing.length > 0 && (
+              <div style={{ marginTop: 6, color: 'var(--amber)' }}>缺少：{demo.missing.join('；')}</div>
+            )}
+          </div>
+        ) : (
+          <>
+            <div className="grid-3">
+              <div className="card">
+                <div className="muted" style={{ fontSize: 12 }}>整体覆盖率（完全 1.0 / 部分 0.5）</div>
+                <div style={{ fontSize: 22, fontWeight: 600 }}>{demo.summary.overall}%</div>
+                <div className="muted" style={{ fontSize: 11 }}>
+                  完全覆盖 {demo.summary.covered} · 部分 {demo.summary.partial} · 未覆盖 {demo.summary.uncovered}
+                </div>
+              </div>
+              <div className="card">
+                <div className="muted" style={{ fontSize: 12 }}>接口维度（真实执行 / 全部核对项）</div>
+                <div style={{ fontSize: 22, fontWeight: 600 }}>{demo.summary.apiRate}%</div>
+                <div className="muted" style={{ fontSize: 11 }}>
+                  真实执行 {demo.summary.apiExecuted} · 有条件/未生效 {demo.summary.apiConditional} · 零调用 {demo.summary.apiMissing}
+                </div>
+              </div>
+              <div className="card">
+                <div className="muted" style={{ fontSize: 12 }}>正 / 反向覆盖率</div>
+                <div style={{ fontSize: 22, fontWeight: 600 }}>
+                  {demo.summary.positiveRate}% <span className="muted" style={{ fontSize: 14 }}>/</span> {demo.summary.negativeRate}%
+                </div>
+                <div className="muted" style={{ fontSize: 11 }}>反向常是漏得最多的那一半</div>
+              </div>
+            </div>
+
+            {demo.warnings.length > 0 && (
+              <div className="card" style={{ marginTop: 10, borderColor: 'var(--amber)' }}>
+                <div style={{ fontSize: 12, color: 'var(--amber)', marginBottom: 4 }}>
+                  ★ 自洽核对告警 {demo.warnings.length} 条（场景清单与覆盖率报告对不上，数字不可信之前先处理这些）
+                </div>
+                <div className="mono" style={{ fontSize: 11, maxHeight: 110, overflowY: 'auto', color: 'var(--text2)' }}>
+                  {demo.warnings.slice(0, 20).map((w, i) => <div key={i}>· {w}</div>)}
+                  {demo.warnings.length > 20 && <div className="muted">… 其余 {demo.warnings.length - 20} 条</div>}
+                </div>
+              </div>
+            )}
+
+            <div style={{ marginTop: 10, maxHeight: 420, overflowY: 'auto' }}>
+              <table>
+                <thead>
+                  <tr>
+                    <th style={{ width: 54 }}>编号</th>
+                    <th style={{ width: 240 }}>场景</th>
+                    <th style={{ width: 56 }}>类型</th>
+                    <th style={{ width: 120 }}>模块</th>
+                    <th style={{ width: 84 }}>状态</th>
+                    <th style={{ width: 84 }}>接口覆盖</th>
+                    <th style={{ width: 220 }}>匹配文件</th>
+                    <th>差距说明</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {demo.scenarios.map((r) => (
+                    <tr key={r.no}>
+                      <td className="mono" style={{ fontSize: 11.5 }}>{r.no}</td>
+                      <td style={{ fontSize: 12 }}>{r.name}</td>
+                      <td><span className={`tag ${r.kind === 'negative' ? 'gray' : 'blue'}`}>{r.kind === 'negative' ? '反向' : '正向'}</span></td>
+                      <td className="muted" style={{ fontSize: 11.3 }}>{r.module || '—'}</td>
+                      <td>
+                        <span className={`tag ${r.status === 'covered' ? 'green' : r.status === 'partial' ? 'amber' : 'red'}`}>
+                          {r.status === 'covered' ? '完全覆盖' : r.status === 'partial' ? '部分覆盖' : '未覆盖'}
+                        </span>
+                        {r.note && <div style={{ fontSize: 10.5, color: 'var(--amber)' }}>⚠ {r.note}</div>}
+                      </td>
+                      <td className="mono" style={{ fontSize: 11.5 }}>{r.apiCovered}/{r.apiTotal}</td>
+                      <td className="mono" style={{ fontSize: 10.8 }}>{r.evidence || '—'}</td>
+                      <td className="muted" style={{ fontSize: 11.3 }}>{r.gap || '—'}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+
+            {demo.summary.byModule.length > 0 && (
+              <div style={{ marginTop: 10 }}>
+                <div className="muted" style={{ fontSize: 11.8, marginBottom: 4 }}>模块覆盖（每个场景归属唯一模块，不重复计数）</div>
+                <table style={{ maxWidth: 720 }}>
+                  <thead>
+                    <tr>
+                      <th>模块</th><th style={{ width: 70 }}>场景数</th><th style={{ width: 60 }}>完全</th>
+                      <th style={{ width: 60 }}>部分</th><th style={{ width: 60 }}>未覆盖</th><th style={{ width: 80 }}>覆盖率</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {demo.summary.byModule.map((m) => (
+                      <tr key={m.module}>
+                        <td style={{ fontSize: 12 }}>{m.module}</td>
+                        <td className="mono" style={{ fontSize: 11.5 }}>{m.total}</td>
+                        <td className="mono" style={{ fontSize: 11.5, color: 'var(--green)' }}>{m.covered}</td>
+                        <td className="mono" style={{ fontSize: 11.5, color: 'var(--amber)' }}>{m.partial}</td>
+                        <td className="mono" style={{ fontSize: 11.5, color: 'var(--red)' }}>{m.uncovered}</td>
+                        <td className="mono" style={{ fontSize: 11.5 }}>{m.rate}%</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
+
+            <div className="muted" style={{ fontSize: 11, marginTop: 8 }}>
+              来源（md 是唯一事实来源，本卡片只解析）：
+              <span className="mono">{demo.sources.scenarioDoc}</span>
+              <span className="mono"> {demo.sources.reportDoc}</span>
+            </div>
+          </>
+        )}
+      </div>
+
+      {plan && showPlans && (        <div className="card" style={{ marginTop: 12, borderColor: 'var(--accent-dim)' }}>
           <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 8 }}>
             <b>用例计划（P4 · dry-run，尚未生成）</b>
             <span className="muted" style={{ fontSize: 12 }}>
