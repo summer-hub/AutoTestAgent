@@ -168,7 +168,13 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
+          # rc/alpha/beta 等预发布版本必须打 --prerelease，否则会被 GitHub 当成正式版、
+          # 顶掉 "Latest release"（v1.0.0-rc.0 当初就是漏了这手，事后手工补的标记）
+          PRERELEASE_FLAG=""
+          case "$GITHUB_REF_NAME" in
+            *-rc.*|*-alpha.*|*-beta.*) PRERELEASE_FLAG="--prerelease" ;;
+          esac
           gh release create "$GITHUB_REF_NAME" autotest/dsh-autotest/dsh-autotest-*.tgz \
             --repo "$GITHUB_REPOSITORY" \
             --title "dsh-autotest $GITHUB_REF_NAME" \
-            --generate-notes
+            --generate-notes $PRERELEASE_FLAG
