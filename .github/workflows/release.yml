@@ -18,7 +18,10 @@ jobs:
       - name: Setup Node
         uses: actions/setup-node@v4
         with:
-          node-version: 20
+          # 必须 >= 23：better-sqlite3 13 的官方 prebuild 以 NAPI_VERSION=10 编译
+          # （binding.gyp 写死），Node 20/22 加载即段错误（exit 139）。
+          # 与本地开发（node 24.x）/ DSH 内置 node / Electron 44 内嵌 Node 保持一致。
+          node-version: 24
           cache: npm
           cache-dependency-path: |
             autotest/package-lock.json
