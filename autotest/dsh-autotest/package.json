@@ -1,7 +1,7 @@
 {
   "name": "dsh-autotest",
   "description": "鸿蒙三方库 AutoTest 平台 — DeepSeek Harness 服务端插件（用例库/任务/执行计划/设备，复用 ctx.llm 与 ctx.webServer）",
-  "version": "1.0.0-rc.0",
+  "version": "1.0.0-rc.1",
   "private": true,
   "type": "module",
   "main": "lib/index.js",
@@ -60,10 +60,10 @@
     "db:seed": "tsx src/db/seed.ts"
   },
   "dependencies": {
-    "@types/better-sqlite3": "^7.6.11",
+    "@types/better-sqlite3": "^7.6.13",
     "@types/node": "^22.9.0",
     "@types/node-cron": "^3.0.11",
-    "better-sqlite3": "^11.10.0",
+    "better-sqlite3": "^13.0.3",
     "ioredis": "^5.11.1",
     "mysql2": "^3.24.2",
     "node-cron": "^3.0.3",
@@ -72,21 +72,21 @@
     "xlsx": "^0.18.5"
   },
   "peerDependencies": {
-    "@deepseek-ai/cordis": "^4.0.1",
-    "@deepseek-ai/dsh-llm": "^0.1.0-rc.7"
+    "@deepseek-ai/cordis": "^4.0.4",
+    "@deepseek-ai/dsh-llm": "^0.2.0-rc.2"
   },
   "allowScripts": {
-    "better-sqlite3@11.10.0": true,
+    "better-sqlite3@13.0.3": true,
     "esbuild@0.28.2": true,
     "tsx@4.23.12": true
   },
   "devDependencies": {
-    "@deepseek-ai/cordis": "^4.0.1",
-    "@deepseek-ai/dsh-attachment": "^0.1.0-rc.7",
-    "@deepseek-ai/dsh-brand": "^0.1.0-rc.7",
-    "@deepseek-ai/dsh-host-webserver": "^0.1.0-rc.7",
-    "@deepseek-ai/dsh-invariants": "^0.1.0-rc.7",
-    "@deepseek-ai/dsh-llm": "^0.1.0-rc.7",
-    "@deepseek-ai/dsh-timeout": "^0.1.0-rc.7"
+    "@deepseek-ai/cordis": "^4.0.4",
+    "@deepseek-ai/dsh-attachment": "0.2.0-rc.2",
+    "@deepseek-ai/dsh-brand": "0.2.0-rc.2",
+    "@deepseek-ai/dsh-host-webserver": "0.2.0-rc.2",
+    "@deepseek-ai/dsh-invariants": "0.2.0-rc.2",
+    "@deepseek-ai/dsh-llm": "0.2.0-rc.2",
+    "@deepseek-ai/dsh-timeout": "0.2.0-rc.2"
   }
 }

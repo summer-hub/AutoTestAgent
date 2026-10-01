@@ -57,7 +57,7 @@ dsh plugin --profile web install
 
 ```powershell
 # 1. 声明依赖：编辑 ~/.dsh/profiles/web/package.json 的 dependencies 加：
-#    "dsh-autotest": "https://github.com/summer-hub/AutoTestAgent/releases/download/v1.0.0-rc.0/dsh-autotest-1.0.0-rc.0.tgz"
+#    "dsh-autotest": "https://github.com/summer-hub/AutoTestAgent/releases/download/v1.0.0-rc.1/dsh-autotest-1.0.0-rc.1.tgz"
 #    然后必须执行安装（光写不装等于没写）：
 cd $env:USERPROFILE\.dsh\profiles\web
 pnpm install
@@ -83,7 +83,7 @@ Invoke-RestMethod http://localhost:3080/api/autotest/health
 - 之前装过旧 tarball → pnpm 会缓存旧包，需 `pnpm update dsh-autotest` 或删掉 `node_modules/dsh-autotest` 重装（旧包缺 `cordis.patch.yml`，装了也起不来）。
 - **接口报 404 但页面能打开** → 前端产物与后端进程版本不一致（只替换了 `lib/web`、没重启宿主）。重启 DSH 即可；新前端已兼容新旧两种列表返回，不会白屏。
 
-也可以把 tgz 下载到本地后用 `"dsh-autotest": "file:./dsh-autotest-1.0.0-rc.0.tgz"` 或 `pnpm add ./dsh-autotest-1.0.0-rc.0.tgz`，离线环境更稳；第 2~5 步不变。
+也可以把 tgz 下载到本地后用 `"dsh-autotest": "file:./dsh-autotest-1.0.0-rc.1.tgz"` 或 `pnpm add ./dsh-autotest-1.0.0-rc.1.tgz`，离线环境更稳；第 2~5 步不变。
 
 安装成功后：
 
@@ -211,7 +211,7 @@ npm run verify:all    # 构建 + 22 套自检（离线可跑；无设备/无 hyp
 3. 打 tag 推送：
 
 ```bash
-git tag v1.0.0-rc.0 && git push origin v1.0.0-rc.0   # GitHub Actions 自动构建 Release + tarball
+git tag v1.0.0-rc.1 && git push origin v1.0.0-rc.1   # GitHub Actions 自动构建 Release + tarball
 ```
 
 发布前 CI 会依次跑：类型检查 → 数据层自检 → API 门禁自检 → 步骤契约自检 → `lib/` 产物一致性 → tag 与版本一致性。
@@ -220,5 +220,5 @@ git tag v1.0.0-rc.0 && git push origin v1.0.0-rc.0   # GitHub Actions 自动构�
 
 ```jsonc
 // ~/.dsh/profiles/web/package.json
-"dsh-autotest": "https://github.com/summer-hub/AutoTestAgent/releases/download/v1.0.0-rc.0/dsh-autotest-1.0.0-rc.0.tgz"
+"dsh-autotest": "https://github.com/summer-hub/AutoTestAgent/releases/download/v1.0.0-rc.1/dsh-autotest-1.0.0-rc.1.tgz"
 ```

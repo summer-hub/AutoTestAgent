@@ -95,14 +95,14 @@ cd dsh-autotest && npm pack                # 产出 dsh-autotest-<version>.tgz
 ```jsonc
 // ~/.dsh/profiles/<name>/package.json
 // 版本号与 dsh-autotest/package.json 的 version 保持一致（CI 会校验 tag 与版本一致）
-"dsh-autotest": "https://github.com/summer-hub/AutoTestAgent/releases/download/v1.0.0-rc.0/dsh-autotest-1.0.0-rc.0.tgz"
+"dsh-autotest": "https://github.com/summer-hub/AutoTestAgent/releases/download/v1.0.0-rc.1/dsh-autotest-1.0.0-rc.1.tgz"
 ```
 
 仓库已配好 GitHub Actions（打 `v*` tag 自动构建并发布 Release + tarball）。发布前会跑类型检查、22 套自检、`lib/` 产物一致性与 tag/版本一致性校验：
 
 ```bash
 # 先改 dsh-autotest/package.json 的 version，并 npm run build:plugin 提交产物，再打 tag
-git tag v1.0.0-rc.0 && git push origin v1.0.0-rc.0
+git tag v1.0.0-rc.1 && git push origin v1.0.0-rc.1
 ```
 
 ## 目录结构
