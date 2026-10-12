@@ -31,6 +31,7 @@
   },
   "scripts": {
     "build": "tsc -p tsconfig.json && node scripts/build-client.mjs",
+    "build:lib": "tsc -p tsconfig.json",
     "build:client": "node scripts/build-client.mjs",
     "typecheck": "tsc --noEmit -p tsconfig.json",
     "verify:data": "node scripts/verify-data-integrity.mjs",
@@ -57,7 +58,9 @@
     "verify:contract": "npm run build && node scripts/verify-step-contract.mjs",
     "verify:all": "npm run build && npm run verify:data && npm run verify:data-dir && npm run verify:api && npm run verify:explorer && npm run verify:repo-paths && npm run verify:sheet && npm run verify:api-extract && npm run verify:coverage && npm run verify:demo-scenarios && npm run verify:case-plan && npm run verify:testability && npm run verify:oracle && npm run verify:automation && npm run verify:binding && npm run verify:task-lane && npm run verify:task-events && npm run verify:llm-fallback && npm run verify:knowledge && npm run verify:case-link && npm run verify:hypium-layout && npm run verify:oracle-runtime && node scripts/verify-step-contract.mjs",
     "db:init": "tsx src/db/init.ts",
-    "db:seed": "tsx src/db/seed.ts"
+    "db:seed": "tsx src/db/seed.ts",
+    "start": "node lib/standalone.js",
+    "dev:server": "tsx src/standalone.ts"
   },
   "dependencies": {
     "@types/better-sqlite3": "^7.6.13",

@@ -182,14 +182,48 @@ powershell -ExecutionPolicy Bypass -File docs/deploy/fix-dsh-community-plugin.ps
 4. 「计划」页创建执行计划（立即 / 定时），**连接在线真机**后真实执行，在「调试」页查看轨迹并追问
 5. 「分析」页对仓库 PR 做用例更新分析；「归因」页对失败执行做根因分析
 
+## 纯 Web 独立版 & 桌面端（不依赖 DSH）
+
+不想装 DSH 也能用：同一套后端有两个新入口，前端也有独立构建。
+
+**纯 Web 独立版**（一条命令起服务，浏览器直接用）：
+
+```bash
+cd autotest
+npm run build:standalone   # 构建独立版前端（dist/web）+ 服务端（lib/standalone.js）
+npm start                  # 默认监听 0.0.0.0:3280，打开 http://127.0.0.1:3280/
+```
+
+- LLM 不依赖 DSH：在页面「设置 → 自定义模型」里维护 models 表（OpenAI 兼容协议）；
+- 高并发：`AUTOTEST_WORKERS=auto` 多进程集群（MySQL 模式默认开启）、keep-alive 调优、静态资源 `.gz` 预压缩 + immutable 缓存、`requestTimeout=0`（AI 分析长接口不被掐断）；
+- 数据引擎：MySQL（`AUTOTEST_MYSQL_URL`）或 SQLite 本地降级；多机共享 MySQL + Redis，限流/缓存跨节点；
+- 开发：`npm run dev:web`（Vite :5173 代理到 3280）+ `npm run start:dev`（tsx 免构建）；
+- 压测：`node scripts/bench-standalone.mjs 2000 50 http://127.0.0.1:3280`。
+
+**桌面端**（Windows，双击即用）：
+
+```bash
+cd autotest/desktop
+npm run build              # 构建前端 + staging 服务器（随包 node）+ NSIS 安装包
+# 产物：src-tauri/target/release/bundle/nsis/AutoTest_1.0.0-rc.1_x64-setup.exe
+```
+
+Tauri v2 外壳（~33MB，非 Electron）托管内置独立服务器：随包分发 Node 22 sidecar、数据目录隔离在 `%APPDATA%/com.autotest.platform`、托盘驻留、单实例、硬杀自动清理子进程。开发调试：`cd autotest/desktop && npm run dev`。
+
+环境变量、集群、MySQL/Redis、签名与排障等完整说明见 **[docs/standalone-desktop.md](docs/standalone-desktop.md)**。
+
 ## 目录结构
 
 ```
 ├── autotest/
-│   ├── dsh-autotest/     # DSH 服务端插件（Cordis）：API / DB / 调度 / 服务 / 自检脚本
-│   ├── web/              # 前端 React 18 + Vite（嵌入 DSH 主区）
+│   ├── dsh-autotest/     # 后端核心（双入口）：
+│   │                     #   lib/index.js      → DSH 插件（Cordis）
+│   │                     #   lib/standalone.js → 独立服务器（node lib/standalone.js）
+│   │                     #   dist/web          → 独立版前端产物
+│   ├── web/              # 前端 React 18 + Vite（双构建：build:embed / build:standalone）
+│   ├── desktop/          # 桌面端（Tauri v2）：Rust 壳托管独立服务器 + WebView
 │   └── shared/           # 前后端共享领域类型
-├── docs/                 # 部署方案（deploy/）、架构评审与参考架构分析
+├── docs/                 # 部署方案（deploy/）、独立版与桌面端手册、架构评审
 ├── preview/              # 高保真交互原型与预览图
 └── .github/workflows/    # 打 tag 自动跑门禁 → 构建 → 发布 Release + tarball
 ```
@@ -198,9 +232,28 @@ powershell -ExecutionPolicy Bypass -File docs/deploy/fix-dsh-community-plugin.ps
 
 ```bash
 cd autotest
-npm run typecheck     # web + 插件 类型检查
-npm run verify:all    # 构建 + 22 套自检（离线可跑；无设备/无 hypium 的项自动跳过）
+npm run typecheck          # web + 插件 类型检查
+npm run verify:all         # 构建 + 22 套自检（离线可跑；无设备/无 hypium 的项自动跳过）
+npm run build:standalone   # 独立版：前端 + 服务端
+npm start                  # 跑独立服务器（3280）
+npm run dev:web            # 前端开发服务器（5173，代理 /api 到 3280）
+npm run start:dev          # 服务端免构建开发模式（tsx）
 ```
+
+**浏览器 UI 全量测试**（`scripts/browser-test/`，零依赖 CDP 客户端驱动真实 Chrome）：
+
+```bash
+node scripts/bench-standalone.mjs 2000 50 http://127.0.0.1:3280   # 压测：RPS / P50 / P99
+
+# Web 端：遍历全部 17 个页面（渲染 / console 错误 / 网络失败 / 每页截图）
+node scripts/browser-test/ui-walk.mjs --base http://127.0.0.1:3280 --out .test-results/web --launch 9222
+
+# 桌面端：给 Tauri 的 WebView2 开调试端口后，直连桌面端自己的窗口跑同一套遍历
+WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS="--remote-debugging-port=9223" ./autotest-desktop.exe &
+node scripts/browser-test/ui-walk.mjs --base http://127.0.0.1:<端口> --out .test-results/desktop --connect 9223
+```
+
+测试报告与截图归档在 `autotest/.test-results/`（`REPORT.md` + 每页 PNG + 机读 `report.json`）。这套工具曾抓出两个真实浏览器才暴露的缺陷：gzip 分支 MIME 错误导致首页被当文件下载（白屏）、`/libraries/sheet` 被 `/libraries/:id` 路由遮蔽（404）。
 
 详见 [autotest/README.md](autotest/README.md)：构建命令、数据库设计、里程碑状态、自检覆盖范围；架构问题与整改进展见 [docs/架构评审-2026-09-21.md](docs/架构评审-2026-09-21.md)。
 

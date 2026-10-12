@@ -34,3 +34,6 @@ workspace/
 # OS
 .DS_Store
 Thumbs.db
+
+# StepCode agent 会话数据（plans/sessions 等，非项目资产）
+.stepcode/

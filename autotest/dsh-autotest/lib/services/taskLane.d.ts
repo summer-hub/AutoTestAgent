@@ -1,4 +1,4 @@
-import type { LlmCall } from './llmHarness.js';
+import type { LlmCall } from './llmCore.js';
 /** 入队。同库串行、跨库并行；创建任务与重试都走这里。 */
 export declare function enqueueTask(taskId: number, libraryId: number | null, llm: LlmCall): void;
 export type CancelResult = 'cancelled' | 'not_found' | 'already_finished';

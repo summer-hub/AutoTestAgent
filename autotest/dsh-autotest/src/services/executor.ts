@@ -8,7 +8,7 @@ import path from 'node:path';
 import { getDb, now } from '../db/connection.js';
 import { ensureLibraryByRepoUrl, inspectRepo, pullRepo, recentChanges, refreshPackageInfo, updateRepo, workspaceConfigured, workspaceDir, workspaceNotice, withGitSignal, type RepoLib } from './gitRepo.js';
 import { getSetting } from './settings.js';
-import { llmJson, type LlmCall } from './llmHarness.js';
+import { llmJson, type LlmCall } from './llmCore.js';
 import { exploreApp, ensureDeviceOnline, saveExploreReport, type ExploreResult, type ExploredPage } from './uiExplorer.js';
 import { hypiumProjectDir } from './hypiumGen.js';
 import { dryRunCase, mergeFailureBriefs } from './dryRun.js';

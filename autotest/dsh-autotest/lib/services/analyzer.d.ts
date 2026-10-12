@@ -1,4 +1,4 @@
-import type { LlmCall } from './llmHarness.js';
+import type { LlmCall } from './llmCore.js';
 export interface PrFile {
     filename: string;
     additions: number;

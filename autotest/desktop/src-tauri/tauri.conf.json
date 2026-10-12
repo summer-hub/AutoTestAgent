@@ -1,0 +1,36 @@
+{
+  "$schema": "https://raw.githubusercontent.com/tauri-apps/tauri/dev/crates/tauri-config-schema/schema.json",
+  "productName": "AutoTest",
+  "version": "1.0.0-rc.1",
+  "identifier": "com.autotest.platform",
+  "build": {
+    "frontendDist": "../../dsh-autotest/dist/web",
+    "beforeBuildCommand": ""
+  },
+  "app": {
+    "security": {
+      "csp": null
+    }
+  },
+  "bundle": {
+    "active": true,
+    "targets": ["nsis"],
+    "icon": [
+      "icons/32x32.png",
+      "icons/128x128.png",
+      "icons/icon.ico",
+      "icons/icon.icns"
+    ],
+    "resources": {
+      "resources/server/": "server/"
+    },
+    "externalBin": [
+      "bin/node"
+    ],
+    "windows": {
+      "nsis": {
+        "installMode": "currentUser"
+      }
+    }
+  }
+}

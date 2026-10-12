@@ -1,8 +1,18 @@
 # AutoTest 平台 — 鸿蒙三方库自动化测试
 
-基于 **DeepSeek Harness 插件系统二次开发**：业务以 Cordis 插件（`dsh-autotest`）形式加载进 DSH profile，复用 `ctx.llm`（模型配置/流式调用）、`ctx.webServer`（HTTP 路由 + 静态资源）；前端已插件化为 **DSH client 插件**（侧边栏入口 + 主区 iframe 嵌入）。独立版（`server/` + `web/` 独立构建）已退役删除。
+基于 **DeepSeek Harness 插件系统二次开发**：业务以 Cordis 插件（`dsh-autotest`）形式加载进 DSH profile，复用 `ctx.llm`（模型配置/流式调用）、`ctx.webServer`（HTTP 路由 + 静态资源）；前端已插件化为 **DSH client 插件**（侧边栏入口 + 主区 iframe 嵌入）。
 
-## 架构（插件化单轨）
+**三条交付链路共用同一套后端源码**（`dsh-autotest/src`），按宿主不同分三个入口：
+
+| 链路 | 入口 | 适用场景 |
+|---|---|---|
+| DSH 插件 | `lib/index.js`（Cordis） | 已装 DSH 的机器，模型配置复用 DSH 设置 |
+| 纯 Web 独立版 | `lib/standalone.js`（node:http） | 不装 DSH，`npm start` 即用；LLM 走系统配置里的 models 表 |
+| 桌面端 | `desktop/`（Tauri v2 外壳托管上面的独立服务器） | Windows 双击即用，自带 Node 运行时与数据目录 |
+
+详细部署/运维（环境变量、集群、MySQL/Redis、托盘与排障）见 [docs/standalone-desktop.md](../docs/standalone-desktop.md)。
+
+## 架构（三链路）
 
 ```
 ┌─ DeepSeek Harness 环境（profile）─────────────────────────────┐
@@ -17,6 +27,22 @@
 │       └─ node-cron        定时执行计划调度                    │
 │  ┌─ client 插件（DSH GUI 浏览器侧，dsh.client → lib/client.js）│
 │  │   └─ 侧边栏「AutoTest 平台」入口 + 主区 iframe 嵌入前端    │
+└────────────────────────────────────────────────────────────────┘
+
+┌─ 纯 Web 独立版（不依赖 DSH）──────────────────────────────────┐
+│  node dsh-autotest/lib/standalone.js                          │
+│   ├─ /api/autotest/*  同一套业务 API（自带 node:http）         │
+│   ├─ /                独立版前端 SPA（dist/web，.gz 预压缩）   │
+│   ├─ llmDirect         LLM 直连 models 表（OpenAI 兼容）       │
+│   └─ MySQL/SQLite + Redis 可选；AUTOTEST_WORKERS 多进程集群   │
+└────────────────────────────────────────────────────────────────┘
+
+┌─ 桌面端（Tauri v2，Windows）──────────────────────────────────┐
+│  autotest-desktop.exe                                         │
+│   ├─ Rust 壳：拉起随包 node + 独立服务器（随机端口）           │
+│   ├─ WebView 指向 http://127.0.0.1:<port>/                    │
+│   ├─ 托盘驻留 / 关闭到托盘 / 单实例 / Job Object 防孤儿进程    │
+│   └─ 数据目录隔离在 %APPDATA%/com.autotest.platform            │
 └────────────────────────────────────────────────────────────────┘
 ```
 
@@ -221,6 +247,18 @@ npm run verify:all    # 构建 + 22 套自检（无设备 / 无 hypium 的项自
 | `node scripts/verify-step-contract.mjs` | 步骤句式 → Hypium 调用映射、生成脚本的 driver API 白名单（防"调用不存在的 API"）、控件引用 guardrail、执行端 dry-run 真机判定（无设备自动跳过） |
 
 改动生成端句式或执行端映射后，务必跑 `verify:contract`：两端脱节会让脚本退化成注释，或让 dry-run 产生系统性假失败。
+
+### 浏览器 UI 遍历测试（`scripts/browser-test/`，按需手动跑）
+
+上面 22 套是**离线自检**（不起浏览器）；UI 层用另一套零依赖 CDP 工具（Node 24 原生 WebSocket 驱动真实 Chrome，`--launch` 模式）做**真实浏览器全量遍历**：
+
+```bash
+node scripts/browser-test/ui-walk.mjs --base http://127.0.0.1:3280 --out .test-results/web --launch 9222
+```
+
+对全部 17 个 hash 路由页面逐页校验：面包屑切换、渲染非空白、无 ErrorBoundary 回退、顶栏后端徽标（API 连通）、console.error / 未捕获异常 / 网络 4xx-5xx 收集（按页归属）、整页截图，并抽测设置弹窗交互；桌面端可用 `--connect` 直连 Tauri 窗口自己的 WebView2 调试端口（`WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS=--remote-debugging-port=9223`）跑同一套。报告与截图归档在 `.test-results/`（提交时只收 `REPORT.md` 与 `report.json`，截图不入库）。
+
+这套工具抓到过 curl 测不出的真实缺陷：gzip 分支 MIME 错误（浏览器把首页当文件下载，白屏）与 `/libraries/sheet` 被 `/libraries/:id` 路由遮蔽（404）——**凡改动静态服务或路由匹配，建议跑一遍**。
 
 ## 环境
 

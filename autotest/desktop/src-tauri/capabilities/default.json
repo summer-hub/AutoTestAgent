@@ -1,0 +1,10 @@
+{
+  "identifier": "default",
+  "description": "AutoTest 桌面端默认权限（前端不调用 Tauri API，权限保持最小）",
+  "windows": ["main"],
+  "permissions": [
+    "core:default",
+    "core:window:allow-start-dragging",
+    "dialog:default"
+  ]
+}

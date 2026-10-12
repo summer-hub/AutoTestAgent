@@ -6,7 +6,7 @@
 //    遗留的 pending（入队后没轮到执行）同样在启动时标记中断，不会永远排队。
 import { getDb, now } from '../db/connection.js';
 import { runTask } from './executor.js';
-import type { LlmCall } from './llmHarness.js';
+import type { LlmCall } from './llmCore.js';
 
 interface QueueItem {
   id: number;

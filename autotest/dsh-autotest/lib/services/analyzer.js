@@ -6,7 +6,7 @@
 import { getDb, now } from '../db/connection.js';
 import { normalizeRepoUrl } from './gitRepo.js';
 import { getSetting } from './settings.js';
-import { extractJson } from './llmHarness.js';
+import { extractJson } from './llmCore.js';
 import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
 const GITCODE_API = 'https://gitcode.com/api/v5';

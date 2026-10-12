@@ -6,7 +6,7 @@ import path from 'node:path';
 import XLSX from 'xlsx';
 import { ensureReady, dbMode, getDb, now, withRead } from '../db/connection.js';
 import { caseTableFor, shardOf, shardStats } from '../db/repository.js';
-import type { LlmCall } from '../services/llmHarness.js';
+import type { LlmCall } from '../services/llmCore.js';
 import { optimizeCaseById, insertDraftCases } from '../services/executor.js';
 import { cancelTask, enqueueTask } from '../services/taskLane.js';
 import { executePlan } from '../services/planExecutor.js';
@@ -20,7 +20,7 @@ import { isMaskedSecret, maskSecret, resolveSecretInput } from '../services/secr
 import { cacheDel, cacheGet, cacheSet } from '../services/cache.js';
 // LLM 限流单独一个模块：Redis 可用时多节点共享计数，模块级数组在多节点下形同虚设
 import { checkLlmRate } from '../services/llmLimit.js';
-import { readDshDefaultModel } from '../services/llmHarness.js';
+import { readDshDefaultModel } from '../services/llmCore.js';
 import { autoScanDevices } from '../services/deviceScanner.js';
 import { guessBundleFor, hdcAvailable, listTargets } from '../services/hdc.js';
 import { spawn } from 'node:child_process';
@@ -239,12 +239,20 @@ export function makeApiHandler(llm: LlmCall): (req: IncomingMessage, res: Server
       const path = url.pathname.replace(/^\/api\/autotest/, '') || '/';
       const query = url.searchParams;
       const method = (req.method ?? 'GET').toUpperCase();
+      // 路由匹配：静态段优先于参数段（两遍扫描）。
+      // 历史教训：曾依赖注册顺序规避（见 /cases/export 的注释），但 /libraries/sheet
+      // 仍被先注册的 /libraries/:id 捕获（id='sheet' → NaN → 404），线上真实中招。
+      // 静态优先是各框架的通用语义，且没有任何处理器依赖"参数路由先于静态路由"。
       let matched: Route | null = null;
       let params: Record<string, string> = {};
-      for (const r of routes) {
-        if (r.method !== method) continue;
-        const m = path.match(r.regex);
-        if (m) { matched = r; r.keys.forEach((k, i) => { params[k] = decodeURIComponent(m[i + 1]); }); break; }
+      for (let pass = 0; pass < 2 && !matched; pass++) {
+        for (const r of routes) {
+          if (r.method !== method) continue;
+          if (pass === 0 && r.keys.length > 0) continue;   // 第一遍只试纯静态路由
+          if (pass === 1 && r.keys.length === 0) continue; // 第二遍只试含参数路由
+          const m = path.match(r.regex);
+          if (m) { matched = r; r.keys.forEach((k, i) => { params[k] = decodeURIComponent(m[i + 1]); }); break; }
+        }
       }
       if (!matched) {
         return send(res, 404, {

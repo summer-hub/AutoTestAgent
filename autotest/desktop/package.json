@@ -1,0 +1,17 @@
+{
+  "name": "autotest-desktop",
+  "version": "1.0.0-rc.1",
+  "private": true,
+  "description": "AutoTest 平台桌面端（Tauri v2 外壳 + 内置独立服务器）",
+  "scripts": {
+    "build:web": "npm run build:standalone --prefix ..",
+    "stage:server": "node scripts/stage-server.mjs",
+    "tauri": "tauri",
+    "dev": "tauri dev",
+    "build": "npm run build:web && npm run stage:server && tauri build",
+    "build:fast": "npm run build:web && tauri build --no-bundle"
+  },
+  "devDependencies": {
+    "@tauri-apps/cli": "^2"
+  }
+}

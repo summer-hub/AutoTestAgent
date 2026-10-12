@@ -2,7 +2,7 @@
 //  - 全链 traceId/spanId 的地基：task_id 关联任务，span_id/parent_id 串父子
 //  - 写失败不阻塞业务（fire-and-forget）
 import { getDb, now } from '../db/connection.js';
-import { setLlmTraceHook } from './llmHarness.js';
+import { setLlmTraceHook } from './llmCore.js';
 /** 写入一条事件（失败仅告警，不抛错）。 */
 export async function appendEvent(e) {
     try {

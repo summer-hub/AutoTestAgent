@@ -5,6 +5,8 @@
   "type": "module",
   "scripts": {
     "build:embed": "node scripts/build-embed.mjs",
+    "build:standalone": "node scripts/build-standalone.mjs",
+    "dev": "vite",
     "typecheck": "tsc --noEmit -p tsconfig.json"
   },
   "dependencies": {

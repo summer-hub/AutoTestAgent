@@ -1,0 +1,9 @@
+# 构建产物
+node_modules/
+src-tauri/target/
+src-tauri/gen/
+
+# 随包分发的大文件不进 git（各自脚本可重新生成）
+src-tauri/bin/
+src-tauri/resources/
+.tmp/

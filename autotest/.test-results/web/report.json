@@ -1,0 +1,277 @@
+{
+  "base": "http://127.0.0.1:3500",
+  "mode": "headless-chrome(cdp:9222)",
+  "time": "2026-10-12T15:04:27.055Z",
+  "summary": {
+    "total": 17,
+    "passed": 17,
+    "failed": 0,
+    "consoleErrors": 0,
+    "exceptions": 0,
+    "netFailures": 1
+  },
+  "expectedEmptyState": [
+    "scripts: 404 http://127.0.0.1:3500/api/autotest/repos/1/files?path=&root=scripts（空态契约：该库尚无 Hypium 脚本）"
+  ],
+  "modal": {
+    "ok": true,
+    "note": "clicked=true 含「模型」文案=true"
+  },
+  "results": [
+    {
+      "page": "home",
+      "title": "首页",
+      "ok": true,
+      "problems": [],
+      "state": {
+        "htmlLen": 5750,
+        "pill": "v1.0.0-rc.1 · sqlite",
+        "navItems": 17
+      },
+      "shot": "home.png",
+      "console": [],
+      "exceptions": [],
+      "network": []
+    },
+    {
+      "page": "tasks",
+      "title": "任务管理",
+      "ok": true,
+      "problems": [],
+      "state": {
+        "htmlLen": 5662,
+        "pill": "v1.0.0-rc.1 · sqlite",
+        "navItems": 17
+      },
+      "shot": "tasks.png",
+      "console": [],
+      "exceptions": [],
+      "network": []
+    },
+    {
+      "page": "libraries",
+      "title": "库管理",
+      "ok": true,
+      "problems": [],
+      "state": {
+        "htmlLen": 5830,
+        "pill": "v1.0.0-rc.1 · sqlite",
+        "navItems": 17
+      },
+      "shot": "libraries.png",
+      "console": [],
+      "exceptions": [],
+      "network": []
+    },
+    {
+      "page": "api",
+      "title": "接口清单",
+      "ok": true,
+      "problems": [],
+      "state": {
+        "htmlLen": 5722,
+        "pill": "v1.0.0-rc.1 · sqlite",
+        "navItems": 17
+      },
+      "shot": "api.png",
+      "console": [],
+      "exceptions": [],
+      "network": []
+    },
+    {
+      "page": "coverage",
+      "title": "覆盖矩阵",
+      "ok": true,
+      "problems": [],
+      "state": {
+        "htmlLen": 7238,
+        "pill": "v1.0.0-rc.1 · sqlite",
+        "navItems": 17
+      },
+      "shot": "coverage.png",
+      "console": [],
+      "exceptions": [],
+      "network": []
+    },
+    {
+      "page": "human",
+      "title": "人工队列",
+      "ok": true,
+      "problems": [],
+      "state": {
+        "htmlLen": 4774,
+        "pill": "v1.0.0-rc.1 · sqlite",
+        "navItems": 17
+      },
+      "shot": "human.png",
+      "console": [],
+      "exceptions": [],
+      "network": []
+    },
+    {
+      "page": "knowledge",
+      "title": "知识库",
+      "ok": true,
+      "problems": [],
+      "state": {
+        "htmlLen": 5901,
+        "pill": "v1.0.0-rc.1 · sqlite",
+        "navItems": 17
+      },
+      "shot": "knowledge.png",
+      "console": [],
+      "exceptions": [],
+      "network": []
+    },
+    {
+      "page": "cases",
+      "title": "测试用例",
+      "ok": true,
+      "problems": [],
+      "state": {
+        "htmlLen": 6841,
+        "pill": "v1.0.0-rc.1 · sqlite",
+        "navItems": 18
+      },
+      "shot": "cases.png",
+      "console": [],
+      "exceptions": [],
+      "network": []
+    },
+    {
+      "page": "scripts",
+      "title": "自动化脚本",
+      "ok": true,
+      "problems": [],
+      "state": {
+        "htmlLen": 5525,
+        "pill": "v1.0.0-rc.1 · sqlite",
+        "navItems": 18
+      },
+      "shot": "scripts.png",
+      "console": [],
+      "exceptions": [],
+      "network": []
+    },
+    {
+      "page": "plans",
+      "title": "执行计划",
+      "ok": true,
+      "problems": [],
+      "state": {
+        "htmlLen": 4471,
+        "pill": "v1.0.0-rc.1 · sqlite",
+        "navItems": 17
+      },
+      "shot": "plans.png",
+      "console": [],
+      "exceptions": [],
+      "network": []
+    },
+    {
+      "page": "analysis",
+      "title": "数据分析",
+      "ok": true,
+      "problems": [],
+      "state": {
+        "htmlLen": 5253,
+        "pill": "v1.0.0-rc.1 · sqlite",
+        "navItems": 17
+      },
+      "shot": "analysis.png",
+      "console": [],
+      "exceptions": [],
+      "network": []
+    },
+    {
+      "page": "attribution",
+      "title": "归因分析",
+      "ok": true,
+      "problems": [],
+      "state": {
+        "htmlLen": 5083,
+        "pill": "v1.0.0-rc.1 · sqlite",
+        "navItems": 17
+      },
+      "shot": "attribution.png",
+      "console": [],
+      "exceptions": [],
+      "network": []
+    },
+    {
+      "page": "debug",
+      "title": "调试会话",
+      "ok": true,
+      "problems": [],
+      "state": {
+        "htmlLen": 4603,
+        "pill": "v1.0.0-rc.1 · sqlite",
+        "navItems": 17
+      },
+      "shot": "debug.png",
+      "console": [],
+      "exceptions": [],
+      "network": []
+    },
+    {
+      "page": "devices",
+      "title": "设备管理",
+      "ok": true,
+      "problems": [],
+      "state": {
+        "htmlLen": 4837,
+        "pill": "v1.0.0-rc.1 · sqlite",
+        "navItems": 17
+      },
+      "shot": "devices.png",
+      "console": [],
+      "exceptions": [],
+      "network": []
+    },
+    {
+      "page": "prompts",
+      "title": "Prompt 管理",
+      "ok": true,
+      "problems": [],
+      "state": {
+        "htmlLen": 12249,
+        "pill": "v1.0.0-rc.1 · sqlite",
+        "navItems": 17
+      },
+      "shot": "prompts.png",
+      "console": [],
+      "exceptions": [],
+      "network": []
+    },
+    {
+      "page": "agents",
+      "title": "Agent 绑定",
+      "ok": true,
+      "problems": [],
+      "state": {
+        "htmlLen": 9355,
+        "pill": "v1.0.0-rc.1 · sqlite",
+        "navItems": 17
+      },
+      "shot": "agents.png",
+      "console": [],
+      "exceptions": [],
+      "network": []
+    },
+    {
+      "page": "settings",
+      "title": "系统配置",
+      "ok": true,
+      "problems": [],
+      "state": {
+        "htmlLen": 14597,
+        "pill": "v1.0.0-rc.1 · sqlite",
+        "navItems": 17
+      },
+      "shot": "settings.png",
+      "console": [],
+      "exceptions": [],
+      "network": []
+    }
+  ]
+}
