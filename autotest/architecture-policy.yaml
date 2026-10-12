@@ -1,0 +1,57 @@
+# AutoTest 架构治理策略（P1-1）——机器可检查的架构约束。
+#
+# 背景：本项目从单一 DSH 插件形态扩展到「DSH 插件 + 独立服务器 + 桌面端」三链路。
+# 两类约束是扩展的前提，但**靠注释和自觉维持不住**（历史上 /libraries/sheet 路由遮蔽、
+# gzip MIME 错误都是"约定没机器兜底"类事故），因此固化为本文件 + audit-architecture.mjs 门禁：
+#
+#   1. dshDecoupling —— 独立版/桌面端不装 DSH 也能起：白名单外零 @deepseek-ai import
+#   2. shared 仅类型  —— 前后端共享层禁止运行动时逻辑与 node: 内置模块
+#   3. web 隔离       —— 前端只准经 workspace 包 'shared' 跨包，禁止碰服务端内部
+#   4. desktop 隔离   —— Rust 壳不反向引用 web/src 或 dsh-autotest/src（产物只经 staging 脚本）
+#   5. 分层顺序       —— db → services → api 下层不准静态引用上层（动态 import 例外：
+#                        db/connection.ts 用 await import 打破 settings 循环依赖，属已记录模式）
+#
+# 审计命令：cd autotest/dsh-autotest && npm run verify:architecture（CI 门禁，违规 exit 1）
+version: 1
+modules:
+  - id: shared
+    roots: [shared/src]
+    kind: types-only
+
+  - id: web
+    roots: [web/src]
+    mayImportPackages: [shared]
+    forbiddenPaths: [dsh-autotest]
+
+  - id: server
+    roots: [dsh-autotest/src]
+    mayImportPackages: [shared]
+    layers:
+      - name: db
+        roots: [dsh-autotest/src/db]
+      - name: services
+        roots: [dsh-autotest/src/services]
+      - name: api
+        roots: [dsh-autotest/src/api]
+    layerOrder: [db, services, api]
+    # 入口文件允许跨层组合（插件装配 / 独立服务器装配 / 静态服务）
+    entrypoints:
+      - dsh-autotest/src/index.ts
+      - dsh-autotest/src/standalone.ts
+      - dsh-autotest/src/static.ts
+      - dsh-autotest/src/client/**
+
+rules:
+  dshDecoupling:
+    description: 白名单外零 @deepseek-ai/* import（否则独立版/桌面端缺依赖起不来）
+    allow:
+      - dsh-autotest/src/index.ts                 # DSH 插件入口（Cordis apply）
+      - dsh-autotest/src/client/**                # DSH GUI 浏览器侧插件（不随独立版分发）
+      - dsh-autotest/src/services/llmHarness.ts   # ctx.llm 适配层（DSH 专属，入口二选一）
+
+  layering:
+    description: db → services → api 下层不准静态引用上层；动态 import 例外（connection.ts 用它打破 settings 循环）
+    exceptions:
+      - "dsh-autotest/src/db/repository.ts -> dsh-autotest/src/services/settings.js"
+      # 理由：分表路由读 shardCount 配置；getSetting 是同步内存读，不构成初始化循环。
+      # 彻底解法是把配置注入 repository（后续重构）——例外显式记录，好过偷偷违反。

@@ -6,12 +6,25 @@
 //    遗留的 pending（入队后没轮到执行）同样在启动时标记中断，不会永远排队。
 import { getDb, now } from '../db/connection.js';
 import { runTask } from './executor.js';
+import { taskLaneEvents, taskLaneQueued, taskLaneRunning } from './metrics.js';
 const lanes = new Map();
 const controllers = new Map();
 /** 排队中（尚未开始执行）的任务 id —— 取消时直接出队，不进执行器。 */
 const queued = new Set();
 function laneKey(libraryId) {
     return libraryId == null ? 'global' : `lib:${libraryId}`;
+}
+/** lane 深度仪表（排队合计 / 运行中）：持续增长的排队深度 = 执行能力不足的第一信号。 */
+function updateLaneGauges() {
+    let queued = 0;
+    let running = 0;
+    for (const lane of lanes.values()) {
+        queued += lane.queue.length;
+        if (lane.running !== null)
+            running += 1;
+    }
+    taskLaneQueued.set({}, queued);
+    taskLaneRunning.set({}, running);
 }
 function pump(key) {
     const lane = lanes.get(key);
@@ -24,6 +37,8 @@ function pump(key) {
     }
     queued.delete(next.id);
     lane.running = next.id;
+    taskLaneEvents.inc({ event: 'started' });
+    updateLaneGauges();
     const controller = new AbortController();
     controllers.set(next.id, controller);
     void runTask(next.id, next.llm, controller.signal).finally(() => {
@@ -31,6 +46,8 @@ function pump(key) {
         if (lane.running === next.id)
             lane.running = null;
         pump(key);
+        taskLaneEvents.inc({ event: 'finished' });
+        updateLaneGauges();
     });
 }
 /** 入队。同库串行、跨库并行；创建任务与重试都走这里。 */
@@ -43,9 +60,11 @@ export function enqueueTask(taskId, libraryId, llm) {
     }
     lane.queue.push({ id: taskId, llm });
     queued.add(taskId);
+    taskLaneEvents.inc({ event: 'enqueued' });
     pump(key);
 }
 async function markCancelled(taskId) {
+    taskLaneEvents.inc({ event: 'cancelled' });
     // 守卫：终态（done/failed/cancelled）不被迟到的取消覆盖；排队/运行中才允许置位
     await getDb().prepare(`UPDATE tasks SET status='cancelled', error='已取消', progress=0, updated_at=? WHERE id=? AND status IN ('pending','running')`).run(now(), taskId);
 }
@@ -87,6 +106,7 @@ export function stopAllTaskLanes() {
         lane.queue.length = 0;
     lanes.clear();
     queued.clear();
+    updateLaneGauges();
 }
 /** 队列概况（启动日志/排查用）。 */
 export function laneStats() {

@@ -27,6 +27,7 @@ import { fileURLToPath } from 'node:url';
 import Database from 'better-sqlite3';
 import { ensureReady, setDbUrlProvider, defaultUrlProvider, dbMode, mysqlPool } from './db/connection.js';
 import { dataDir } from './db/sqlite.js';
+import { decryptSecret } from './services/crypto.js';
 import { makeApiHandler } from './api/http.js';
 import { makeDirectLlm } from './services/llmDirect.js';
 import { startScheduler, stopAllSchedulers } from './services/scheduler.js';
@@ -34,6 +35,8 @@ import { stopAllTaskLanes } from './services/taskLane.js';
 import { makeStaticHandler } from './static.js';
 import { migrateRepoSubpaths, reconcileRepos, workspaceNotice } from './services/gitRepo.js';
 import { installLlmTracing } from './services/events.js';
+import { installTelemetry } from './services/telemetry.js';
+import { logSkillLockSummary } from './services/skillLock.js';
 import { reapOnStartup } from './services/reaper.js';
 import { getSetting } from './services/settings.js';
 // ---------- 环境变量 ----------
@@ -87,7 +90,7 @@ function detectDbMode() {
         const db = new Database(file, { readonly: true, fileMustExist: true });
         try {
             const row = db.prepare(`SELECT value FROM settings WHERE "key" = 'db.mysqlUrl'`).get();
-            const url = row?.value ? String(JSON.parse(row.value) ?? '').trim() : '';
+            const url = row?.value ? decryptSecret(String(JSON.parse(row.value) ?? '')).trim() : '';
             return url ? 'mysql' : 'sqlite';
         }
         finally {
@@ -162,8 +165,10 @@ async function boot() {
     if (workers > 1 && !(getSetting('data.redisCache', false) && String(getSetting('data.redisUrl', '')).trim())) {
         console.warn('[autotest] 多进程集群未配置 Redis（data.redisUrl + data.redisCache）：LLM 限流与缓存退化为进程内生效。建议接入 Redis 以跨节点共享。');
     }
-    // 3. LLM 埋点（agent_events）
+    // 3. LLM 埋点（agent_events）+ 指标埋点（/metrics）
     installLlmTracing();
+    installTelemetry();
+    logSkillLockSummary();
     // 4. 启动维护：仅 worker 1（单进程时就是本进程）执行，避免多进程重复迁移 / 重复清理
     const isPrimaryWorker = (cluster.worker?.id ?? 1) === 1;
     if (isPrimaryWorker) {

@@ -133,7 +133,8 @@ export declare function refreshPackageInfo(lib: {
     packageName: string;
     mainAbility: string;
 }>;
-/** 拉取仓库：目录不存在则 clone，否则 pull；返回提交、分支、变更文件与版本。 */
-export declare function pullRepo(lib: RepoLib): Promise<RepoResult>;
+/** 拉取仓库：目录不存在则 clone，否则 pull；返回提交、分支、变更文件与版本。
+ *  kind 供审批闸门区分「拉取/更新」（P0-4）：同一库的拉取与更新是两条独立审批目标。 */
+export declare function pullRepo(lib: RepoLib, kind?: 'repo.pull' | 'repo.update'): Promise<RepoResult>;
 /** 更新仓库 = 拉取 + 变更文件明细。 */
 export declare function updateRepo(lib: RepoLib): Promise<RepoResult>;

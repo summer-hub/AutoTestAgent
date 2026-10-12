@@ -7,6 +7,7 @@
 import { getDb, now } from '../db/connection.js';
 import { runTask } from './executor.js';
 import type { LlmCall } from './llmCore.js';
+import { taskLaneEvents, taskLaneQueued, taskLaneRunning } from './metrics.js';
 
 interface QueueItem {
   id: number;
@@ -27,6 +28,18 @@ function laneKey(libraryId: number | null | undefined): string {
   return libraryId == null ? 'global' : `lib:${libraryId}`;
 }
 
+/** lane 深度仪表（排队合计 / 运行中）：持续增长的排队深度 = 执行能力不足的第一信号。 */
+function updateLaneGauges(): void {
+  let queued = 0;
+  let running = 0;
+  for (const lane of lanes.values()) {
+    queued += lane.queue.length;
+    if (lane.running !== null) running += 1;
+  }
+  taskLaneQueued.set({}, queued);
+  taskLaneRunning.set({}, running);
+}
+
 function pump(key: string): void {
   const lane = lanes.get(key);
   if (!lane || lane.running !== null) return;
@@ -37,12 +50,16 @@ function pump(key: string): void {
   }
   queued.delete(next.id);
   lane.running = next.id;
+  taskLaneEvents.inc({ event: 'started' });
+  updateLaneGauges();
   const controller = new AbortController();
   controllers.set(next.id, controller);
   void runTask(next.id, next.llm, controller.signal).finally(() => {
     controllers.delete(next.id);
     if (lane.running === next.id) lane.running = null;
     pump(key);
+    taskLaneEvents.inc({ event: 'finished' });
+    updateLaneGauges();
   });
 }
 
@@ -56,12 +73,14 @@ export function enqueueTask(taskId: number, libraryId: number | null, llm: LlmCa
   }
   lane.queue.push({ id: taskId, llm });
   queued.add(taskId);
+  taskLaneEvents.inc({ event: 'enqueued' });
   pump(key);
 }
 
 export type CancelResult = 'cancelled' | 'not_found' | 'already_finished';
 
 async function markCancelled(taskId: number): Promise<void> {
+  taskLaneEvents.inc({ event: 'cancelled' });
   // 守卫：终态（done/failed/cancelled）不被迟到的取消覆盖；排队/运行中才允许置位
   await getDb().prepare(
     `UPDATE tasks SET status='cancelled', error='已取消', progress=0, updated_at=? WHERE id=? AND status IN ('pending','running')`,
@@ -103,6 +122,7 @@ export function stopAllTaskLanes(): void {
   for (const lane of lanes.values()) lane.queue.length = 0;
   lanes.clear();
   queued.clear();
+  updateLaneGauges();
 }
 
 /** 队列概况（启动日志/排查用）。 */

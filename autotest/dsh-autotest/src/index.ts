@@ -16,6 +16,8 @@ import { startScheduler, stopAllSchedulers } from './services/scheduler.js';
 import { makeStaticHandler } from './static.js';
 import { migrateRepoSubpaths, refreshPackageInfo, reconcileRepos, repoDirFor, workspaceNotice } from './services/gitRepo.js';
 import { installLlmTracing } from './services/events.js';
+import { installTelemetry } from './services/telemetry.js';
+import { logSkillLockSummary } from './services/skillLock.js';
 import { reapOnStartup } from './services/reaper.js';
 import { stopAllTaskLanes } from './services/taskLane.js';
 import { getSetting } from './services/settings.js';
@@ -36,6 +38,8 @@ export function apply(ctx: Context): void {
       setDbUrlProvider(() => String(getSetting('db.mysqlUrl', '') || '').trim() || defaultUrlProvider());
       await ensureReady();
       installLlmTracing();
+      installTelemetry();
+      logSkillLockSummary();
       // 启动迁移：仓库地址里的 /tree/<分支>/<子目录> 拆成「仓库根 + 子目录」两列（必须在启动对账之前）
       try {
         const migrated = await migrateRepoSubpaths();

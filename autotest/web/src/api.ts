@@ -80,9 +80,28 @@ export interface CasePlanPayload {
   }>;
 }
 
+// API Key（P0-1 认证）：存 sessionStorage（关标签页即失效，避免长久驻留明文密钥）；
+// 401 时清空并广播 'autotest:unauthorized'，由 App 的登录门接住。
+const TOKEN_KEY = 'autotest.apiKey';
+export function getApiKey(): string {
+  try { return sessionStorage.getItem(TOKEN_KEY) ?? ''; } catch { return ''; }
+}
+export function setApiKey(key: string): void {
+  try { key ? sessionStorage.setItem(TOKEN_KEY, key) : sessionStorage.removeItem(TOKEN_KEY); } catch { /* 隐私模式等 */ }
+}
+
 async function req<T>(url: string, init?: RequestInit): Promise<T> {
-  const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+  const key = getApiKey();
+  const headers: Record<string, string> = {
+    'Content-Type': 'application/json',
+    ...(key ? { Authorization: `Bearer ${key}` } : {}),
+  };
   const res = await fetch(url, { headers, ...init });
+  if (res.status === 401) {
+    // 认证开启且 key 缺失/失效：清掉并通知登录门（避免后续请求连锁 401）
+    setApiKey('');
+    if (typeof window !== 'undefined') window.dispatchEvent(new Event('autotest:unauthorized'));
+  }
   if (!res.ok) {
     const body = await res.json().catch(() => ({}));
     throw new Error((body as { message?: string }).message || `HTTP ${res.status}`);
@@ -101,6 +120,30 @@ function paged<T>(p: Promise<Paged<T> | T[]>): Promise<Paged<T>> {
 
 export const api = {
   health: () => req<{ ok: boolean }>(`${API_BASE}/health`),
+
+  // 认证与 RBAC（P0-1）
+  authStatus: () => req<{ enabled: boolean; allowLocalBypass: boolean; role: string | null; via: string | null }>(`${API_BASE}/auth/status`),
+  authKeys: () => req<{ items: Array<{ id: number; name: string; role: string; enabled: boolean; expiresAt: string; lastUsedAt: string; createdAt: string }> }>(`${API_BASE}/auth/keys`),
+  createAuthKey: (b: { name: string; role: string; expiresInDays?: number }) =>
+    req<{ id: number; name: string; role: string; key: string; expiresAt: string }>(`${API_BASE}/auth/keys`, { method: 'POST', body: JSON.stringify(b) }),
+  revokeAuthKey: (id: number) => req<{ ok: boolean }>(`${API_BASE}/auth/keys/${id}`, { method: 'DELETE' }),
+  updateAuthSettings: (b: { enabled?: boolean; allowLocalBypass?: boolean }) =>
+    req<{ ok: boolean; enabled: boolean; allowLocalBypass: boolean }>(`${API_BASE}/auth/settings`, { method: 'PUT', body: JSON.stringify(b) }),
+
+  // 危险操作审批（P0-4）
+  approvals: (status?: string) => req<{
+    items: Array<{
+      id: number; kind: string; kindLabel: string; target: string;
+      payload: Record<string, unknown>;
+      status: 'pending' | 'approved' | 'rejected';
+      requestedBy: string; decidedBy: string; reason: string; consumed: boolean;
+      createdAt: string; decidedAt: string;
+    }>;
+    pending: number;
+  }>(`${API_BASE}/approvals${status ? `?status=${status}` : ''}`),
+  approvalPendingCount: () => req<{ pending: number }>(`${API_BASE}/approvals/pending-count`),
+  decideApproval: (id: number, decision: 'approve' | 'reject', reason?: string) =>
+    req<{ ok: boolean; status: string }>(`${API_BASE}/approvals/${id}/decide`, { method: 'POST', body: JSON.stringify({ decision, reason, decidedBy: 'web' }) }),
 
   // 三方库
   libraries: (params: { page?: number; pageSize?: number; q?: string } = {}) => {

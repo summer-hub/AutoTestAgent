@@ -14,6 +14,7 @@ import fs from 'node:fs';
 import crypto from 'node:crypto';
 import path from 'node:path';
 import { getDb, now } from '../db/connection.js';
+import { requireApproval } from './approvals.js';
 import { hypiumCaseScriptPath, hypiumProjectDir, writeCaseScript, NoAssertionError, UnmappedStepError, scriptHasAssertion } from './hypiumGen.js';
 
 export type BindingStatus = 'fresh' | 'stale' | 'manual' | 'broken';
@@ -161,6 +162,9 @@ export async function bindCaseScript(caseId: number, opts: { force?: boolean } =
     FROM cases c JOIN libraries l ON l.id = c.library_id WHERE c.id = ?`)
     .get<{ id: number; case_no: string; name: string; steps: string; current_version: number; oracle_json: string; library_id: number; library_name: string; package_name: string }>(caseId);
   if (!c) throw Object.assign(new Error('用例不存在'), { statusCode: 404 });
+  // 危险操作闸门（P0-4）：脚本生成会向工程目录写入 .py/.json；autoApprove 关闭时需人工批准。
+  // 放在服务层 = executor 批量生成路径与 HTTP 单条路径（POST /cases/:id/script）同时覆盖。
+  await requireApproval('script.generate', `script:${c.library_name}:${c.case_no}:generate`, { caseNo: c.case_no, name: c.name }, 'agent');
   let steps: string[] = [];
   try { steps = JSON.parse(c.steps || '[]') as string[]; } catch { steps = []; }
   let oracles: Array<Record<string, unknown>> = [];

@@ -339,6 +339,36 @@ CREATE TABLE IF NOT EXISTS settings (
   updated_at VARCHAR(32) NOT NULL
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
+-- API Key（认证 + RBAC）：只存 SHA-256 哈希，明文仅在创建响应里展示一次
+CREATE TABLE IF NOT EXISTS api_keys (
+  id BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+  name VARCHAR(128) NOT NULL,
+  key_hash CHAR(64) NOT NULL,
+  role VARCHAR(16) NOT NULL DEFAULT 'viewer',
+  enabled TINYINT NOT NULL DEFAULT 1,
+  expires_at VARCHAR(32) NOT NULL DEFAULT '',
+  last_used_at VARCHAR(32) NOT NULL DEFAULT '',
+  created_at VARCHAR(32) NOT NULL,
+  UNIQUE KEY uk_api_keys_hash (key_hash)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+-- 危险操作审批队列（P0-4）：exec.autoApprove=false 时危险操作先入队；
+-- approve = 签发一次性放行令牌（consumed 标记），调用方重试同一 (kind,target) 时消费放行。
+CREATE TABLE IF NOT EXISTS approvals (
+  id BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+  kind VARCHAR(64) NOT NULL,
+  target VARCHAR(255) NOT NULL,
+  payload_json VARCHAR(4000) NOT NULL DEFAULT '{}',
+  status VARCHAR(16) NOT NULL DEFAULT 'pending',
+  requested_by VARCHAR(128) NOT NULL DEFAULT '',
+  decided_by VARCHAR(128) NOT NULL DEFAULT '',
+  reason VARCHAR(500) NOT NULL DEFAULT '',
+  consumed TINYINT NOT NULL DEFAULT 0,
+  created_at VARCHAR(32) NOT NULL,
+  decided_at VARCHAR(32) NOT NULL DEFAULT '',
+  KEY idx_approvals_status (status, kind, target)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
 -- 大模型配置（可在设置中自定义添加）
 CREATE TABLE IF NOT EXISTS models (
   id BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,

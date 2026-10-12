@@ -8,6 +8,7 @@ import path from 'node:path';
 import { getDb, now } from '../db/connection.js';
 import { ensureLibraryByRepoUrl, inspectRepo, pullRepo, recentChanges, refreshPackageInfo, updateRepo, workspaceDir, workspaceNotice, withGitSignal } from './gitRepo.js';
 import { getSetting } from './settings.js';
+import { ApprovalPendingError } from './approvals.js';
 import { llmJson } from './llmCore.js';
 import { exploreApp, ensureDeviceOnline, saveExploreReport } from './uiExplorer.js';
 import { hypiumProjectDir } from './hypiumGen.js';
@@ -496,7 +497,13 @@ async function bindHypiumScripts(lib, packageName, created) {
                 console.warn(`[hypium] ${c.caseNo} 未绑定：${r.reason}`);
         }
         catch (e) {
-            console.warn(`[hypium] 绑定脚本失败 ${c.caseNo}:`, e.message);
+            // 待审批不是失败：autoApprove 关闭时该用例的脚本生成已入队，批准后重试本任务即放行
+            if (e instanceof ApprovalPendingError) {
+                console.warn(`[hypium] ${c.caseNo} 脚本生成待人工审批（#${e.approvalId}）：批准后重试本任务即放行`);
+            }
+            else {
+                console.warn(`[hypium] 绑定脚本失败 ${c.caseNo}:`, e.message);
+            }
         }
     }
     void lib;

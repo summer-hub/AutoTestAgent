@@ -1,7 +1,7 @@
 {
   "base": "http://127.0.0.1:3500",
   "mode": "headless-chrome(cdp:9222)",
-  "time": "2026-10-12T15:04:27.055Z",
+  "time": "2026-10-12T16:48:48.966Z",
   "summary": {
     "total": 17,
     "passed": 17,
@@ -99,7 +99,7 @@
       "ok": true,
       "problems": [],
       "state": {
-        "htmlLen": 4774,
+        "htmlLen": 5711,
         "pill": "v1.0.0-rc.1 · sqlite",
         "navItems": 17
       },
@@ -264,7 +264,7 @@
       "ok": true,
       "problems": [],
       "state": {
-        "htmlLen": 14597,
+        "htmlLen": 16658,
         "pill": "v1.0.0-rc.1 · sqlite",
         "navItems": 17
       },

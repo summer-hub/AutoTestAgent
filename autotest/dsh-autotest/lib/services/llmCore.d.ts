@@ -58,7 +58,9 @@ export interface LlmTraceEvent {
     error?: string;
 }
 export declare function setLlmTraceHook(fn: ((e: LlmTraceEvent) => void) | null): void;
-/** 发一条 LLM 埋点（无 hook 时静默；写库失败由 events.ts 内部兜底）。 */
+/** 追加一个埋点消费者（不清空既有消费者）。 */
+export declare function addLlmTraceHook(fn: (e: LlmTraceEvent) => void): void;
+/** 发一条 LLM 埋点（无消费者时静默）。 */
 export declare function emitLlmTrace(e: LlmTraceEvent): void;
 /**
  * 合并「调用方取消信号」与「单次调用超时」：任一触发即中断。

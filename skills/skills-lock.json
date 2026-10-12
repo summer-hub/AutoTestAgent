@@ -1,0 +1,61 @@
+{
+  "version": 1,
+  "algorithm": "sha256",
+  "generatedAt": "2026-10-12T16:33:12.916Z",
+  "skills": {
+    "ohos-case-to-hypium": {
+      "digest": "721c519f2181f2bb77f77d232e0829c74b16e8d3e122e21659613079581fe8df",
+      "files": {
+        "SKILL.md": "ebee9223eec03bbea612a919724651f4ea2f3b541cf58f5cb9bdc2db7a928e51",
+        "references/failure-triage.md": "984a9cfc9c67b9075cce24c3a850f602a81ff217b73d0797ecbab4ea3fb4bf86",
+        "references/naming-binding.md": "634ca960f30bc8a0f40beda0174c0f3a7c295c116b3e50611e1d4504314ee43e",
+        "references/oracle-mapping.md": "ad1306d50196d8c097c500ed6a3fc8ddddf6fe76153abf461195aa3daf75d062",
+        "references/project-layout.md": "0189bdb17c48d6914c7d6703404858fce7326813b266e865f6a5ba19fb7f39bf",
+        "references/step-mapping.md": "b4d858617762a783ae6eb43bb7bf30fcb9baa805d3e0ef2622bec6f292e7e22a",
+        "scripts/check_hypium_case.py": "cd2a52ce358ecf8eb1be0b670d5b4c4f50e22fbfb0cc809ca97afebb30d17c56"
+      }
+    },
+    "ohos-demo-code-generator": {
+      "digest": "25074ff8edcb46f3f0a85329e218a4cf7a1cbde6ed0a803765548cf6c91e1ca4",
+      "files": {
+        "SKILL.md": "ae0a6dfa7de05924d1f25889dd369fdb8034fa24faf452096a754c4b286c99fc",
+        "references/CODE_STANDARDS.md": "4eea47c3d412236afa3ca030fd172e75c0188d770afc878cc34787b0e299bca7",
+        "references/EXAMPLES.md": "e8e9a9d6fb688227d55b6aff56f159dfdb3160d054693a6d425f82e1f7117c05",
+        "references/TEMPLATE.md": "4f762aebc0a54e259bc170b1df5b0f7108261fbe5ea82d108feec220f2488a43"
+      }
+    },
+    "ohos-demo-coverage-analyzer": {
+      "digest": "c1fae0a279ca2af5fba243143df852367d9655c149bdfa25364654c835573867",
+      "files": {
+        "README.md": "c2327cf24dd9bab3f1aa62ecf07d16bba840a21c0a92997a22f8fd26652022e4",
+        "SKILL.md": "51a92fcda81bd0f7100dd97a1ee84f79adbe392861b8826c14308a4e3e6e2dc7",
+        "references/COVERAGE_RULES.md": "f9fa50b4a28ca907578145b87b05930802dc76d212caeee0a79ebab6e0c8930e",
+        "references/EXAMPLES.md": "eed0f5475b38b33f2ff20c1e8d481b4241fb53154959be685001cf2c0a2e6d19"
+      }
+    },
+    "ohos-demo-scenario-generator": {
+      "digest": "7a4ea991005a938e57a90418e1b2c1221171ddf7be73921d24778ad29e0e8929",
+      "files": {
+        "README.md": "81176bad3fceb2a39ffee9efd055402a77d50a15d0a0ac136864dd0a3d12682f",
+        "SKILL.md": "2f8fc7e5dfa4105e96b374653e1816dac22eedd319a55e951ff935dc32b41ad8",
+        "references/EXAMPLES.md": "80f4c2b104c197012871e418305e56881e6ffee661988a96590f8dd6af91b3c8",
+        "references/SCENARIO_TEMPLATE.md": "9ec997de82a7148f9587924a4ec9bdfaf08f91d8dc2e089700294867182c2a0e"
+      }
+    },
+    "ohos-library-testcase-pipeline": {
+      "digest": "a4eb823facfcc8e4302af2071a77b043b72f789882d5387958bee16f20d24d2a",
+      "files": {
+        "SKILL.md": "1dbde1a5a30978cf6b560dfa349a6ea71bfb08b99a52d321cb9dc34d6369ab5b",
+        "references/coverage-matrix.md": "154efca82b47a334ebba78458d1f8bf9ceb9c6d0a09d1fcef8c5ace114d7d39f",
+        "references/demo-patch-rules.md": "3e696a0866dfc097acdbf35314966348c42dd211b138229c85387a15dbb8b55b",
+        "references/oracle-rules.md": "641ff644beb3d5314c531cc1db6d5480745bd30474065d77d3cc9e9e16ecaa21",
+        "references/output-templates.md": "b2f7d2322011ff25dd6902bde9c78b5ac691ef3e4892b680a02067644b45cc02",
+        "references/scenario-rules.md": "3b4263dc2ec4d65e5e3e55e5c3fc3563a3831f48083deed8407ded5758d7c84c",
+        "scripts/check_cases.py": "d307f6222819d738422068244b6a1997d6d29681d3bbb3ac3614d1b90043c58a",
+        "scripts/export_cases_xlsx.py": "5bc07a7a53c8ce29c969fb68295467500b9375e1b5ff13a0a4c71d6988807f34",
+        "scripts/fixtures/cases_bad.md": "9bf280e9366572bac2491772f1d53ac35e1bb308834a636d1e6ab01898ccb2be",
+        "scripts/fixtures/cases_good.md": "6afd2c41818a0cf4cb91a7fa2bbc487c850264d77a17b8099f2c92dee403402a"
+      }
+    }
+  }
+}

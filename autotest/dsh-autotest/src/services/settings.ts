@@ -1,8 +1,11 @@
 // 系统配置服务：settings 表（MySQL，key-value JSON）+ 默认值
 //  - 启动时 loadSettings() 全量加载进内存缓存，业务读取保持同步
 //  - setSetting 同步更新内存 + 异步写库
+//  - 敏感键（db.mysqlUrl / data.redisUrl）**落库前加密、加载后解密**（crypto.ts 信封加密）：
+//    内存缓存里始终是明文（内部消费要真值），只有 DB 这一端是密文。
 import { dbMode, getDb, now } from '../db/connection.js';
 import { maskSecret, maskUrlPassword } from './secrets.js';
+import { decryptSecret, encryptSecret, isEncrypted } from './crypto.js';
 
 export const SETTING_DEFAULTS: Record<string, unknown> = {
   'app.workspace': '',             // 工作区路径：留空 = 启动目录下的 workspace（使用时会提示去配置）
@@ -18,6 +21,8 @@ export const SETTING_DEFAULTS: Record<string, unknown> = {
   'agent.maxTokensPerTask': 300000, // 单任务 token 成本闸门（tokens_in+out 累计，0=不限制）
   'exec.llmTemperature': 0.4,
   'exec.llmTimeoutMs': 180000,
+  'exec.autoApprove': true,       // 危险操作自动放行（默认兼容）；=false 时需人工审批（P0-4）
+  'skills.lockEnforce': false,    // 技能锁强制模式：true 时被篡改/未锁定的技能拒绝加载（P1-2）
   'exec.llmRatePerMin': 10,        // 每用户每分钟 LLM 调用上限（任务/分析/追问）
   'exec.planSampleFull': 60,
   'exec.planSampleBatch': 30,
@@ -42,6 +47,9 @@ export const SETTING_DEFAULTS: Record<string, unknown> = {
   'libraries.xlsxPath': '',        // 留空 = <数据目录>/三方库测试表.xlsx；相对路径按数据目录解析
   // ---- 服务器化 ----
   'db.mysqlUrl': '',
+  // ---- 认证与 RBAC（企业级 P0-1；默认关闭保持既有部署/DSH 插件零感知）----
+  'auth.enabled': false,        // 开启后所有业务 API 要求 Authorization: Bearer <apiKey>
+  'auth.allowLocalBypass': true, // 本机回环请求免 Key（桌面端/本地开发/DSH 本机形态不受影响）
 };
 
 export type SettingValue = string | number | boolean | null;
@@ -100,14 +108,25 @@ export function getAllSettings(): Array<{ key: string; value: SettingValue; upda
 export async function loadSettings(): Promise<void> {
   try {
     const rows = await getDb().prepare('SELECT `key` AS k, value, updated_at FROM settings').all<{ k: string; value: string; updated_at: string | null }>();
-    cache = new Map(rows.map((r) => [r.k, { value: r.value, updatedAt: r.updated_at }]));
+    cache = new Map(rows.map((r) => {
+      let value = r.value;
+      // 敏感键：库里是密文 JSON 字符串，解密后重新编码进缓存（缓存内保持明文）。
+      // 非敏感键 / 旧明文（懒迁移）/ 坏数据一律原样。
+      try {
+        const parsed = JSON.parse(value) as unknown;
+        if (SECRET_SETTING_KEYS[r.k] && typeof parsed === 'string') {
+          value = JSON.stringify(decryptSecret(parsed));
+        }
+      } catch { /* 历史坏数据按原样读取 */ }
+      return [r.k, { value, updatedAt: r.updated_at }];
+    }));
   } catch (e) {
     console.warn('[dsh-autotest] settings 加载失败，使用默认值：', (e as Error).message);
     cache = new Map();
   }
 }
 
-/** 写入配置：同步更新内存，异步写库（MySQL/SQLite 双方言 upsert）。 */
+/** 写入配置：同步更新内存（明文），异步写库（敏感键加密）。 */
 export function setSetting(key: string, value: SettingValue): void {
   const json = JSON.stringify(value);
   if (cache) {
@@ -115,11 +134,15 @@ export function setSetting(key: string, value: SettingValue): void {
   } else {
     cache = new Map([[key, { value: json, updatedAt: now() }]]);
   }
+  // 落库前对敏感键加密；已是密文（掩码回传被上层短路时不会到这，双保险）不二次加密
+  const dbJson = SECRET_SETTING_KEYS[key] && typeof value === 'string' && value && !isEncrypted(value)
+    ? JSON.stringify(encryptSecret(value))
+    : json;
   const upsert = dbMode() === 'sqlite'
     ? `INSERT INTO settings ("key", value, updated_at) VALUES (?, ?, ?)
        ON CONFLICT("key") DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at`
     : `INSERT INTO settings (\`key\`, value, updated_at) VALUES (?, ?, ?)
        ON DUPLICATE KEY UPDATE value = VALUES(value), updated_at = VALUES(updated_at)`;
-  void getDb().prepare(upsert).run(key, json, now())
+  void getDb().prepare(upsert).run(key, dbJson, now())
     .catch((e) => console.warn('[dsh-autotest] 设置写入失败：', (e as Error).message));
 }

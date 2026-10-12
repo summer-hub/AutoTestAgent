@@ -124,7 +124,7 @@ cd dsh-autotest && npm pack                # 产出 dsh-autotest-<version>.tgz
 "dsh-autotest": "https://github.com/summer-hub/AutoTestAgent/releases/download/v1.0.0-rc.1/dsh-autotest-1.0.0-rc.1.tgz"
 ```
 
-仓库已配好 GitHub Actions（打 `v*` tag 自动构建并发布 Release + tarball）。发布前会跑类型检查、22 套自检、`lib/` 产物一致性与 tag/版本一致性校验：
+仓库已配好 GitHub Actions（打 `v*` tag 自动构建并发布 Release + tarball）。发布前会跑类型检查、28 套自检、`lib/` 产物一致性与 tag/版本一致性校验：
 
 ```bash
 # 先改 dsh-autotest/package.json 的 version，并 npm run build:plugin 提交产物，再打 tag
@@ -213,12 +213,12 @@ Redis 缓存与连接池已落地；分表路由层存在但未启用（当前 S
 
 ## 自检（提交前 / CI 门禁）
 
-22 套自检都**不连 MySQL、不调 LLM**（用临时 SQLite 库与临时工作区，不碰你的数据；LLM 层用可观测的假 `ctx.llm`，Redis 用内存假 RESP 服务）；无设备时真机相关分组自动跳过，无 hypium 时判据运行期那套自动跳过。CI 在打包发布前强制运行。
+28 套自检都**不连 MySQL、不调 LLM**（用临时 SQLite 库与临时工作区，不碰你的数据；LLM 层用可观测的假 `ctx.llm`，Redis 用内存假 RESP 服务）；无设备时真机相关分组自动跳过，无 hypium 时判据运行期那套自动跳过。CI 在打包发布前强制运行。
 
 ```bash
 cd autotest
 npm run typecheck     # web + 插件类型检查
-npm run verify:all    # 构建 + 22 套自检（无设备 / 无 hypium 的项自动跳过）
+npm run verify:all    # 构建 + 28 套自检（无设备 / 无 hypium 的项自动跳过）
 ```
 
 | 命令 | 覆盖内容 |
@@ -226,6 +226,12 @@ npm run verify:all    # 构建 + 22 套自检（无设备 / 无 hypium 的项自
 | `npm run verify:data` | 事务隔离与串行（SQLite 单连接并发）、归档表列对齐并真跑一次归档、种子不写死工作区、密钥脱敏与防回写、残留 running 清理与计划重入保护、`llmJson` 并发隔离 |
 | `npm run verify:data-dir` | 默认落点不含 `node_modules`、`AUTOTEST_DATA_DIR` 覆盖优先且不触发迁移、★ 旧数据一条不少、已迁过不重复搬、★ 搬不动退回旧目录、★ WAL 数据不丢 |
 | `npm run verify:api` | 进程内起真实 HTTP 服务挂业务 handler：同源闸门（Origin/Sec-Fetch-Site）、Content-Type 白名单、请求体体积上限、坏 JSON 拒绝、出参脱敏、模型端点协议/元数据地址校验、`limit` 钳制、用例 `steps` 入参校验、读写缓存一致性、列表信封 `nextCursor` |
+| `npm run verify:crypto` | 凭据静态加密（P0-2）：AES-256-GCM 往返（中文/连接串/长值）、旧明文透传懒迁移、空值不加密、密文幂等、主密钥文件自动生成与 ACL 收敛（Windows icacls / POSIX 0600）、settings 敏感键端到端（库内直读是密文、读回明文）、掩码语义不变、解密失败容错 |
+| `npm run verify:auth` | 认证 + RBAC（P0-1）：Key 创建返回明文仅一次、库内只存 SHA-256、无 Key/错 Key → 401、viewer/operator/admin 角色矩阵（GET 放行 / 写 403 / 敏感组 403）、/health 与 /auth/status 免鉴权、回环豁免开关、禁用/过期 Key 拒绝、401 后 keep-alive 连接不污染 |
+| `npm run verify:metrics` | 可观测出口（P0-3）：Counter/Histogram（累积语义、桶归属、sum/count）、HTTP 埋点按路由模式聚合（:id 不炸基数）、LLM trace hook → 调用/token 计数、/metrics Prometheus 文本格式与 admin 门禁（401/403/200）、JSON 日志模式（结构化请求行）与文本模式默认不变 |
+| `npm run verify:approvals` | 危险操作审批（P0-4）：autoApprove 默认兼容（不建单）、关闭后删除类操作 409 入队、重复操作幂等复用同一条、一次性批准令牌（批准→重试放行→再调重新待批）、终态守卫、拒绝后仍拦截、批准后端到端真删、operator 决策/viewer 只读的角色门禁 |
+| `npm run verify:skill-lock` | 技能供应链锁（P1-2）：锁文件与 skills/ digest 一致、单字节篡改检出且 changedFiles 指到具体文件、新增未锁定 → unlocked、删除 → missing、无锁文件全量 unlocked、enforce 开关双向语义（告警不拦截 / 拒绝加载） |
+| `npm run verify:architecture` | 架构治理（P1-1）：DSH 解耦白名单外零 `@deepseek-ai` import（58 文件）、shared 仅类型（无 node 内置/无运行时导出）、web 跨包只准 shared（禁碰服务端内部）、desktop Rust 不反向引用源码目录、分层顺序（db→services→api 静态引用不准向上，登记例外除外）、YAML 与脚本白名单/例外双边防漂移 |
 | `npm run verify:explorer` | 遍历候选判定（用 `clickable` 而非"有文本"）、去重键、控件分类、预算、覆盖率报告、无文本控件不丢 |
 | `npm run verify:repo-paths` | 仓库地址拆分、子目录穿越防护、同仓共享克隆、legacy 克隆接管、子目录版本号 |
 | `npm run verify:sheet` | xlsx 解析/表头识别/diff、同步幂等、**不覆盖 Agent 字段**、绝不删库 |
@@ -250,7 +256,7 @@ npm run verify:all    # 构建 + 22 套自检（无设备 / 无 hypium 的项自
 
 ### 浏览器 UI 遍历测试（`scripts/browser-test/`，按需手动跑）
 
-上面 22 套是**离线自检**（不起浏览器）；UI 层用另一套零依赖 CDP 工具（Node 24 原生 WebSocket 驱动真实 Chrome，`--launch` 模式）做**真实浏览器全量遍历**：
+上面 28 套是**离线自检**（不起浏览器）；UI 层用另一套零依赖 CDP 工具（Node 24 原生 WebSocket 驱动真实 Chrome，`--launch` 模式）做**真实浏览器全量遍历**：
 
 ```bash
 node scripts/browser-test/ui-walk.mjs --base http://127.0.0.1:3280 --out .test-results/web --launch 9222

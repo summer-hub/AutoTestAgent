@@ -1,11 +1,14 @@
 // 把独立服务器打包成桌面端资源（src-tauri/resources/server/）：
 //  - lib/ + dist/（standalone.js 与独立版前端）
 //  - package.json（保留 "type": "module"，否则 lib/*.js 会被 node 当 CJS 解析直接崩）
+//  - skills/ + skills-lock.json（P1-2：AI 任务引用的 SKILL.md 随包分发，
+//    否则桌面端用户的 agent 读不到技能；锁文件一并带上，启动时校验完整性）
 //  - node_modules：**只用随包的 node**（.tmp/node）执行 npm install，
 //    因为 better-sqlite3 是原生模块，其预编译产物与 node ABI 绑定；
 //    用系统 node 安装会在别的 node 版本上加载失败。
 //  - 剔除 @types/*、tsx、typescript（纯开发期依赖，运行时不需要）
 import { cp, mkdir, mkdtemp, rm, writeFile, readFile } from 'node:fs/promises';
+import { existsSync } from 'node:fs';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { tmpdir } from 'node:os';
@@ -15,6 +18,8 @@ import { fileURLToPath } from 'node:url';
 const run = promisify(execFile);
 const root = join(dirname(fileURLToPath(import.meta.url)), '..');
 const serverSrc = join(root, '..', 'dsh-autotest');
+const repoRoot = join(root, '..', '..');
+const skillsSrc = join(repoRoot, 'skills');
 const outDir = join(root, 'src-tauri', 'resources', 'server');
 const bundledNodeDir = join(root, '.tmp', 'node');
 
@@ -35,6 +40,15 @@ delete pkg.peerDependencies;
 delete pkg.scripts;
 delete pkg.dsh;
 await writeFile(join(outDir, 'package.json'), JSON.stringify(pkg, null, 2));
+
+// 1b. 技能包（SKILL.md + 锁文件）：服务端 skillsRoot() 优先解析 <包根>/skills，
+//     即这里的 resources/server/skills——桌面端 AI 任务因此能读到技能，且启动时校验锁。
+if (existsSync(join(skillsSrc, 'skills-lock.json'))) {
+  await cp(skillsSrc, join(outDir, 'skills'), { recursive: true });
+  console.log('[stage] skills/ 已随包分发（含 skills-lock.json，启动时校验）');
+} else {
+  console.warn('[stage] ⚠️ 未找到 skills/skills-lock.json——桌面端将不含技能包（AI 任务引用 SKILL.md 会落空）。请在仓库根执行 node scripts/gen-skills-lock.mjs');
+}
 
 // 2. 生产依赖（用随包 node 安装，锁定 ABI）
 const nodeExe = join(bundledNodeDir, 'node.exe');

@@ -13,7 +13,7 @@
 - **数据分析 / 归因**：从 GitCode 拉取真实 PR，AI 分析用例更新点、影响范围与风险；失败执行支持自由勾选（可跨库）归因；可指定 #PR 单独分析、实时进度动画、结果小卡片放大查看
 - **前端插件化**：DSH client 插件侧边栏入口 + 主区 iframe 嵌入，复用 DSH 深色风格
 - **并发与缓存**：LRU/Redis 缓存（写路径按前缀失效）、MySQL 连接池；`repository.ts` 预留了 `library_id % 16` 分表路由层，**当前仍是单表**（`caseTableFor()` 恒返回 `cases`），README 中的 QPS 数字来自开发期单机 SQLite 压测
-- **可回归自检**：`npm run verify:all` 覆盖 22 套离线自检（事务隔离 / 归档列 / 密钥脱敏 / 运行态清理 / 数据目录迁出 / API 门禁 / 遍历候选规则 / 仓库路径 / xlsx 同步 / 接口面提取 / 覆盖矩阵 / demo 场景 / 用例计划 / 可测性与补丁 / oracle 与反假通过 / 分流规则 / 脚本绑定 / 任务 lane 与取消 / 轨迹事件流 / LLM 重试换模型与 token 预算与限流 / 知识库 / 用例↔接口关联 / Hypium 工程布局与命名契约 / 判据运行期真跑 / 步骤句式契约），CI 逐个接入（详见[autotest/README.md](autotest/README.md)）
+- **可回归自检**：`npm run verify:all` 覆盖 28 套离线自检（事务隔离 / 归档列 / 密钥脱敏 / 运行态清理 / 数据目录迁出 / API 门禁 / 凭据加密 / 认证 RBAC / 指标与日志 / 遍历候选规则 / 仓库路径 / xlsx 同步 / 接口面提取 / 覆盖矩阵 / demo 场景 / 用例计划 / 可测性与补丁 / oracle 与反假通过 / 分流规则 / 脚本绑定 / 任务 lane 与取消 / 危险操作审批 / 轨迹事件流 / LLM 重试换模型与 token 预算与限流 / 知识库 / 技能供应链锁 / 用例↔接口关联 / Hypium 工程布局与命名契约 / 判据运行期真跑 / 步骤句式契约 / 架构治理），CI 逐个接入（详见[autotest/README.md](autotest/README.md)）
 
 ## 安装
 
@@ -174,6 +174,21 @@ powershell -ExecutionPolicy Bypass -File docs/deploy/fix-dsh-community-plugin.ps
 - **请求安全闸门**：校验 `Content-Type`（阻断跨站表单式简单请求）、限制请求体 2MB、校验 `Origin` / `Sec-Fetch-Site` 同源；模型端点限定 http(s) 并拒绝元数据地址。确有跨源需要时可用 `AUTOTEST_ALLOW_CROSS_ORIGIN=1` 关闭同源闸门。
 - **密钥出参脱敏**：`GET /settings` 的 MySQL / Redis 连接串只回传打码值；`GET /models` 的 API Key 只回传掩码 + `hasApiKey` 布尔；掩码原样回传会被识别为"不改动"，不会覆盖真实凭据。
 
+## 企业级能力（P0 全覆盖 + 高性价比 P1）
+
+对标 ZCode 级编程工作台补齐的企业化能力，**默认全部保持既有行为**（开关式启用，DSH 插件形态零感知）：
+
+| 能力 | 默认 | 启用方式 | 说明 |
+|---|---|---|---|
+| **认证 + RBAC**（P0-1） | 关闭 | 系统配置 → 「API Key 与访问控制」→ 开启认证 | API Key（SHA-256 哈希存储，明文仅创建时展示一次）；角色 admin/operator/viewer（GET=viewer、写=operator、配置/模型/Key 管理=admin）；本机回环默认免 Key（桌面端/本地开发零感知，可收紧）；Web 端无 Key 时展示登录门 |
+| **凭据静态加密**（P0-2） | 自动生效 | 无需配置（`AUTOTEST_MASTER_KEY` 可显式指定主密钥） | AES-256-GCM 信封加密：models 的 API Key 与 settings 的 MySQL/Redis 连接串**落库即密文**；主密钥取环境变量或数据目录 `.master-key` 文件（自动生成 + ACL 收敛）；旧明文数据懒迁移不阻塞启动；出参仍走掩码 |
+| **可观测出口**（P0-3） | 生效 | `GET /api/autotest/metrices`→`/metrics`；`AUTOTEST_LOG_FORMAT=json` | 零依赖 Prometheus 指标（HTTP 请求数/延迟按路由、LLM 调用/token/失败、任务 lane 深度/事件、uptime），认证开启时限 admin；结构化 JSON 日志（请求行含 method/route/status/durationMs）可直接进 ELK/Loki |
+| **危险操作审批**（P0-4） | 自动放行 | 系统配置 → `exec.autoApprove = false` | 拉取/更新仓库、生成/删除脚本、删库/删用例/删任务等危险操作入「人工队列」页审批队列；批准 = 一次性放行令牌（发起方重试同一操作即放行）；operator+ 可决策，viewer 只读 |
+| **技能供应链锁**（P1-2） | 告警 | 仓库根 `node scripts/gen-skills-lock.mjs`；`skills.lockEnforce=true` 收紧 | skills/ 逐文件 SHA-256 锁定，启动时校验（桌面端随包分发自带锁）；篡改/未锁定/缺失可检出；技能升级后必须重跑锁文件并提交 |
+| **架构治理即代码**（P1-1） | 生效 | `npm run verify:architecture`（CI 门禁） | `architecture-policy.yaml` 固化六条约束：DSH 解耦白名单、shared 仅类型、web/desktop 隔离、分层顺序、YAML 与审计脚本双边防漂移——违规直接 FAIL |
+
+完整对标评估（差距分析、路线图、遗留项）见 [docs/企业级对标评估-ZCode-2026-10-12.md](docs/企业级对标评估-ZCode-2026-10-12.md)；部署细节见 [docs/standalone-desktop.md](docs/standalone-desktop.md)。
+
 ## 快速上手
 
 1. 打开 DSH Web，左侧边栏进入「AutoTest 平台」
@@ -233,7 +248,7 @@ Tauri v2 外壳（~33MB，非 Electron）托管内置独立服务器：随包分
 ```bash
 cd autotest
 npm run typecheck          # web + 插件 类型检查
-npm run verify:all         # 构建 + 22 套自检（离线可跑；无设备/无 hypium 的项自动跳过）
+npm run verify:all         # 构建 + 28 套自检（离线可跑；无设备/无 hypium 的项自动跳过）
 npm run build:standalone   # 独立版：前端 + 服务端
 npm start                  # 跑独立服务器（3280）
 npm run dev:web            # 前端开发服务器（5173，代理 /api 到 3280）

@@ -180,7 +180,76 @@ npm run build
 
 ---
 
-## 三、与 DSH 插件链路的关系
+## 四、企业级能力快速开启
+
+以下能力默认均为「兼容模式」（既有部署行为不变），按需显式开启：
+
+### 1. 认证 + RBAC（P0-1）
+
+```bash
+# 开启认证（系统配置页「API Key 与访问控制」一键操作，或 API）：
+curl -X PUT http://127.0.0.1:3280/api/autotest/auth/settings \
+  -H 'Content-Type: application/json' -d '{"enabled":true}'
+# 创建 Key（明文仅此一次返回，库内只存 SHA-256）：
+curl -X POST http://127.0.0.1:3280/api/autotest/auth/keys \
+  -H 'Content-Type: application/json' -d '{"name":"ci-runner","role":"operator"}'
+# 之后所有业务请求带：Authorization: Bearer at_xxx
+```
+
+- 角色：`viewer`（只读）/ `operator`（写操作）/ `admin`（系统配置/模型/Key 管理）；
+- `auth.allowLocalBypass`（默认 true）：本机回环免 Key——**桌面端与本机开发零感知**；收紧设 false；
+- Web 端无 Key 时展示登录门（Key 存 sessionStorage，关标签页即失效）；
+- ⚠️ 开启前先确认手里有 admin Key（或保持回环豁免），否则把自己锁在门外。
+
+### 2. 凭据加密（P0-2）
+
+自动生效，无需配置。models 的 API Key 与 settings 的 MySQL/Redis 连接串**落库即密文**（AES-256-GCM）：
+
+- 主密钥优先级：`AUTOTEST_MASTER_KEY` 环境变量（企业推荐，hex 64 位 / base64 / 任意串 SHA-256 派生）> 数据目录 `.master-key`（首次自动生成，POSIX 0600 / Windows icacls 收敛 ACL）；
+- **备份纪律**：丢失主密钥 = 库内凭据无法解密；跨机迁移数据目录时须一并拷贝 `.master-key` 或显式带上 `AUTOTEST_MASTER_KEY`；
+- 旧明文数据懒迁移（下次写该键时自动转密文），启动不阻塞；解密失败只告警不崩。
+
+### 3. 可观测（P0-3）
+
+```bash
+# Prometheus 指标（认证开启时限 admin）：
+curl http://127.0.0.1:3280/api/autotest/metrics
+# 结构化 JSON 日志（请求行直接进 ELK/Loki）：
+AUTOTEST_LOG_FORMAT=json node lib/standalone.js
+```
+
+指标：`autotest_http_requests_total`（method/route/status）、`autotest_http_request_duration_seconds`（直方图）、`autotest_llm_calls_total` / `autotest_llm_tokens_total`、`autotest_task_lane_*`（深度/事件）、`autotest_process_uptime_seconds`。集群模式下各 worker 独立计数（需全集群精确值时从 LB 侧聚合或接 Redis）。
+
+### 4. 危险操作审批（P0-4）
+
+```bash
+# 关闭自动放行（系统配置 exec.autoApprove=false，或 API）：
+curl -X PUT http://127.0.0.1:3280/api/autotest/settings/exec.autoApprove \
+  -H 'Content-Type: application/json' -d '{"value":false}'
+```
+
+之后拉取/更新仓库、生成/删除脚本、删库/删用例/删任务都会进入「人工队列」页的审批区；批准 = 一次性放行令牌，**发起方重试同一操作即放行**；operator+ 可决策，viewer 只读。
+
+### 5. 技能供应链锁（P1-2）
+
+```bash
+# 技能升级后必须重跑并提交（仓库根）：
+node scripts/gen-skills-lock.mjs
+# 启动时自动校验（桌面端随包分发自带锁）；强执模式拒绝加载被篡改技能：
+#   系统配置 skills.lockEnforce = true
+```
+
+### 6. 架构治理（P1-1）
+
+```bash
+cd autotest/dsh-autotest && npm run verify:architecture
+```
+
+`autotest/architecture-policy.yaml` 固化六条约束（DSH 解耦白名单 / shared 仅类型 / web 隔离 / desktop 隔离 / 分层顺序 / 例外登记），CI 门禁执行，改规则需同步 YAML 与审计脚本（漂移即 FAIL）。
+
+---
+
+## 五、与 DSH 插件链路的关系
 
 - 插件安装链路**完全不变**（`dsh plugin add` / tgz / bundle 注册），`lib/index.js` 与 `lib/client.js` 行为不变；
 - 三个链路可以**同时存在**：DSH 里跑插件、服务器上跑独立版、本机跑桌面端，各自数据目录互不干扰（除非显式共指）；

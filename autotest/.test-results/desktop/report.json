@@ -1,7 +1,7 @@
 {
-  "base": "http://127.0.0.1:9961",
+  "base": "http://127.0.0.1:5315",
   "mode": "desktop-webview(cdp:9223)",
-  "time": "2026-10-12T15:06:51.944Z",
+  "time": "2026-10-12T16:57:45.655Z",
   "summary": {
     "total": 17,
     "passed": 17,
@@ -11,7 +11,7 @@
     "netFailures": 1
   },
   "expectedEmptyState": [
-    "scripts: 404 http://127.0.0.1:9961/api/autotest/repos/1/files?path=&root=scripts（空态契约：该库尚无 Hypium 脚本）"
+    "scripts: 404 http://127.0.0.1:5315/api/autotest/repos/1/files?path=&root=scripts（空态契约：该库尚无 Hypium 脚本）"
   ],
   "modal": {
     "ok": true,
@@ -99,7 +99,7 @@
       "ok": true,
       "problems": [],
       "state": {
-        "htmlLen": 4774,
+        "htmlLen": 5711,
         "pill": "v1.0.0-rc.1 · sqlite",
         "navItems": 17
       },
@@ -264,7 +264,7 @@
       "ok": true,
       "problems": [],
       "state": {
-        "htmlLen": 14601,
+        "htmlLen": 16662,
         "pill": "v1.0.0-rc.1 · sqlite",
         "navItems": 17
       },

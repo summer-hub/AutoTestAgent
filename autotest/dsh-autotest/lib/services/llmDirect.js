@@ -9,6 +9,7 @@
 import { getDb } from '../db/connection.js';
 import { getSetting } from './settings.js';
 import { ensureTaskTokenBudget } from './tokenBudget.js';
+import { decryptSecret } from './crypto.js';
 import { combineSignals, emitLlmTrace, } from './llmCore.js';
 /** 读取 models 表候选（默认模型优先，其余按 id）。无表/无数据时返回空数组。 */
 export async function listDirectModels() {
@@ -20,7 +21,8 @@ export async function listDirectModels() {
             provider: String(r.provider ?? 'custom'),
             base_url: String(r.base_url ?? ''),
             model_id: String(r.model_id ?? ''),
-            api_key: String(r.api_key ?? ''),
+            // api_key 落库是密文（crypto.ts 信封加密），取出即解密；旧明文原样透传
+            api_key: decryptSecret(r.api_key),
             is_default: Number(r.is_default ?? 0),
         }));
     }

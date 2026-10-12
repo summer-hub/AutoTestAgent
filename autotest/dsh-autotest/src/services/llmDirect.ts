@@ -9,6 +9,7 @@
 import { getDb } from '../db/connection.js';
 import { getSetting } from './settings.js';
 import { ensureTaskTokenBudget } from './tokenBudget.js';
+import { decryptSecret } from './crypto.js';
 import {
   combineSignals, emitLlmTrace,
   type LlmCall, type LlmResult, type LlmTextInput,
@@ -44,7 +45,8 @@ export async function listDirectModels(): Promise<ModelRow[]> {
       provider: String(r.provider ?? 'custom'),
       base_url: String(r.base_url ?? ''),
       model_id: String(r.model_id ?? ''),
-      api_key: String(r.api_key ?? ''),
+      // api_key 落库是密文（crypto.ts 信封加密），取出即解密；旧明文原样透传
+      api_key: decryptSecret(r.api_key),
       is_default: Number(r.is_default ?? 0),
     }));
   } catch {

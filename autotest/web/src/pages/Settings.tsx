@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useState } from 'react';
 import { api } from '../api';
+import ApiKeyManager from '../components/ApiKeyManager';
 
 interface SettingItem { key: string; value: string | number | boolean | null; updatedAt: string | null }
 interface ShardStat { shard: number; libraries: number; cases: number }
@@ -146,6 +147,8 @@ export default function SettingsPage() {
       <div style={{ display: 'flex', justifyContent: 'flex-end', marginBottom: 12 }}>
         <button className="btn primary" disabled={saving} onClick={save}>{saving ? '保存中…' : '保存全部配置'}</button>
       </div>
+
+      <ApiKeyManager />
 
       {SECTIONS.map((sec) => (
         <div key={sec.title} className="card" style={{ marginBottom: 14 }}>

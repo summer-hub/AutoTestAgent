@@ -8,6 +8,7 @@ import { AsyncLocalStorage } from 'node:async_hooks';
 import { promisify } from 'node:util';
 import { getDb, now } from '../db/connection.js';
 import { getSetting } from './settings.js';
+import { requireApproval } from './approvals.js';
 
 const execFileAsync = promisify(execFile);
 
@@ -487,11 +488,15 @@ export async function refreshPackageInfo(lib: { id: number; name: string; repo_u
   return { packageName, mainAbility };
 }
 
-/** 拉取仓库：目录不存在则 clone，否则 pull；返回提交、分支、变更文件与版本。 */
-export async function pullRepo(lib: RepoLib): Promise<RepoResult> {
+/** 拉取仓库：目录不存在则 clone，否则 pull；返回提交、分支、变更文件与版本。
+ *  kind 供审批闸门区分「拉取/更新」（P0-4）：同一库的拉取与更新是两条独立审批目标。 */
+export async function pullRepo(lib: RepoLib, kind: 'repo.pull' | 'repo.update' = 'repo.pull'): Promise<RepoResult> {
   if (!lib.repo_url) {
     throw new Error('该三方库未配置仓库地址（repo_url 为空），请先在用例库中补充仓库 URL 后再拉取。');
   }
+  // 危险操作闸门（P0-4）：autoApprove 关闭时需人工批准；批准后重试同一库即放行（一次性令牌）。
+  // 放在服务层 = executor 的 AI 任务路径与 HTTP 路由路径同时被覆盖，无需两处各接一遍。
+  await requireApproval(kind, `library:${lib.id}:${kind}`, { name: lib.name, url: lib.repo_url }, 'agent');
   const subpath = normalizeSubpath(String(lib.repo_subpath ?? ''));
   // 克隆/更新都发生在**仓库根**：同仓的多个库共享一份克隆（否则单体仓会按库各存一份）
   const dir = repoRootForLib(lib);
@@ -547,7 +552,7 @@ export async function pullRepo(lib: RepoLib): Promise<RepoResult> {
 
 /** 更新仓库 = 拉取 + 变更文件明细。 */
 export async function updateRepo(lib: RepoLib): Promise<RepoResult> {
-  const r = await pullRepo(lib);
+  const r = await pullRepo(lib, 'repo.update');
   const detail = r.changedFiles.length > 0 ? `\n变更文件（前 20）：${r.changedFiles.slice(0, 20).join(', ')}` : '';
   r.summary = `【更新仓库】${r.summary}${detail}`;
   return r;

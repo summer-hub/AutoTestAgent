@@ -34,13 +34,27 @@ export function readDshDefaultModel() {
         return null;
     }
 }
-let traceHook = null;
+// 埋点消费者支持多个：events.ts 的链路追踪（setLlmTraceHook 覆盖式设置）与
+// metrics 的指标埋点（addLlmTraceHook 追加式）并存，互不覆盖；
+// 单个消费者异常被隔离，不影响其他消费者与 LLM 业务本身。
+const traceHooks = [];
 export function setLlmTraceHook(fn) {
-    traceHook = fn;
+    traceHooks.length = 0;
+    if (fn)
+        traceHooks.push(fn);
 }
-/** 发一条 LLM 埋点（无 hook 时静默；写库失败由 events.ts 内部兜底）。 */
+/** 追加一个埋点消费者（不清空既有消费者）。 */
+export function addLlmTraceHook(fn) {
+    traceHooks.push(fn);
+}
+/** 发一条 LLM 埋点（无消费者时静默）。 */
 export function emitLlmTrace(e) {
-    traceHook?.(e);
+    for (const h of traceHooks) {
+        try {
+            h(e);
+        }
+        catch { /* 消费者异常隔离 */ }
+    }
 }
 /**
  * 合并「调用方取消信号」与「单次调用超时」：任一触发即中断。

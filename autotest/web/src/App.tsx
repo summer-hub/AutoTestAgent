@@ -18,7 +18,9 @@ import HumanQueuePage from './pages/HumanQueue';
 import KnowledgePage from './pages/Knowledge';
 import AgentBindingsPage from './pages/AgentBindings';
 import SettingsModal from './components/SettingsModal';
+import LoginScreen from './components/LoginScreen';
 import { ErrorBoundary } from './components/ErrorBoundary';
+import { ROLE_LABEL, setRole } from './authState';
 
 export type PageKey = 'home' | 'tasks' | 'libraries' | 'api' | 'coverage' | 'human' | 'knowledge' | 'cases' | 'scripts' | 'plans' | 'analysis' | 'attribution' | 'debug' | 'devices' | 'prompts' | 'agents' | 'settings';
 
@@ -95,6 +97,8 @@ export default function App() {
   const [navCollapsed, setNavCollapsed] = useState<boolean>(() => {
     try { return localStorage.getItem('autotest.navCollapsed') === '1'; } catch { return false; }
   });
+  // 认证态势（P0-1）：checked=已问过服务端；enabled=服务端开启认证；role=当前身份（null=待登录）
+  const [auth, setAuth] = useState<{ checked: boolean; enabled: boolean; role: string | null }>({ checked: false, enabled: false, role: null });
 
   useEffect(() => {
     try { localStorage.setItem('autotest.navCollapsed', navCollapsed ? '1' : '0'); } catch { /* 忽略（隐私模式等） */ }
@@ -128,6 +132,24 @@ export default function App() {
     return () => { cancelled = true; };
   }, []);
 
+  // 认证态势（P0-1）：问一次免鉴权的 /auth/status；401 广播（key 失效）→ 掉回登录门
+  useEffect(() => {
+    let cancelled = false;
+    api.authStatus().then((s) => {
+      if (cancelled) return;
+      const role = s.enabled ? s.role : null;
+      setRole(role);
+      setAuth({ checked: true, enabled: !!s.enabled, role });
+    }).catch(() => {
+      if (cancelled) return;
+      // 旧后端无 /auth/status 或后端未就绪：按未开启处理，不锁门（兼容优先）
+      setAuth({ checked: true, enabled: false, role: null });
+    });
+    const on401 = () => { setRole(null); setAuth((a) => ({ ...a, role: null })); };
+    window.addEventListener('autotest:unauthorized', on401);
+    return () => { cancelled = true; window.removeEventListener('autotest:unauthorized', on401); };
+  }, []);
+
   const renderPage = () => (
     <ErrorBoundary resetKey={page}>
       {page === 'home' && <HomePage />}
@@ -149,6 +171,21 @@ export default function App() {
       {page === 'settings' && <SettingsPage />}
     </ErrorBoundary>
   );
+
+  // 登录门（P0-1）：认证开启且当前无有效身份时，只渲染登录页（hooks 均已在上方，规则安全）
+  if (auth.checked && auth.enabled && !auth.role) {
+    return (
+      <LoginScreen
+        onLogin={(role) => {
+          setRole(role);
+          setAuth((a) => ({ ...a, role }));
+        }}
+      />
+    );
+  }
+
+  // 顶栏/角标文本：后端版本 + 库引擎 + （认证开启时的）当前角色
+  const pillText = `${backend ? `v${backend.version} · ${backend.db}` : '连接中'}${auth.enabled && auth.role ? ` · ${ROLE_LABEL[auth.role] ?? auth.role}` : ''}`;
 
   if (EMBED) {
     // 嵌入 DSH 主区的布局：左侧导航栏 + 右侧页面详情（面包屑 + 内容）。
@@ -184,7 +221,7 @@ export default function App() {
           </nav>
           <div className="embed-side-foot">
             <span className="tb-pill" title={backend ? `后端版本 ${backend.version} · ${backend.db}` : '加载中'}>
-              <span className="dot green" /> {backend ? `v${backend.version} · ${backend.db}` : '连接中'}
+              <span className="dot green" /> {pillText}
             </span>
             <button
               type="button"
@@ -246,7 +283,7 @@ export default function App() {
           </div>
           <div className="tb-spacer" />
           <div className="tb-pill" title={backend ? `后端版本 ${backend.version} · ${backend.db}` : '加载中'}>
-            <span className="dot green" /> {backend ? `v${backend.version} · ${backend.db}` : '连接中'}
+            <span className="dot green" /> {pillText}
           </div>
         </header>
         <div className="content">{renderPage()}</div>

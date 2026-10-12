@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from 'react';
 import type { Library } from 'shared';
 import { api } from '../api';
+import ApprovalQueue from '../components/ApprovalQueue';
 
 /**
  * 人工接管队列（P7）：自动化跑不了的用例落到这里，每条必须包含四段 ——
@@ -98,6 +99,7 @@ export default function HumanQueuePage() {
 
   return (
     <>
+      <ApprovalQueue />
       <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
         <div>
           <div className="page-title" style={{ marginBottom: 0 }}>人工接管队列</div>

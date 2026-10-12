@@ -17,6 +17,16 @@ import {
 } from '../services/analyzer.js';
 import { getAllSettings, getSetting, maskSettingValue, SECRET_SETTING_KEYS, setSetting, type SettingValue } from '../services/settings.js';
 import { isMaskedSecret, maskSecret, resolveSecretInput } from '../services/secrets.js';
+import { decryptSecret, encryptSecret, sealSecretInput } from '../services/crypto.js';
+import { httpDuration, httpRequests, renderMetrics } from '../services/metrics.js';
+import { logger } from '../services/logger.js';
+import { performance } from 'node:perf_hooks';
+import {
+  authEnabled, createApiKey, currentAuthContext, enforceAuth, listApiKeys, localBypassEnabled, revokeApiKey,
+  type AuthContext, type Role,
+} from '../services/auth.js';
+import { decideApproval, listApprovals, pendingApprovalCount, requireApproval } from '../services/approvals.js';
+import { verifySkillLock } from '../services/skillLock.js';
 import { cacheDel, cacheGet, cacheSet } from '../services/cache.js';
 // LLM 限流单独一个模块：Redis 可用时多节点共享计数，模块级数组在多节点下形同虚设
 import { checkLlmRate } from '../services/llmLimit.js';
@@ -55,9 +65,11 @@ interface HandlerArgs {
   query: URLSearchParams;
   body: any;
   req: IncomingMessage;
+  /** 鉴权上下文（auth.enabled 关闭时为 null；开启时为 key 身份或回环豁免） */
+  auth: AuthContext | null;
 }
 type Handler = (args: HandlerArgs) => Promise<unknown>;
-interface Route { method: string; keys: string[]; regex: RegExp; handler: Handler; llm?: boolean; }
+interface Route { method: string; pattern: string; keys: string[]; regex: RegExp; handler: Handler; llm?: boolean; role?: Role; authOpen?: boolean; }
 
 const routes: Route[] = [];
 
@@ -76,9 +88,15 @@ function compile(pattern: string): { regex: RegExp; keys: string[] } {
   return { regex, keys };
 }
 
-function route(method: string, pattern: string, handler: Handler, opts?: { llm?: boolean }): void {
+function route(method: string, pattern: string, handler: Handler, opts?: { llm?: boolean; role?: Role; authOpen?: boolean }): void {
   const { regex, keys } = compile(pattern);
-  routes.push({ method, keys, regex, handler, llm: opts?.llm });
+  routes.push({ method, pattern, keys, regex, handler, llm: opts?.llm, role: opts?.role, authOpen: opts?.authOpen });
+}
+
+/** 路由默认所需角色：GET=viewer，写操作=operator；敏感组路由显式标注 admin（见各 route 调用）。 */
+function requiredRole(r: Route): Role {
+  if (r.role) return r.role;
+  return r.method === 'GET' ? 'viewer' : 'operator';
 }
 
 /** 读缓存 → 未命中执行并回填。 */
@@ -232,13 +250,28 @@ function errorStatus(e: unknown): number {
 export function makeApiHandler(llm: LlmCall): (req: IncomingMessage, res: ServerResponse) => Promise<void> {
   defineRoutes(llm);
   return async (req, res) => {
+    // 埋点（P0-3）：按路由模式聚合请求数与延迟；finally 统一出口（早 return 也覆盖）
+    const startedAt = performance.now();
+    const method = (req.method ?? 'GET').toUpperCase();
+    let routeLabel = '(unmatched)';
+    let statusCode = 500;
     try {
       await ensureReady();
       assertSameOrigin(req);
       const url = new URL(req.url ?? '/', 'http://localhost');
       const path = url.pathname.replace(/^\/api\/autotest/, '') || '/';
       const query = url.searchParams;
-      const method = (req.method ?? 'GET').toUpperCase();
+
+      // 可观测出口（P0-3）：/metrics 独立分支——Prometheus 文本格式，不走 JSON 信封。
+      // 含路由拓扑与调用量，认证开启时限 admin；关闭时直通（与其他路由一致）。
+      if (path === '/metrics') {
+        await enforceAuth(req, 'admin');
+        routeLabel = '/metrics';
+        statusCode = 200;
+        res.writeHead(200, { 'Content-Type': 'text/plain; version=0.0.4; charset=utf-8' });
+        res.end(renderMetrics());
+        return;
+      }
       // 路由匹配：静态段优先于参数段（两遍扫描）。
       // 历史教训：曾依赖注册顺序规避（见 /cases/export 的注释），但 /libraries/sheet
       // 仍被先注册的 /libraries/:id 捕获（id='sheet' → NaN → 404），线上真实中招。
@@ -255,16 +288,22 @@ export function makeApiHandler(llm: LlmCall): (req: IncomingMessage, res: Server
         }
       }
       if (!matched) {
+        statusCode = 404;
         return send(res, 404, {
           error: 'Not Found',
           path,
           message: `接口不存在：${method} ${path} —— 服务端可能未更新到最新版本，请重启宿主进程后重试`,
         });
       }
+      routeLabel = matched.pattern;
+      // 鉴权（P0-1）：路由匹配后、执行业务前。认证关闭时 enforceAuth 直通（零开销，既有部署无感知）。
+      // 401/403 由下方既有 catch 统一出参；拒绝发生在读 body 之前，未认证请求不消耗解析成本。
+      const auth = await enforceAuth(req, requiredRole(matched), { authOpen: matched.authOpen });
       const body = ['POST', 'PUT', 'PATCH'].includes(method) ? await readBody(req) : {};
       if (matched.llm) await checkLlmRate();
-      const data = await matched.handler({ params, query, body, req });
+      const data = await matched.handler({ params, query, body, req, auth });
       if (Buffer.isBuffer(data)) {
+        statusCode = 200;
         res.writeHead(200, {
           'Content-Type': 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
           'Content-Disposition': 'attachment; filename="cases.xlsx"',
@@ -272,10 +311,17 @@ export function makeApiHandler(llm: LlmCall): (req: IncomingMessage, res: Server
         res.end(data);
         return;
       }
+      statusCode = 200;
       send(res, 200, data);
     } catch (e) {
-      const status = errorStatus(e);
-      send(res, status, { error: status >= 500 ? 'Internal Server Error' : (e as Error).message, message: (e as Error).message, statusCode: status });
+      statusCode = errorStatus(e);
+      send(res, statusCode, { error: statusCode >= 500 ? 'Internal Server Error' : (e as Error).message, message: (e as Error).message, statusCode: statusCode });
+    } finally {
+      // 埋点出口：计数 + 延迟直方图（秒）+ json 日志模式的请求行（文本模式自动跳过）
+      const durationMs = performance.now() - startedAt;
+      httpRequests.inc({ method, route: routeLabel, status: String(statusCode) });
+      httpDuration.observe({ method, route: routeLabel }, durationMs / 1000);
+      logger.request(method, routeLabel, statusCode, durationMs);
     }
   };
 }
@@ -293,8 +339,59 @@ function defineRoutes(llm: LlmCall): void {
   if (defineRoutes.done) return;
   defineRoutes.done = true;
 
-  // ---- health ----
-  route('GET', '/health', async () => ({ ok: true, service: 'dsh-autotest', version: PKG_VERSION, db: dbMode(), routes: routes.length, time: new Date().toISOString() }));
+  // ---- health ----（免鉴权：LB 探活与桌面端就绪探测用）
+  route('GET', '/health', async () => ({ ok: true, service: 'dsh-autotest', version: PKG_VERSION, db: dbMode(), routes: routes.length, time: new Date().toISOString() }), { authOpen: true });
+
+  // ---- 认证与 RBAC（P0-1）----
+  // /auth/status 免鉴权：登录门需要在不带 key 时得知认证是否开启、当前身份是什么
+  route('GET', '/auth/status', async ({ req }) => currentAuthContext(req), { authOpen: true });  route('GET', '/auth/keys', async () => ({ items: await listApiKeys() }), { role: 'admin' });
+  route('POST', '/auth/keys', async ({ body }) => {
+    const b = (body ?? {}) as { name?: string; role?: string; expiresInDays?: number };
+    if (!b.name || !String(b.name).trim()) throw Object.assign(new Error('name 必填'), { statusCode: 400 });
+    const role = String(b.role ?? 'viewer');
+    if (role !== 'admin' && role !== 'operator' && role !== 'viewer') {
+      throw Object.assign(new Error('role 必须是 admin/operator/viewer'), { statusCode: 400 });
+    }
+    const created = await createApiKey({
+      name: String(b.name),
+      role: role as Role,
+      expiresInDays: b.expiresInDays !== undefined && Number.isFinite(Number(b.expiresInDays)) ? Number(b.expiresInDays) : undefined,
+    });
+    console.log(`[autotest] 创建 API Key #${created.id}「${created.name}」（role=${created.role}）—— 明文仅此一次返回，库内只存哈希`);
+    return created;
+  }, { role: 'admin' });
+  route('DELETE', '/auth/keys/:id', async ({ params }) => {
+    const ok = await revokeApiKey(Number(params.id));
+    if (!ok) throw Object.assign(new Error('Key 不存在'), { statusCode: 404 });
+    return { ok: true };
+  }, { role: 'admin' });
+  route('PUT', '/auth/settings', async ({ body }) => {
+    const b = (body ?? {}) as { enabled?: boolean; allowLocalBypass?: boolean };
+    if (b.enabled !== undefined) setSetting('auth.enabled', b.enabled === true);
+    if (b.allowLocalBypass !== undefined) setSetting('auth.allowLocalBypass', b.allowLocalBypass === true);
+    console.log(`[autotest] 认证设置更新：enabled=${authEnabled()} allowLocalBypass=${localBypassEnabled()}`);
+    return { ok: true, enabled: authEnabled(), allowLocalBypass: localBypassEnabled() };
+  }, { role: 'admin' });
+
+  // ---- 技能供应链锁状态（P1-2，GET 默认 viewer 可看）----
+  route('GET', '/skills', async () => verifySkillLock());
+
+  // ---- 危险操作审批（P0-4）----
+  // exec.autoApprove=true（默认）时这里只是空队列查看；关闭后危险操作在此排队等人批。
+  // 列表/计数 viewer 可看（前端人工队列页要渲染）；决策限 operator（viewer 只读）。
+  route('GET', '/approvals', async ({ query }) => {
+    const status = query.get('status') ?? undefined;
+    const items = await listApprovals(status);
+    return { items, pending: await pendingApprovalCount() };
+  });
+  route('GET', '/approvals/pending-count', async () => ({ pending: await pendingApprovalCount() }));
+  route('POST', '/approvals/:id/decide', async ({ params, body }) => {
+    const b = (body ?? {}) as { decision?: string; reason?: string; decidedBy?: string };
+    if (b.decision !== 'approve' && b.decision !== 'reject') throw Object.assign(new Error('decision 必须是 approve/reject'), { statusCode: 400 });
+    const r = await decideApproval(Number(params.id), b.decision, String(b.decidedBy ?? 'web'), String(b.reason ?? ''));
+    console.log(`[autotest] 审批 #${params.id} → ${r.status}（by ${String(b.decidedBy ?? 'web')}）`);
+    return r;
+  }, { role: 'operator' });
 
   // ---- 工作区 ----
   route('GET', '/workspace/info', async () => {
@@ -338,7 +435,7 @@ function defineRoutes(llm: LlmCall): void {
     }
     setSetting(key, value);
     return { ok: true, key, value: maskSettingValue(key, value) };
-  });
+  }, { role: 'admin' });
 
   // ---- libraries ----
   route('GET', '/libraries', async ({ query }) => {
@@ -941,6 +1038,8 @@ function defineRoutes(llm: LlmCall): void {
     const db = getDb();
     const row = await db.prepare('SELECT id, name, repo_url, repo_subpath FROM libraries WHERE id = ?').get<{ id: number; name: string; repo_url: string; repo_subpath: string }>(id);
     if (!row) throw Object.assign(new Error('库不存在'), { statusCode: 404 });
+    // 危险操作闸门（P0-4）：删库级联删用例与执行历史；autoApprove 关闭时需人工批准
+    await requireApproval('library.delete', `library:${id}:delete`, { name: row.name }, 'web');
     const force = ['1', 'true', 'yes'].includes(String(query.get('force') ?? '').toLowerCase());
 
     const impact = await libraryImpact(id);
@@ -1237,6 +1336,8 @@ function defineRoutes(llm: LlmCall): void {
     const id = Number(params.id);
     const db = getDb();
     const row = await getCaseOr404(db, id);
+    // 危险操作闸门（P0-4）：删用例连带版本与执行记录
+    await requireApproval('case.delete', `case:${id}:delete`, { caseId: id, caseNo: String((row as { case_no?: string }).case_no ?? '') }, 'web');
     await db.transaction(async () => {
       await db.prepare('DELETE FROM case_versions WHERE case_id = ?').run(id);
       await db.prepare('DELETE FROM executions WHERE case_id = ?').run(id);
@@ -1357,12 +1458,12 @@ function defineRoutes(llm: LlmCall): void {
     const db = getDb();
     const t = now();
     // 新建时不存在"原值"，掩码视为空凭据（掩码只应出现在回显里）
-    const apiKey = isMaskedSecret(b.apiKey) ? '' : String(b.apiKey ?? '');
+    const apiKey = isMaskedSecret(b.apiKey) ? '' : encryptSecret(String(b.apiKey ?? ''));
     const baseUrl = assertSafeModelBaseUrl(b.baseUrl);
     const res = await db.prepare(`INSERT INTO models (name, provider, base_url, model_id, api_key, is_default, created_at, updated_at)
       VALUES (?, ?, ?, ?, ?, 0, ?, ?)`).run(b.name, b.provider ?? 'custom', baseUrl, b.modelId, apiKey, t, t);
     return mapModel(await db.prepare('SELECT * FROM models WHERE id = ?').get<Record<string, unknown>>(Number(res.lastInsertRowid)) as Record<string, unknown>);
-  });
+  }, { role: 'admin' });
 
   route('PUT', '/models/:id', async ({ params, body }) => {
     const id = Number(params.id);
@@ -1370,8 +1471,8 @@ function defineRoutes(llm: LlmCall): void {
     const db = getDb();
     const row = await getModelOr404(db, id);
     const t = now();
-    // 密钥字段：掩码回显 → 保持原值；显式空串 → 清空；其它 → 采用新值
-    const apiKey = resolveSecretInput(b.apiKey, String(row.api_key ?? ''));
+    // 密钥字段：掩码回显 → 保持原值（库里的密文原样写回，不二次加密）；显式空串 → 清空；其它 → 加密新值
+    const apiKey = sealSecretInput(resolveSecretInput(b.apiKey, String(row.api_key ?? '')), String(row.api_key ?? ''));
     const baseUrl = b.baseUrl === undefined ? String(row.base_url) : assertSafeModelBaseUrl(b.baseUrl);
     await db.prepare(`UPDATE models SET name=?, provider=?, base_url=?, model_id=?, api_key=?, is_default=?, updated_at=? WHERE id=?`).run(
       (b.name as string) ?? row.name, (b.provider as string) ?? row.provider, baseUrl,
@@ -1380,7 +1481,7 @@ function defineRoutes(llm: LlmCall): void {
     );
     if (b.isDefault) await db.prepare(`UPDATE models SET is_default = CASE WHEN id = ? THEN 1 ELSE 0 END`).run(id);
     return mapModel(await db.prepare('SELECT * FROM models WHERE id = ?').get<Record<string, unknown>>(id) as Record<string, unknown>);
-  });
+  }, { role: 'admin' });
 
   route('DELETE', '/models/:id', async ({ params }) => {
     const id = Number(params.id);
@@ -1389,12 +1490,12 @@ function defineRoutes(llm: LlmCall): void {
     if (row.is_default === 1) throw Object.assign(new Error('不能删除默认模型'), { statusCode: 400 });
     await db.prepare('DELETE FROM models WHERE id = ?').run(id);
     return { ok: true };
-  });
+  }, { role: 'admin' });
 
   // 连通性测试会真实发起一次模型调用并携带凭据 → 计入 LLM 限流，且对存量 baseUrl 再做一次安全校验
   route('POST', '/models/:id/test', async ({ params }) => {
     const row = await getModelOr404(getDb(), Number(params.id));
-    const cfg = { baseUrl: row.base_url, modelId: row.model_id, apiKey: row.api_key };
+    const cfg = { baseUrl: row.base_url, modelId: row.model_id, apiKey: decryptSecret(row.api_key) };
     if (!cfg.apiKey) return { ok: false, latencyMs: null, message: '未配置 API Key：请在设置中填写后重试' };
     const baseUrl = assertSafeModelBaseUrl(cfg.baseUrl);
     const started = Date.now();
@@ -1415,7 +1516,7 @@ function defineRoutes(llm: LlmCall): void {
     } catch (e) {
       return { ok: false, latencyMs: Date.now() - started, message: (e as Error).message };
     }
-  }, { llm: true });
+  }, { llm: true, role: 'admin' });
 
   // ---- prompts ----
   route('GET', '/prompts', async () =>
@@ -1538,6 +1639,8 @@ function defineRoutes(llm: LlmCall): void {
     const db = getDb();
     const row = await db.prepare('SELECT * FROM tasks WHERE id = ?').get<{ id: number; task_no: string }>(id);
     if (!row) throw Object.assign(new Error('任务不存在'), { statusCode: 404 });
+    // 危险操作闸门（P0-4）：删任务连带事件流
+    await requireApproval('task.delete', `task:${id}:delete`, { taskNo: row.task_no }, 'web');
     // 事件流一并删掉：任务没了还留着一堆 task_events 只是垃圾（且占用唯一键空间）
     await db.prepare('DELETE FROM task_events WHERE task_id = ?').run(id);
     await db.prepare('DELETE FROM tasks WHERE id = ?').run(id);
@@ -1637,6 +1740,8 @@ function defineRoutes(llm: LlmCall): void {
     if (!lib) throw Object.assign(new Error('三方库不存在'), { statusCode: 404 });
     const rootKind = query.get('root') ?? 'repos';
     const rel = (query.get('path') ?? '').replace(/^\/+/, '');
+    // 危险操作闸门（P0-4）：删工程内的脚本文件
+    await requireApproval('script.delete', `script:${params.libraryId}:${rootKind}:${rel}:delete`, { name: lib.name, file: rel }, 'web');
     let file: string;
     if (rootKind === 'repos') {
       if (!rel.endsWith('.ts')) throw Object.assign(new Error('仅支持删除 .ts 脚本文件'), { statusCode: 400 });
@@ -2424,7 +2529,8 @@ function mapVersion(row: Record<string, unknown>) {
   };
 }
 function mapModel(row: Record<string, unknown>) {
-  const rawKey = String(row.api_key ?? '');
+  // 库里是密文（crypto.ts 信封加密），先解密再掩码——让末 4 位反映真实密钥便于人工识别
+  const rawKey = decryptSecret(String(row.api_key ?? ''));
   return {
     id: row.id, name: row.name, provider: row.provider, baseUrl: row.base_url, modelId: row.model_id,
     // 只回传掩码，绝不回传明文凭据（无鉴权 API：明文等于泄漏）；hasApiKey 供前端显示"已配置/缺失"
