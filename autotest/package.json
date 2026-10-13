@@ -5,12 +5,15 @@
   "description": "鸿蒙三方库 AutoTest 平台 — DeepSeek Harness 插件（服务端 + client）+ 嵌入版前端",
   "workspaces": [
     "web",
-    "shared"
+    "shared",
+    "agent-tools"
   ],
   "scripts": {
     "build:embed": "npm run build:embed -w web",
     "build:standalone": "npm run build:standalone -w web && cd dsh-autotest && npm run build:lib",
+    "build:agent-tools": "npm run build -w agent-tools",
     "build:plugin": "npm run build:embed && cd dsh-autotest && npm run build",
+    "agent-cli": "node agent-tools/dist/cli.mjs",
     "start": "cd dsh-autotest && npm start",
     "start:dev": "cd dsh-autotest && npm run dev:server",
     "dev:web": "npm run dev -w web",

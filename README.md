@@ -13,7 +13,8 @@
 - **数据分析 / 归因**：从 GitCode 拉取真实 PR，AI 分析用例更新点、影响范围与风险；失败执行支持自由勾选（可跨库）归因；可指定 #PR 单独分析、实时进度动画、结果小卡片放大查看
 - **前端插件化**：DSH client 插件侧边栏入口 + 主区 iframe 嵌入，复用 DSH 深色风格
 - **并发与缓存**：LRU/Redis 缓存（写路径按前缀失效）、MySQL 连接池；`repository.ts` 预留了 `library_id % 16` 分表路由层，**当前仍是单表**（`caseTableFor()` 恒返回 `cases`），README 中的 QPS 数字来自开发期单机 SQLite 压测
-- **可回归自检**：`npm run verify:all` 覆盖 28 套离线自检（事务隔离 / 归档列 / 密钥脱敏 / 运行态清理 / 数据目录迁出 / API 门禁 / 凭据加密 / 认证 RBAC / 指标与日志 / 遍历候选规则 / 仓库路径 / xlsx 同步 / 接口面提取 / 覆盖矩阵 / demo 场景 / 用例计划 / 可测性与补丁 / oracle 与反假通过 / 分流规则 / 脚本绑定 / 任务 lane 与取消 / 危险操作审批 / 轨迹事件流 / LLM 重试换模型与 token 预算与限流 / 知识库 / 技能供应链锁 / 用例↔接口关联 / Hypium 工程布局与命名契约 / 判据运行期真跑 / 步骤句式契约 / 架构治理），CI 逐个接入（详见[autotest/README.md](autotest/README.md)）
+- **agent 接口层双件套**（CLI + MCP Server）：`agent-tools/` 把平台能力包装成 AI Agent Bot 即插即用的接口——CLI（octo-cli 模式：stdout JSON envelope + stderr 确定性错误分类 + 退出码 0/2/3/4/5 + 零交互）与 MCP stdio server（initialize / tools/list / tools/call）；**33 条命令规格是单一事实源**（CLI help 树 / MCP inputSchema / 路由漂移检测三端消费），危险操作本地 `--confirm` + 服务端审批流双闸门，令牌走平台 RBAC
+- **可回归自检**：`npm run verify:all` 覆盖 29 套离线自检（事务隔离 / 归档列 / 密钥脱敏 / 运行态清理 / 数据目录迁出 / API 门禁 / 凭据加密 / 认证 RBAC / 指标与日志 / 遍历候选规则 / 仓库路径 / xlsx 同步 / 接口面提取 / 覆盖矩阵 / demo 场景 / 用例计划 / 可测性与补丁 / oracle 与反假通过 / 分流规则 / 脚本绑定 / 任务 lane 与取消 / 危险操作审批 / 轨迹事件流 / LLM 重试换模型与 token 预算与限流 / 知识库 / 技能供应链锁 / 用例↔接口关联 / Hypium 工程布局与命名契约 / 判据运行期真跑 / 步骤句式契约 / 架构治理 / agent 接口层），CI 逐个接入（详见[autotest/README.md](autotest/README.md)）
 
 ## 安装
 
@@ -236,6 +237,7 @@ Tauri v2 外壳（~33MB，非 Electron）托管内置独立服务器：随包分
 │   │                     #   lib/standalone.js → 独立服务器（node lib/standalone.js）
 │   │                     #   dist/web          → 独立版前端产物
 │   ├── web/              # 前端 React 18 + Vite（双构建：build:embed / build:standalone）
+│   ├── agent-tools/      # agent 接口层：CLI + MCP Server（33 条命令规格单一事实源，双端生成）
 │   ├── desktop/          # 桌面端（Tauri v2）：Rust 壳托管独立服务器 + WebView
 │   └── shared/           # 前后端共享领域类型
 ├── docs/                 # 部署方案（deploy/）、独立版与桌面端手册、架构评审
@@ -269,6 +271,27 @@ node scripts/browser-test/ui-walk.mjs --base http://127.0.0.1:<端口> --out .te
 ```
 
 测试报告与截图归档在 `autotest/.test-results/`（`REPORT.md` + 每页 PNG + 机读 `report.json`）。这套工具曾抓出两个真实浏览器才暴露的缺陷：gzip 分支 MIME 错误导致首页被当文件下载（白屏）、`/libraries/sheet` 被 `/libraries/:id` 路由遮蔽（404）。
+
+**agent 接口层**（`agent-tools/`，给 AI Agent Bot 通过 exec 调用的 CLI + MCP Server，33 条命令单一事实源）：
+
+```bash
+# 构建（两个单文件产物，Node ≥20 直接跑，零依赖安装）
+cd autotest && npm run build:agent-tools
+
+# CLI：命令树自动生成；成功 → stdout JSON envelope；失败 → stderr + 确定性退出码；零交互
+node agent-tools/dist/cli.mjs --help                      # 全量命令树（9 组 33 条）
+node agent-tools/dist/cli.mjs --help cases.create         # 单命令参数详情 + 示例
+node agent-tools/dist/cli.mjs libraries.list --q lottie --base http://127.0.0.1:3280/api/autotest
+node agent-tools/dist/cli.mjs tasks.create --type pull_repo --libraryId 1
+node agent-tools/dist/cli.mjs cases.export --libraryId 1 --out cases.xlsx   # 二进制落盘
+AUTOTEST_TOKEN=at_xxx node agent-tools/dist/cli.mjs plans.run 1             # 令牌：--token > 环境变量
+
+# MCP Server（stdio，任何 MCP 客户端即插即用）：
+#   {"mcpServers":{"autotest":{"command":"node","args":["<repo>/autotest/agent-tools/dist/mcp-server.mjs"],
+#     "env":{"AUTOTEST_BASE_URL":"http://127.0.0.1:3280/api/autotest","AUTOTEST_TOKEN":"at_xxx"}}}}
+```
+
+退出码（agent 可机械分支）：`0` 成功 · `2` 本地校验失败（命令不存在/参数缺失，请求未发出）· `3` 服务端拒绝（403 权限不足/404/409 审批中/5xx）· `4` 认证失败（401/令牌无效）· `5` 传输失败（网络/超时/非 JSON）。删除类命令需 `--confirm`（审批模式下服务端还会二次拦截，见「企业级能力」节）。规格↔路由漂移由 `verify:agent-tools` 自检兜底（API 演进后规格腐烂会被抓住）。
 
 详见 [autotest/README.md](autotest/README.md)：构建命令、数据库设计、里程碑状态、自检覆盖范围；架构问题与整改进展见 [docs/架构评审-2026-09-21.md](docs/架构评审-2026-09-21.md)。
 

@@ -1,0 +1,6 @@
+# agent-tools 忽略规则
+node_modules/
+
+# 构建产物说明：dist/（cli.mjs / mcp-server.mjs / specs.mjs）**提交入库**——
+# 与仓库「提交 lib/ 产物」的惯例一致：clone 后即可直接运行，无需构建。
+# verify:all 会重跑 scripts/build.mjs 校验产物与源码一致。
