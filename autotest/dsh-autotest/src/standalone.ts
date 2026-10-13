@@ -33,6 +33,7 @@ import { makeDirectLlm } from './services/llmDirect.js';
 import { startScheduler, stopAllSchedulers } from './services/scheduler.js';
 import { stopAllTaskLanes } from './services/taskLane.js';
 import { makeStaticHandler } from './static.js';
+import { handleWsUpgrade, stopAllWs } from './api/ws.js';
 import { migrateRepoSubpaths, reconcileRepos, workspaceNotice } from './services/gitRepo.js';
 import { installLlmTracing } from './services/events.js';
 import { installTelemetry } from './services/telemetry.js';
@@ -118,6 +119,7 @@ async function shutdown(signal: string): Promise<void> {
   // 先停后台任务（abort 在跑的任务 lane、注销 cron / 轮询），再断 HTTP
   try { stopAllTaskLanes(); } catch { /* ignore */ }
   try { stopAllSchedulers(); } catch { /* ignore */ }
+  try { stopAllWs(); } catch { /* ignore */ } // B4：关闭全部 WS 连接（发 close 帧 + 停 keepalive）
   const srv = server;
   if (srv) {
     srv.close();                  // 不再接受新连接
@@ -222,6 +224,18 @@ async function boot(): Promise<void> {
   server.headersTimeout = 70_000;
   server.requestTimeout = 0;          // AI 分析等接口合法运行数分钟，不能按 Node 默认 300s 掐断
   server.maxRequestsPerSocket = 0;    // 不限制单连接请求数（keep-alive 长连接）
+
+  // 5b. WebSocket 实时通道（B4）：升级端点 /api/autotest/ws。
+  //     浏览器 WebSocket 不支持自定义请求头，token 走 query（见 api/ws.ts 注释）；
+  //     鉴权复用 enforceAuth 语义（auth.enabled 时校验，回环豁免适用）。
+  server.on('upgrade', (req, socket, head) => {
+    const pathname = new URL(req.url ?? '/', 'http://localhost').pathname;
+    if (pathname === '/api/autotest/ws') {
+      void handleWsUpgrade(req, socket, head);
+      return;
+    }
+    socket.destroy();
+  });
 
   // 7. 监听（AUTOTEST_PORT=0 → 随机端口，并向 stdout 打印 AUTOTEST_LISTENING=<port>，桌面端据此导航）
   const host = envStr('AUTOTEST_HOST', '0.0.0.0');

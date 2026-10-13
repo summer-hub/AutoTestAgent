@@ -124,7 +124,7 @@ cd dsh-autotest && npm pack                # 产出 dsh-autotest-<version>.tgz
 "dsh-autotest": "https://github.com/summer-hub/AutoTestAgent/releases/download/v1.0.0-rc.1/dsh-autotest-1.0.0-rc.1.tgz"
 ```
 
-仓库已配好 GitHub Actions（打 `v*` tag 自动构建并发布 Release + tarball）。发布前会跑类型检查、29 套自检、`lib/` 产物一致性与 tag/版本一致性校验：
+仓库已配好 GitHub Actions（打 `v*` tag 自动构建并发布 Release + tarball）。发布前会跑类型检查、31 套自检、`lib/` 产物一致性与 tag/版本一致性校验：
 
 ```bash
 # 先改 dsh-autotest/package.json 的 version，并 npm run build:plugin 提交产物，再打 tag
@@ -213,12 +213,12 @@ Redis 缓存与连接池已落地；分表路由层存在但未启用（当前 S
 
 ## 自检（提交前 / CI 门禁）
 
-29 套自检都**不连 MySQL、不调 LLM**（用临时 SQLite 库与临时工作区，不碰你的数据；LLM 层用可观测的假 `ctx.llm`，Redis 用内存假 RESP 服务）；无设备时真机相关分组自动跳过，无 hypium 时判据运行期那套自动跳过。CI 在打包发布前强制运行。
+31 套自检都**不连 MySQL、不调 LLM**（用临时 SQLite 库与临时工作区，不碰你的数据；LLM 层用可观测的假 `ctx.llm`，Redis 用内存假 RESP 服务）；无设备时真机相关分组自动跳过，无 hypium 时判据运行期那套自动跳过。CI 在打包发布前强制运行。
 
 ```bash
 cd autotest
 npm run typecheck     # web + 插件类型检查
-npm run verify:all    # 构建 + 29 套自检（无设备 / 无 hypium 的项自动跳过）
+npm run verify:all    # 构建 + 31 套自检（无设备 / 无 hypium 的项自动跳过）
 ```
 
 | 命令 | 覆盖内容 |
@@ -232,7 +232,9 @@ npm run verify:all    # 构建 + 29 套自检（无设备 / 无 hypium 的项自
 | `npm run verify:approvals` | 危险操作审批（P0-4）：autoApprove 默认兼容（不建单）、关闭后删除类操作 409 入队、重复操作幂等复用同一条、一次性批准令牌（批准→重试放行→再调重新待批）、终态守卫、拒绝后仍拦截、批准后端到端真删、operator 决策/viewer 只读的角色门禁 |
 | `npm run verify:skill-lock` | 技能供应链锁（P1-2）：锁文件与 skills/ digest 一致、单字节篡改检出且 changedFiles 指到具体文件、新增未锁定 → unlocked、删除 → missing、无锁文件全量 unlocked、enforce 开关双向语义（告警不拦截 / 拒绝加载） |
 | `npm run verify:architecture` | 架构治理（P1-1）：DSH 解耦白名单外零 `@deepseek-ai` import（58 文件）、shared 仅类型（无 node 内置/无运行时导出）、web 跨包只准 shared（禁碰服务端内部）、desktop Rust 不反向引用源码目录、分层顺序（db→services→api 静态引用不准向上，登记例外除外）、YAML 与脚本白名单/例外双边防漂移 |
-| `npm run verify:agent-tools` | agent 接口层（B1+B2，`agent-tools/`）：① 规格↔路由漂移——33 条命令规格的 method+path 全部命中 128 条真实路由（API 演进后规格腐烂被当场抓住），角色标注合法；② CLI 端到端（进程内真实 HTTP 服务 + spawn 构建产物）：envelope 可解析、退出码 0/2/3/4/5 分类正确、认证开启无 token→4、admin key→0、viewer 写操作→3（注意：/health 按设计免鉴权，401 用例须用非 authOpen 端点）；③ MCP 端到端（stdio JSON-RPC）：initialize serverInfo、tools/list 数量=规格数、tools/call 成功 content、未知工具/缺参 isError、通知消息不回应 |
+| `npm run verify:agent-tools` | agent 接口层（B1+B2，`agent-tools/`）：① 规格↔路由漂移——34 条命令规格的 method+path 全部命中真实路由（API 演进后规格腐烂被当场抓住），角色标注合法；② CLI 端到端（进程内真实 HTTP 服务 + spawn 构建产物）：envelope 可解析、退出码 0/2/3/4/5 分类正确、认证开启无 token→4、admin key→0、viewer 写操作→3（注意：/health 按设计免鉴权，401 用例须用非 authOpen 端点）；③ MCP 端到端（stdio JSON-RPC）：initialize serverInfo、tools/list 数量=规格数、tools/call 成功 content、未知工具/缺参 isError、通知消息不回应 |
+| `npm run verify:rule-injection` | 规则注入（B3，`rules/` 10 条）：索引一致（gen-rules-index --check）、rulesRoot 解析、路径命中（db/ → 事务隔离+分层+DSH 解耦）、主题命中（touches=[transaction]）、预算截断（小预算退摘要行且 load_bearing 优先、总量不超）、无命中为空、服务端 GET /rules/inject + agent-tools CLI rules.inject 端到端 |
+| `npm run verify:ws` | WS 实时通道（B4，`/api/autotest/ws`）：握手 101；ping→pong / 未知 action→error / 非法频道→error；subscribe task:<id>→subscribed→appendTrace→task_event 帧（字段完整）；global 频道双频道去重（同一事件只投一次）；退订确认；auth 开启+关豁免无 token→401 拒绝、admin token→可用；未 mask 帧→1002 关闭；连接计数与关闭握手 |
 | `npm run verify:explorer` | 遍历候选判定（用 `clickable` 而非"有文本"）、去重键、控件分类、预算、覆盖率报告、无文本控件不丢 |
 | `npm run verify:repo-paths` | 仓库地址拆分、子目录穿越防护、同仓共享克隆、legacy 克隆接管、子目录版本号 |
 | `npm run verify:sheet` | xlsx 解析/表头识别/diff、同步幂等、**不覆盖 Agent 字段**、绝不删库 |
@@ -257,7 +259,7 @@ npm run verify:all    # 构建 + 29 套自检（无设备 / 无 hypium 的项自
 
 ### 浏览器 UI 遍历测试（`scripts/browser-test/`，按需手动跑）
 
-上面 29 套是**离线自检**（不起浏览器）；UI 层用另一套零依赖 CDP 工具（Node 24 原生 WebSocket 驱动真实 Chrome，`--launch` 模式）做**真实浏览器全量遍历**：
+上面 31 套是**离线自检**（不起浏览器）；UI 层用另一套零依赖 CDP 工具（Node 24 原生 WebSocket 驱动真实 Chrome，`--launch` 模式）做**真实浏览器全量遍历**：
 
 ```bash
 node scripts/browser-test/ui-walk.mjs --base http://127.0.0.1:3280 --out .test-results/web --launch 9222

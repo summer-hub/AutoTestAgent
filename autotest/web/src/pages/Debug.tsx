@@ -1,6 +1,7 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import type { Execution } from 'shared';
 import { api } from '../api';
+import { taskWs } from '../ws';
 
 type ExecRow = Execution & { caseNo: string; caseName: string; libraryName: string; deviceSerial: string | null };
 
@@ -12,6 +13,9 @@ export default function DebugPage() {
   const [answers, setAnswers] = useState<Array<{ q: string; a: string }>>([]);
   const [asking, setAsking] = useState(false);
   const [error, setError] = useState('');
+  // B4：WS 实时通道状态（执行记录不在事件总线上，WS 在线时放宽兜底轮询 + 事件驱动刷新）
+  const [wsOpen, setWsOpen] = useState(false);
+  const wsDebounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const load = useCallback(() => {
     api.executions({ limit: 30 })
@@ -25,9 +29,27 @@ export default function DebugPage() {
 
   useEffect(() => {
     load();
-    const timer = setInterval(load, 4000);
-    return () => clearInterval(timer);
+    // B4：WS 在线时任务推进会改变执行记录——订阅全局频道，事件驱动刷新（debounce 500ms）
+    taskWs.connect();
+    const offMsg = taskWs.onMessage(() => {
+      if (wsDebounceRef.current) clearTimeout(wsDebounceRef.current);
+      wsDebounceRef.current = setTimeout(load, 500);
+    });
+    const offStatus = taskWs.onStatus((s) => setWsOpen(s === 'open'));
+    taskWs.subscribe('global');
+    return () => {
+      offMsg();
+      offStatus();
+      taskWs.unsubscribe('global');
+      if (wsDebounceRef.current) clearTimeout(wsDebounceRef.current);
+    };
   }, [load]);
+
+  // 轮询兜底：WS 断开 4s；WS 在线放宽到 12s（执行记录不在事件总线上，保留安全网）
+  useEffect(() => {
+    const timer = setInterval(load, wsOpen ? 12_000 : 4_000);
+    return () => clearInterval(timer);
+  }, [wsOpen, load]);
 
   const select = (e: ExecRow) => {
     setSelected(e);
@@ -47,7 +69,11 @@ export default function DebugPage() {
 
   return (
     <>
-      <div className="page-title">调试会话</div>
+      <div className="page-title">调试会话
+        <span className="tb-pill" style={{ marginLeft: 10, fontSize: 11, verticalAlign: 'middle' }} title={wsOpen ? 'WebSocket 已连接：任务推进实时推送' : 'WebSocket 未连接：轮询兜底中'}>
+          <span className="dot" style={{ background: wsOpen ? '#34d399' : '#f59e0b' }} /> {wsOpen ? '实时' : '轮询'}
+        </span>
+      </div>
       <div className="page-desc">执行轨迹可视化 · 左侧执行步骤 · 右侧 AI 思考过程 · 下方可追问判定依据</div>
 
       {error && <div className="error">⚠️ {error}</div>}

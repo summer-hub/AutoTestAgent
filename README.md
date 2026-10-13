@@ -13,8 +13,10 @@
 - **数据分析 / 归因**：从 GitCode 拉取真实 PR，AI 分析用例更新点、影响范围与风险；失败执行支持自由勾选（可跨库）归因；可指定 #PR 单独分析、实时进度动画、结果小卡片放大查看
 - **前端插件化**：DSH client 插件侧边栏入口 + 主区 iframe 嵌入，复用 DSH 深色风格
 - **并发与缓存**：LRU/Redis 缓存（写路径按前缀失效）、MySQL 连接池；`repository.ts` 预留了 `library_id % 16` 分表路由层，**当前仍是单表**（`caseTableFor()` 恒返回 `cases`），README 中的 QPS 数字来自开发期单机 SQLite 压测
-- **agent 接口层双件套**（CLI + MCP Server）：`agent-tools/` 把平台能力包装成 AI Agent Bot 即插即用的接口——CLI（octo-cli 模式：stdout JSON envelope + stderr 确定性错误分类 + 退出码 0/2/3/4/5 + 零交互）与 MCP stdio server（initialize / tools/list / tools/call）；**33 条命令规格是单一事实源**（CLI help 树 / MCP inputSchema / 路由漂移检测三端消费），危险操作本地 `--confirm` + 服务端审批流双闸门，令牌走平台 RBAC
-- **可回归自检**：`npm run verify:all` 覆盖 29 套离线自检（事务隔离 / 归档列 / 密钥脱敏 / 运行态清理 / 数据目录迁出 / API 门禁 / 凭据加密 / 认证 RBAC / 指标与日志 / 遍历候选规则 / 仓库路径 / xlsx 同步 / 接口面提取 / 覆盖矩阵 / demo 场景 / 用例计划 / 可测性与补丁 / oracle 与反假通过 / 分流规则 / 脚本绑定 / 任务 lane 与取消 / 危险操作审批 / 轨迹事件流 / LLM 重试换模型与 token 预算与限流 / 知识库 / 技能供应链锁 / 用例↔接口关联 / Hypium 工程布局与命名契约 / 判据运行期真跑 / 步骤句式契约 / 架构治理 / agent 接口层），CI 逐个接入（详见[autotest/README.md](autotest/README.md)）
+- **agent 接口层双件套**（CLI + MCP Server）：`agent-tools/` 把平台能力包装成 AI Agent Bot 即插即用的接口——CLI（octo-cli 模式：stdout JSON envelope + stderr 确定性错误分类 + 退出码 0/2/3/4/5 + 零交互）与 MCP stdio server（initialize / tools/list / tools/call）；**34 条命令规格是单一事实源**（CLI help 树 / MCP inputSchema / 路由漂移检测三端消费），危险操作本地 `--confirm` + 服务端审批流双闸门，令牌走平台 RBAC
+- **规则注入（B3）**：`rules/` 10 条开发纪律（octospec 风格 frontmatter：`inject_when.paths/touches` + `load_bearing` + `priority`）——按代码触碰路径/主题向编码 agent 注入（CLI / MCP `rules.inject` / 本地 `scripts/inject-rules.mjs`，支持 `--from-git`），预算内全文、超预算退摘要行；索引 CI 防漂移
+- **WebSocket 实时通道（B4）**：`/api/autotest/ws`（token 走 query、复用 enforceAuth 鉴权含回环豁免）；task_events 追加即广播，`task:<id>`/`global` 双频道按 (taskId,seq) 去重；零依赖 RFC6455 帧编解码；Web 端 Tasks/Debug「WS 优先 + 轮询兜底」自动切换
+- **可回归自检**：`npm run verify:all` 覆盖 31 套离线自检（事务隔离 / 归档列 / 密钥脱敏 / 运行态清理 / 数据目录迁出 / API 门禁 / 凭据加密 / 认证 RBAC / 指标与日志 / 遍历候选规则 / 仓库路径 / xlsx 同步 / 接口面提取 / 覆盖矩阵 / demo 场景 / 用例计划 / 可测性与补丁 / oracle 与反假通过 / 分流规则 / 脚本绑定 / 任务 lane 与取消 / 危险操作审批 / 轨迹事件流 / LLM 重试换模型与 token 预算与限流 / 知识库 / 技能供应链锁 / 用例↔接口关联 / Hypium 工程布局与命名契约 / 判据运行期真跑 / 步骤句式契约 / 架构治理 / agent 接口层 / 规则注入 / WS 通道），CI 逐个接入（详见[autotest/README.md](autotest/README.md)）
 
 ## 安装
 
@@ -237,7 +239,8 @@ Tauri v2 外壳（~33MB，非 Electron）托管内置独立服务器：随包分
 │   │                     #   lib/standalone.js → 独立服务器（node lib/standalone.js）
 │   │                     #   dist/web          → 独立版前端产物
 │   ├── web/              # 前端 React 18 + Vite（双构建：build:embed / build:standalone）
-│   ├── agent-tools/      # agent 接口层：CLI + MCP Server（33 条命令规格单一事实源，双端生成）
+│   ├── agent-tools/      # agent 接口层：CLI + MCP Server（34 条命令规格单一事实源，双端生成）
+│   ├── rules/            # B3：10 条开发纪律（octospec frontmatter + inject_when + _index.yaml）
 │   ├── desktop/          # 桌面端（Tauri v2）：Rust 壳托管独立服务器 + WebView
 │   └── shared/           # 前后端共享领域类型
 ├── docs/                 # 部署方案（deploy/）、独立版与桌面端手册、架构评审
@@ -272,7 +275,7 @@ node scripts/browser-test/ui-walk.mjs --base http://127.0.0.1:<端口> --out .te
 
 测试报告与截图归档在 `autotest/.test-results/`（`REPORT.md` + 每页 PNG + 机读 `report.json`）。这套工具曾抓出两个真实浏览器才暴露的缺陷：gzip 分支 MIME 错误导致首页被当文件下载（白屏）、`/libraries/sheet` 被 `/libraries/:id` 路由遮蔽（404）。
 
-**agent 接口层**（`agent-tools/`，给 AI Agent Bot 通过 exec 调用的 CLI + MCP Server，33 条命令单一事实源）：
+**agent 接口层**（`agent-tools/`，给 AI Agent Bot 通过 exec 调用的 CLI + MCP Server，34 条命令单一事实源）：
 
 ```bash
 # 构建（两个单文件产物，Node ≥20 直接跑，零依赖安装）
@@ -292,6 +295,28 @@ AUTOTEST_TOKEN=at_xxx node agent-tools/dist/cli.mjs plans.run 1             # �
 ```
 
 退出码（agent 可机械分支）：`0` 成功 · `2` 本地校验失败（命令不存在/参数缺失，请求未发出）· `3` 服务端拒绝（403 权限不足/404/409 审批中/5xx）· `4` 认证失败（401/令牌无效）· `5` 传输失败（网络/超时/非 JSON）。删除类命令需 `--confirm`（审批模式下服务端还会二次拦截，见「企业级能力」节）。规格↔路由漂移由 `verify:agent-tools` 自检兜底（API 演进后规格腐烂会被抓住）。
+
+**规则注入**（B3，`rules/` 10 条开发纪律；编码时按触碰路径/主题注入 agent 上下文，而非事后 FAIL）：
+
+```bash
+node scripts/inject-rules.mjs --paths dsh-autotest/src/db/connection.ts   # 按路径命中（glob）
+node scripts/inject-rules.mjs --touches transaction,secrets              # 按主题命中
+node scripts/inject-rules.mjs --from-git --budget 4000                   # 工作区变更（pre-commit 可用）
+node agent-tools/dist/cli.mjs rules.inject --paths dsh-autotest/src/api/http.ts   # agent 经 CLI/MCP 调用（服务端 GET /rules/inject）
+node scripts/gen-rules-index.mjs --check                                # CI：索引与 rules/ 防漂移
+```
+
+预算内注入规则全文，超预算退化为摘要行（load_bearing 优先）；规则带 `inject_when.paths/touches` frontmatter，增删改后必须重生成索引。
+
+**WebSocket 实时通道**（B4，替代任务事件轮询）：
+
+```
+ws://127.0.0.1:3280/api/autotest/ws?token=<key>     # 浏览器 WS 不支持自定义头，token 走 query
+→ {"action":"subscribe","channel":"task:123"|"global"}   # task:<id> 收该任务轨迹增量；global 收全部
+← {"type":"task_event","taskId":123,"seq":4,"eventType":"trace","title":...,"at":...}
+```
+
+鉴权复用 `enforceAuth`（认证开启时校验、回环豁免适用）；双频道同一事件按 (taskId,seq) 去重；Web 端 Tasks/Debug 页「WS 优先 + 轮询兜底」自动切换（连接状态页内有指示）。DSH 插件形态无 upgrade 事件，前端自动回退轮询。
 
 详见 [autotest/README.md](autotest/README.md)：构建命令、数据库设计、里程碑状态、自检覆盖范围；架构问题与整改进展见 [docs/架构评审-2026-09-21.md](docs/架构评审-2026-09-21.md)。
 

@@ -21,6 +21,22 @@ export const COMMANDS: CommandSpec[] = [
     params: [],
   },
 
+  // ---------- rules（B3：编码时纪律注入） ----------
+  {
+    name: 'rules.inject',
+    group: 'rules',
+    action: 'inject',
+    summary: '规则注入：按触碰的路径/主题返回开发纪律文本（喂给编码 agent）',
+    method: 'GET',
+    path: '/rules/inject',
+    role: 'viewer',
+    params: [
+      { name: 'paths', type: 'string-array', description: '变更文件路径（逗号分隔；glob 命中 inject_when.paths）' },
+      { name: 'touches', type: 'string-array', description: '触碰主题标签（逗号分隔，如 transaction,secrets）' },
+      { name: 'budgetChars', type: 'number', description: '注入预算（字符），默认 8000' },
+    ],
+  },
+
   // ---------- libraries ----------
   {
     name: 'libraries.list',

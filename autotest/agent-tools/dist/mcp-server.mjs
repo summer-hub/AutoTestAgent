@@ -56,6 +56,21 @@ var COMMANDS = [
     role: "viewer",
     params: []
   },
+  // ---------- rules（B3：编码时纪律注入） ----------
+  {
+    name: "rules.inject",
+    group: "rules",
+    action: "inject",
+    summary: "\u89C4\u5219\u6CE8\u5165\uFF1A\u6309\u89E6\u78B0\u7684\u8DEF\u5F84/\u4E3B\u9898\u8FD4\u56DE\u5F00\u53D1\u7EAA\u5F8B\u6587\u672C\uFF08\u5582\u7ED9\u7F16\u7801 agent\uFF09",
+    method: "GET",
+    path: "/rules/inject",
+    role: "viewer",
+    params: [
+      { name: "paths", type: "string-array", description: "\u53D8\u66F4\u6587\u4EF6\u8DEF\u5F84\uFF08\u9017\u53F7\u5206\u9694\uFF1Bglob \u547D\u4E2D inject_when.paths\uFF09" },
+      { name: "touches", type: "string-array", description: "\u89E6\u78B0\u4E3B\u9898\u6807\u7B7E\uFF08\u9017\u53F7\u5206\u9694\uFF0C\u5982 transaction,secrets\uFF09" },
+      { name: "budgetChars", type: "number", description: "\u6CE8\u5165\u9884\u7B97\uFF08\u5B57\u7B26\uFF09\uFF0C\u9ED8\u8BA4 8000" }
+    ]
+  },
   // ---------- libraries ----------
   {
     name: "libraries.list",

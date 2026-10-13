@@ -7,6 +7,7 @@
 //   - 快照可随时从事件流重建（rebuildTraceSnapshot），trace 列损坏不再是数据事故；
 //   - readTaskEvents(afterSeq) 是 #6 SSE 增量推送的地基。
 import { getDb, now } from '../db/connection.js';
+import { emitTaskEvent } from './eventBus.js';
 
 export interface TaskEvent {
   seq: number;
@@ -32,7 +33,7 @@ function chain<T>(taskId: number, fn: () => Promise<T>): Promise<T> {
   return next;
 }
 
-async function insertEvent(taskId: number, type: string, title: string, detail: string): Promise<number> {
+async function insertEvent(taskId: number, type: string, title: string, detail: string): Promise<{ seq: number; at: string }> {
   const at = now();
   await getDb().prepare(
     `INSERT INTO task_events (task_id, seq, type, title, detail, created_at)
@@ -41,7 +42,7 @@ async function insertEvent(taskId: number, type: string, title: string, detail: 
   const row = await getDb().prepare(
     'SELECT seq FROM task_events WHERE task_id = ? ORDER BY seq DESC LIMIT 1',
   ).get<{ seq: number }>(taskId);
-  return row?.seq ?? 0;
+  return { seq: row?.seq ?? 0, at };
 }
 
 /**
@@ -51,8 +52,10 @@ async function insertEvent(taskId: number, type: string, title: string, detail: 
  */
 export async function appendTrace(taskId: number, title: string, detail = ''): Promise<number> {
   return chain(taskId, async () => {
-    const seq = await insertEvent(taskId, 'trace', title, detail);
+    const { seq, at } = await insertEvent(taskId, 'trace', title, detail);
     await rebuildTraceSnapshot(taskId);
+    // B4：追加成功即广播到进程内事件总线（WS 客户端按 task:<id> / global 订阅）
+    emitTaskEvent({ taskId, seq, type: 'trace', title, detail, at });
     return seq;
   });
 }

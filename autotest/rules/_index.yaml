@@ -1,0 +1,96 @@
+# 规则索引（gen-rules-index.mjs 生成，勿手改）
+# 解析语义（与 octospec 对齐）：
+#   - id 全局唯一；load_bearing 规则在预算内优先注入全文；
+#   - inject_when = paths glob 或 touches tag（并集），命中一次即注入；
+#   - 超预算：保留 load_bearing，然后 priority 降序，未纳入的只注入 summary 行。
+rules:
+  - id: arch-dsh-decoupling
+    title: "DSH 解耦纪律（独立版/桌面端的前提）"
+    description: "白名单外零 @deepseek-ai import；改 services/ 或新增文件时必读"
+    priority: 95
+    load_bearing: true
+    tags: ["architecture", "dsh", "decoupling", "standalone"]
+    inject_when:
+      paths: ["dsh-autotest/src/**", "dsh-autotest/scripts/**"]
+      touches: ["architecture", "dsh", "import", "standalone", "desktop"]
+  - id: security-secrets-masking
+    title: "凭据保护纪律（脱敏出参 + 加密落库）"
+    description: "碰 models/settings/密钥字段前必读"
+    priority: 93
+    load_bearing: true
+    tags: ["security", "secrets", "masking", "encryption"]
+    inject_when:
+      paths: ["dsh-autotest/src/api/**", "dsh-autotest/src/services/settings.ts", "dsh-autotest/src/services/crypto.ts", "dsh-autotest/src/services/secrets.ts"]
+      touches: ["security", "secrets", "masking", "encryption", "api-key"]
+  - id: db-transaction-isolation
+    title: "数据库事务纪律（SQLite 单连接并发）"
+    description: "改 db/ 或写库路径前必读：事务隔离、嵌套语义、缓存失效时序"
+    priority: 92
+    load_bearing: true
+    tags: ["db", "transaction", "isolation", "sqlite", "mysql"]
+    inject_when:
+      paths: ["dsh-autotest/src/db/**", "dsh-autotest/src/services/**"]
+      touches: ["db", "transaction", "isolation", "sqlite", "mysql", "cache"]
+  - id: security-same-origin
+    title: "同源闸门纪律（防跨站写入）"
+    description: "改 HTTP 服务/挂载方式前必读：Origin/Sec-Fetch-Site 校验与逃生阀"
+    priority: 91
+    load_bearing: true
+    tags: ["security", "same-origin", "csrf", "http"]
+    inject_when:
+      paths: ["dsh-autotest/src/api/**", "dsh-autotest/src/standalone.ts", "dsh-autotest/src/index.ts", "dsh-autotest/src/static.ts"]
+      touches: ["security", "same-origin", "csrf", "http", "cors"]
+  - id: arch-layering
+    title: "分层顺序（db → services → api）"
+    description: "下层不准静态引用上层；改 db/ 或 services/ 前必读"
+    priority: 90
+    load_bearing: true
+    tags: ["architecture", "layering", "db", "services", "api"]
+    inject_when:
+      paths: ["dsh-autotest/src/db/**", "dsh-autotest/src/services/**", "dsh-autotest/src/api/**"]
+      touches: ["architecture", "layering", "db", "services", "api"]
+  - id: windows-nodejs-pitfalls
+    title: "Windows / Node 踩坑清单（本仓库真实事故）"
+    description: "写构建脚本、spawn、import、哈希、解压前必读"
+    priority: 89
+    load_bearing: true
+    tags: ["windows", "nodejs", "build", "spawn", "import", "hash"]
+    inject_when:
+      paths: ["**/scripts/**", "**/*.mjs", "dsh-autotest/scripts/**", "agent-tools/scripts/**", "desktop/scripts/**"]
+      touches: ["windows", "build", "spawn", "import", "hash", "esbuild", "tar", "path"]
+  - id: arch-shared-types-only
+    title: "shared 仅类型（前后端共享层纪律）"
+    description: "shared/src 禁止运行动时逻辑与 node: 内置模块；改 shared/ 前必读"
+    priority: 88
+    load_bearing: true
+    tags: ["architecture", "shared", "types"]
+    inject_when:
+      paths: ["shared/src/**", "web/src/**"]
+      touches: ["architecture", "shared", "types", "contract"]
+  - id: git-repo-path-safety
+    title: "仓库路径与外部命令纪律（gitRepo/hdc）"
+    description: "改 gitRepo/hdc/executor 前必读：路径穿越、子目录解析、命令注入防护"
+    priority: 87
+    load_bearing: true
+    tags: ["git", "repo", "path", "security", "hdc", "exec"]
+    inject_when:
+      paths: ["dsh-autotest/src/services/gitRepo.ts", "dsh-autotest/src/services/hdc.ts", "dsh-autotest/src/services/executor.ts", "dsh-autotest/src/api/http.ts"]
+      touches: ["git", "repo", "path", "hdc", "exec", "clone", "pull"]
+  - id: agent-tools-spec-contract
+    title: "agent 接口层契约（命令规格单一事实源）"
+    description: "改 agent-tools/commands/ 或平台路由前必读"
+    priority: 86
+    load_bearing: true
+    tags: ["agent-tools", "cli", "mcp", "contract", "spec"]
+    inject_when:
+      paths: ["agent-tools/**", "dsh-autotest/src/api/**"]
+      touches: ["agent-tools", "cli", "mcp", "contract", "spec", "route"]
+  - id: api-input-validation
+    title: "API 入参校验纪律（http.ts 路由层）"
+    description: "新增/修改业务路由前必读：钳制、Content-Type、体积、坏 JSON"
+    priority: 85
+    load_bearing: true
+    tags: ["api", "validation", "http", "input"]
+    inject_when:
+      paths: ["dsh-autotest/src/api/**"]
+      touches: ["api", "validation", "http", "input", "route"]

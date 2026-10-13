@@ -22,6 +22,9 @@ export function apply(ctx) {
             installLlmTracing();
             installTelemetry();
             logSkillLockSummary();
+            // WS 实时通道（B4）仅独立服务器/桌面端可用：DSH 的 ctx.webServer 不暴露 upgrade
+            // 事件，插件形态下前端自动回退轮询（web/src/ws.ts 的连接失败兜底）。
+            console.log('[dsh-autotest] WS 实时通道在 DSH 插件形态下不可用（webServer 无 upgrade 事件），前端将使用轮询模式');
             // 启动迁移：仓库地址里的 /tree/<分支>/<子目录> 拆成「仓库根 + 子目录」两列（必须在启动对账之前）
             try {
                 const migrated = await migrateRepoSubpaths();

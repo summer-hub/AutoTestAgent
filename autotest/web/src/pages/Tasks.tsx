@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import type { Task, TaskType } from 'shared';
 import { api } from '../api';
+import { taskWs } from '../ws';
 import RepoBrowser from '../components/RepoBrowser';
 
 const PRESETS: Array<{ type: TaskType; icon: string; title: string; desc: string }> = [
@@ -31,6 +32,9 @@ export default function TasksPage() {
   const [opsData, setOpsData] = useState<null | { file: string; ops: Array<{ at: string; action: string; detail?: string }> }>(null);
   const [opsQ, setOpsQ] = useState('');
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  // B4：WS 实时通道状态（open 时事件驱动刷新，断开自动回退轮询）
+  const [wsOpen, setWsOpen] = useState(false);
+  const wsDebounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   // 拉取最新遍历报告的操作轨迹
   const openOps = async (libId: number, title: string): Promise<void> => {
@@ -56,9 +60,28 @@ export default function TasksPage() {
   useEffect(() => {
     load();
     api.libraries({ pageSize: 200 }).then((r) => setLibs(r.items)).catch(() => {});
+    // B4：连接 WS 并订阅全局频道——任务轨迹事件实时驱动刷新（debounce 300ms 防连续追加打爆）
+    taskWs.connect();
+    const offMsg = taskWs.onMessage(() => {
+      if (wsDebounceRef.current) clearTimeout(wsDebounceRef.current);
+      wsDebounceRef.current = setTimeout(load, 300);
+    });
+    const offStatus = taskWs.onStatus((s) => setWsOpen(s === 'open'));
+    taskWs.subscribe('global');
+    return () => {
+      offMsg();
+      offStatus();
+      taskWs.unsubscribe('global');
+      if (wsDebounceRef.current) clearTimeout(wsDebounceRef.current);
+    };
+  }, [load]);
+
+  // 轮询兜底：WS 断开时恢复 3s 轮询；WS 在线时纯事件驱动（零无效请求）
+  useEffect(() => {
+    if (wsOpen) return;
     pollRef.current = setInterval(load, 3000);
     return () => { if (pollRef.current) clearInterval(pollRef.current); };
-  }, [load]);
+  }, [wsOpen, load]);
 
   const submit = async (type: TaskType, title: string, text?: string) => {
     setError('');
@@ -123,7 +146,11 @@ export default function TasksPage() {
 
   return (
     <>
-      <div className="page-title">任务管理</div>
+      <div className="page-title">任务管理
+        <span className="tb-pill" style={{ marginLeft: 10, fontSize: 11, verticalAlign: 'middle' }} title={wsOpen ? 'WebSocket 实时通道已连接：任务轨迹事件实时推送' : 'WebSocket 未连接：已自动回退为轮询模式'}>
+          <span className="dot" style={{ background: wsOpen ? '#34d399' : '#f59e0b' }} /> {wsOpen ? '实时' : '轮询'}
+        </span>
+      </div>
       <div className="page-desc">给 AI 配置任务：支持自然语言对话输入，或通过预置卡片快速创建（真实调用大模型）</div>
 
       {error && <div className="error">⚠️ {error}</div>}

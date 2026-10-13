@@ -27,6 +27,7 @@ import {
 } from '../services/auth.js';
 import { decideApproval, listApprovals, pendingApprovalCount, requireApproval } from '../services/approvals.js';
 import { verifySkillLock } from '../services/skillLock.js';
+import { injectRules } from '../services/rules.js';
 import { cacheDel, cacheGet, cacheSet } from '../services/cache.js';
 // LLM 限流单独一个模块：Redis 可用时多节点共享计数，模块级数组在多节点下形同虚设
 import { checkLlmRate } from '../services/llmLimit.js';
@@ -375,6 +376,19 @@ function defineRoutes(llm: LlmCall): void {
 
   // ---- 技能供应链锁状态（P1-2，GET 默认 viewer 可看）----
   route('GET', '/skills', async () => verifySkillLock());
+
+  // ---- 规则注入（B3：编码时纪律注入；GET 默认 viewer 可看）----
+  // agent-tools 的 rules.inject 命令（CLI/MCP）经此调用；本地开发用 scripts/inject-rules.mjs。
+  route('GET', '/rules/inject', async ({ query }) => {
+    const paths = (query.get('paths') ?? '').split(',').map((s) => s.trim()).filter(Boolean);
+    const touches = (query.get('touches') ?? '').split(',').map((s) => s.trim()).filter(Boolean);
+    const budgetRaw = Number(query.get('budgetChars'));
+    return injectRules({
+      paths,
+      touches,
+      budgetChars: Number.isFinite(budgetRaw) && budgetRaw > 0 ? budgetRaw : undefined,
+    });
+  });
 
   // ---- 危险操作审批（P0-4）----
   // exec.autoApprove=true（默认）时这里只是空队列查看；关闭后危险操作在此排队等人批。

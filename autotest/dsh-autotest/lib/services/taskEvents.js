@@ -7,6 +7,7 @@
 //   - 快照可随时从事件流重建（rebuildTraceSnapshot），trace 列损坏不再是数据事故；
 //   - readTaskEvents(afterSeq) 是 #6 SSE 增量推送的地基。
 import { getDb, now } from '../db/connection.js';
+import { emitTaskEvent } from './eventBus.js';
 // 每任务一条追加链：前一个追加（含快照刷新）落定后才开始下一个。
 // 双保险——SQL 层 seq 原子分配 + 进程内串行，确保不会出现同一 seq 撞唯一键。
 const chains = new Map();
@@ -25,7 +26,7 @@ async function insertEvent(taskId, type, title, detail) {
     await getDb().prepare(`INSERT INTO task_events (task_id, seq, type, title, detail, created_at)
      SELECT ?, COALESCE(MAX(seq), 0) + 1, ?, ?, ?, ? FROM task_events WHERE task_id = ?`).run(taskId, type, title, detail, at, taskId);
     const row = await getDb().prepare('SELECT seq FROM task_events WHERE task_id = ? ORDER BY seq DESC LIMIT 1').get(taskId);
-    return row?.seq ?? 0;
+    return { seq: row?.seq ?? 0, at };
 }
 /**
  * 追加一条任务轨迹并刷新 tasks.trace 快照（调用方无需关心事件流）。
@@ -34,8 +35,10 @@ async function insertEvent(taskId, type, title, detail) {
  */
 export async function appendTrace(taskId, title, detail = '') {
     return chain(taskId, async () => {
-        const seq = await insertEvent(taskId, 'trace', title, detail);
+        const { seq, at } = await insertEvent(taskId, 'trace', title, detail);
         await rebuildTraceSnapshot(taskId);
+        // B4：追加成功即广播到进程内事件总线（WS 客户端按 task:<id> / global 订阅）
+        emitTaskEvent({ taskId, seq, type: 'trace', title, detail, at });
         return seq;
     });
 }
