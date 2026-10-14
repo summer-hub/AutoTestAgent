@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from 'react';
-import type { Library, LibrarySheetSyncResult } from 'shared';
+import type { Library, LibraryCatalogStatus, LibrarySheetSyncResult } from 'shared';
 import { api } from '../api';
 
 /**
@@ -25,6 +25,7 @@ export default function LibrariesPage() {
   const [candidates, setCandidates] = useState<{ lib: Library; items: Array<{ bundleName: string; mainAbility: string }> } | null>(null);
   const [sheet, setSheet] = useState<{ file: string; exists: boolean } | null>(null);
   const [preview, setPreview] = useState<LibrarySheetSyncResult | null>(null);
+  const [catalog, setCatalog] = useState<LibraryCatalogStatus | null>(null);
 
   const load = useCallback(() => {
     setLoading(true);
@@ -142,7 +143,10 @@ export default function LibrariesPage() {
   // 表是人维护的（有哪些库、对应哪个仓库），库表里 Agent 补的包名/入口 Ability 不参与同步。
   useEffect(() => {
     api.sheetInfo().then((r) => setSheet(r)).catch(() => { /* 未配置也不影响本页其它功能 */ });
+    api.catalog().then(setCatalog).catch(() => { /* 老后端没有该接口时静默降级 */ });
   }, []);
+
+  const refreshCatalog = () => { api.catalog().then(setCatalog).catch(() => {}); };
 
   const previewSheet = async () => {
     setError(''); setMsg(''); setBusy(-1); setPreview(null);
@@ -201,6 +205,40 @@ export default function LibrariesPage() {
         <div className="muted" style={{ fontSize: 11.5, marginTop: 6 }}>
           三方库测试表：<span className="mono">{sheet.file}</span>
           {sheet.exists ? '' : <span style={{ color: 'var(--amber)' }}>（文件不存在，请在「系统配置」里设置 libraries.xlsxPath）</span>}
+        </div>
+      )}
+
+      {catalog && (
+        <div className="card" style={{ marginTop: 8, padding: '8px 12px' }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap', fontSize: 12 }}>
+            <b>目录引导</b>
+            {catalog.bundled.exists
+              ? <span className="tag green">随包种子已就位</span>
+              : <span className="tag amber">无随包种子</span>}
+            <span className="muted">
+              业务库 <b>{catalog.db.libraries}</b> 个库
+              {catalog.latest
+                ? <> · 最近导入 {catalog.latest.at}（新增 {catalog.latest.added} / 更新 {catalog.latest.updated} / 无变化 {catalog.latest.unchanged}）</>
+                : <> · 尚未导入</>}
+            </span>
+            <span className="muted" title="已有环境画像的库占比（环境画像为 R1 新增能力）">
+              环境画像 {catalog.db.profiled}/{catalog.db.libraries}
+            </span>
+            <div style={{ flex: 1 }} />
+            <span className="link" onClick={refreshCatalog}>刷新</span>
+          </div>
+          {catalog.problems.length > 0 && (
+            <div style={{ marginTop: 6, fontSize: 11.8, color: 'var(--amber)' }}>
+              ⚠️ 表中有 {catalog.problems.length} 行被跳过（需回表修正）：
+              {catalog.problems.slice(0, 5).map((p) => `第 ${p.row} 行${p.name ? `「${p.name}」` : ''}：${p.reason}`).join('；')}
+              {catalog.problems.length > 5 ? ` …等 ${catalog.problems.length} 行` : ''}
+            </div>
+          )}
+          {!catalog.active.exists && catalog.active.configured && (
+            <div style={{ marginTop: 6, fontSize: 11.8, color: 'var(--amber)' }}>
+              ⚠️ 配置指向的表不存在：<span className="mono">{catalog.active.configured}</span>（可在「系统配置」修改 libraries.xlsxPath）
+            </div>
+          )}
         </div>
       )}
 

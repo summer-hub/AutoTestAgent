@@ -94,3 +94,12 @@ rules:
     inject_when:
       paths: ["dsh-autotest/src/api/**"]
       touches: ["api", "validation", "http", "input", "route"]
+  - id: env-script-contract
+    title: "环境脚本契约纪律（envkit 新增/改脚本前必读）"
+    description: "改 assets/env/ 或 services/envkit/ 前必读：契约七项、失败分类、产物校验、跨平台成对"
+    priority: 84
+    load_bearing: true
+    tags: ["envkit", "script", "contract", "environment", "failure", "cross-platform"]
+    inject_when:
+      paths: ["dsh-autotest/src/services/envkit/**", "dsh-autotest/assets/env/**", "dsh-autotest/scripts/verify-envkit.mjs"]
+      touches: ["envkit", "script", "contract", "environment", "failure", "build", "hdc", "ohpm"]

@@ -433,6 +433,8 @@ export async function ensureReady() {
                     ['cases', 'testability'], ['cases', 'testability_reason'], ['cases', 'demo_patch_json'], ['cases', 'oracle_json'],
                     ['plans', 'script_mode'], ['plans', 'error'], ['plans', 'progress'], ['plans', 'progress_note'],
                     ['tasks', 'trace_id'], ['executions', 'trace_id'], ['executions_archive', 'trace_id'],
+                    ['executions', 'env_run_id'], ['executions', 'resource_set_id'],
+                    ['executions_archive', 'env_run_id'], ['executions_archive', 'resource_set_id'],
                 ]) {
                     try {
                         const cols = await query(`PRAGMA table_info(${table})`, []);
@@ -455,6 +457,10 @@ export async function ensureReady() {
                                 'plans:progress_note': "ALTER TABLE plans ADD COLUMN progress_note TEXT NOT NULL DEFAULT ''",
                                 'tasks:trace_id': "ALTER TABLE tasks ADD COLUMN trace_id TEXT NOT NULL DEFAULT ''",
                                 'executions:trace_id': "ALTER TABLE executions ADD COLUMN trace_id TEXT NOT NULL DEFAULT ''",
+                                'executions:env_run_id': 'ALTER TABLE executions ADD COLUMN env_run_id INTEGER NULL',
+                                'executions:resource_set_id': 'ALTER TABLE executions ADD COLUMN resource_set_id INTEGER NULL',
+                                'executions_archive:env_run_id': 'ALTER TABLE executions_archive ADD COLUMN env_run_id INTEGER NULL',
+                                'executions_archive:resource_set_id': 'ALTER TABLE executions_archive ADD COLUMN resource_set_id INTEGER NULL',
                                 'executions_archive:trace_id': "ALTER TABLE executions_archive ADD COLUMN trace_id TEXT NOT NULL DEFAULT ''",
                             };
                             await query(ddl[`${table}:${col}`], []);
@@ -468,6 +474,22 @@ export async function ensureReady() {
                 if (!row || row.n === 0) {
                     const { seed } = await import('./seed.js');
                     await seed();
+                }
+                // R0 目录引导：把随包的「三方库测试表.xlsx」导入业务库（幂等、只增不改 Agent 字段）。
+                // 动态 import 避免 connection ↔ catalog 循环依赖（catalog 反向依赖本文件的 getDb/now）。
+                // 内部永不抛异常：表读不出来只告警，绝不让插件因为一张表起不来。
+                const { ensureLibraryCatalog } = await import('../services/catalog.js');
+                await ensureLibraryCatalog();
+                // R1：内置脚本资产播种（幂等 INSERT IGNORE，人改过的行不动）。
+                // 与目录引导同理：表没建好/播种失败都不能阻断启动，只告警。
+                try {
+                    const { seedBuiltinScripts } = await import('../services/envkit/scripts.js');
+                    const r = await seedBuiltinScripts();
+                    if (r.inserted > 0)
+                        console.log(`[dsh-autotest] 内置脚本资产播种：新增 ${r.inserted}/${r.total}`);
+                }
+                catch (e) {
+                    console.warn('[dsh-autotest] 内置脚本资产播种跳过：', e.message);
                 }
                 await upgradeBuiltinPrompts();
                 lockedMode = 'sqlite';
@@ -506,6 +528,10 @@ export async function ensureReady() {
                 ['plans', 'progress_note', "ALTER TABLE plans ADD COLUMN progress_note VARCHAR(300) NOT NULL DEFAULT ''"],
                 ['tasks', 'trace_id', "ALTER TABLE tasks ADD COLUMN trace_id VARCHAR(64) NOT NULL DEFAULT ''"],
                 ['executions', 'trace_id', "ALTER TABLE executions ADD COLUMN trace_id VARCHAR(64) NOT NULL DEFAULT ''"],
+                ['executions', 'env_run_id', 'ALTER TABLE executions ADD COLUMN env_run_id BIGINT UNSIGNED NULL'],
+                ['executions', 'resource_set_id', 'ALTER TABLE executions ADD COLUMN resource_set_id BIGINT UNSIGNED NULL'],
+                ['executions_archive', 'env_run_id', 'ALTER TABLE executions_archive ADD COLUMN env_run_id BIGINT UNSIGNED NULL'],
+                ['executions_archive', 'resource_set_id', 'ALTER TABLE executions_archive ADD COLUMN resource_set_id BIGINT UNSIGNED NULL'],
             ]) {
                 try {
                     await mysqlPool().query(ddl);
@@ -532,6 +558,20 @@ export async function ensureReady() {
             if (!row || row.n === 0) {
                 const { seed } = await import('./seed.js');
                 await seed();
+            }
+            // R0 目录引导：与 SQLite 分支同一份实现（catalog.ts 内部按 dbMode() 自适应）。
+            // 多机共享 MySQL 时这份表仍以「谁先启动谁导入」为准，sha256 幂等不会重复写。
+            const { ensureLibraryCatalog } = await import('../services/catalog.js');
+            await ensureLibraryCatalog();
+            // R1：内置脚本资产播种（与 SQLite 分支同一份实现，幂等）
+            try {
+                const { seedBuiltinScripts } = await import('../services/envkit/scripts.js');
+                const r = await seedBuiltinScripts();
+                if (r.inserted > 0)
+                    console.log(`[dsh-autotest] 内置脚本资产播种：新增 ${r.inserted}/${r.total}`);
+            }
+            catch (e) {
+                console.warn('[dsh-autotest] 内置脚本资产播种跳过：', e.message);
             }
             lockedMode = 'mysql';
             console.log('[dsh-autotest] 业务库就绪（MySQL）');

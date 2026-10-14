@@ -457,6 +457,128 @@ var COMMANDS = [
       { name: "stage", type: "string", description: "agent \u9636\u6BB5" },
       { name: "budgetChars", type: "number", description: "\u6CE8\u5165\u9884\u7B97\uFF08\u5B57\u7B26\uFF09" }
     ]
+  },
+  // ---------- env（R1：环境纵轴 —— 脚本资产 + 环境画像 + 环境准备） ----------
+  {
+    name: "env.scripts.list",
+    group: "env",
+    action: "scripts",
+    summary: "\u811A\u672C\u8D44\u4EA7\u5E93\u6E05\u5355\uFF08\u5951\u7EA6/\u5931\u8D25\u5206\u7C7B/\u5BA1\u6279\u7B49\u7EA7/\u6F02\u79FB\u72B6\u6001\uFF09",
+    method: "GET",
+    path: "/env/scripts",
+    role: "viewer",
+    params: []
+  },
+  {
+    name: "env.scripts.get",
+    group: "env",
+    action: "scripts.get",
+    summary: "\u5355\u4E2A\u811A\u672C\u8D44\u4EA7\u8BE6\u60C5\uFF08\u542B\u5951\u7EA6\u4E0E\u6821\u9A8C\u95EE\u9898\uFF09",
+    method: "GET",
+    path: "/env/scripts/:id",
+    role: "viewer",
+    params: []
+  },
+  {
+    name: "env.scripts.seed",
+    group: "env",
+    action: "scripts.seed",
+    summary: "\u64AD\u79CD\u5185\u7F6E\u811A\u672C\u8D44\u4EA7\uFF08\u5E42\u7B49\uFF1B\u5347\u7EA7\u540E\u65B0\u589E\u811A\u672C\u65F6\u624B\u52A8\u8865\uFF09",
+    method: "POST",
+    path: "/env/scripts/seed",
+    role: "operator",
+    params: []
+  },
+  {
+    name: "env.profiles.list",
+    group: "env",
+    action: "profiles",
+    summary: "\u73AF\u5883\u753B\u50CF\u5217\u8868\uFF08\u53EF\u6309\u5E93\u8FC7\u6EE4\uFF09",
+    method: "GET",
+    path: "/env/profiles",
+    role: "viewer",
+    params: [
+      { name: "libraryId", type: "number", description: "\u6309\u4E09\u65B9\u5E93\u8FC7\u6EE4\uFF080=\u4E0D\u9650\uFF09" }
+    ]
+  },
+  {
+    name: "env.profiles.get",
+    group: "env",
+    action: "profiles.get",
+    summary: "\u73AF\u5883\u753B\u50CF\u8BE6\u60C5\uFF08\u542B\u6B65\u9AA4\u5E8F\u5217\uFF09",
+    method: "GET",
+    path: "/env/profiles/:id",
+    role: "viewer",
+    params: []
+  },
+  {
+    name: "env.profiles.create",
+    group: "env",
+    action: "profiles.create",
+    summary: "\u65B0\u5EFA\u73AF\u5883\u753B\u50CF\uFF08\u58F0\u660E\u6B65\u9AA4\u5E8F\u5217\uFF1B\u53C2\u6570\u4E0D\u5408\u6CD5\u4F1A\u88AB\u62D2\uFF09",
+    method: "POST",
+    path: "/env/profiles",
+    role: "operator",
+    params: [
+      { name: "libraryId", type: "number", description: "\u4E09\u65B9\u5E93 id", required: true },
+      { name: "name", type: "string", description: "\u753B\u50CF\u540D", required: true },
+      { name: "presetKind", type: "string", description: "\u9884\u8BBE\u7C7B\u522B\uFF08animation/network/storage\u2026\uFF09" },
+      { name: "toolchain", type: "string", description: "\u5DE5\u5177\u94FE JSON\uFF08deveco-cli \u7248\u672C/SDK/API level\uFF09" },
+      { name: "components", type: "string", description: "\u7EC4\u4EF6 JSON\uFF08\u5B50\u6A21\u5757/\u4E8C\u8FDB\u5236\u4F9D\u8D56/ohpm/\u6587\u4EF6\u914D\u7F6E\uFF09" },
+      { name: "steps", type: "string", description: "\u6B65\u9AA4 JSON\uFF1A[{scriptId,params,required}]" }
+    ]
+  },
+  {
+    name: "env.profiles.run",
+    group: "env",
+    action: "profiles.run",
+    summary: "\u6267\u884C\u73AF\u5883\u51C6\u5907\uFF08\u957F\u4EFB\u52A1\uFF1B\u6307\u7EB9\u547D\u4E2D\u5219\u7F13\u5B58\u590D\u7528\u4E0D\u91CD\u8DD1\uFF09",
+    method: "POST",
+    path: "/env/profiles/:id/run",
+    role: "operator",
+    params: [
+      { name: "trigger", type: "string", description: "manual/plan/agent/batch" },
+      { name: "cwd", type: "string", description: "\u5DE5\u4F5C\u76EE\u5F55\uFF08\u7F3A\u7701\u7528\u5E93\u7684\u4ED3\u5E93\u76EE\u5F55\uFF09" },
+      { name: "commit", type: "string", description: "\u4EE3\u7801 commit\uFF08\u8FDB\u6307\u7EB9\uFF09" },
+      { name: "allowCache", type: "boolean", description: "\u662F\u5426\u5141\u8BB8\u590D\u7528\u5DF2\u7EC8\u6001 run\uFF0C\u9ED8\u8BA4 true" }
+    ]
+  },
+  {
+    name: "env.runs.list",
+    group: "env",
+    action: "runs",
+    summary: "\u73AF\u5883\u51C6\u5907\u8FD0\u884C\u8BB0\u5F55\u5217\u8868",
+    method: "GET",
+    path: "/env/runs",
+    role: "viewer",
+    params: [
+      { name: "libraryId", type: "number", description: "\u6309\u4E09\u65B9\u5E93\u8FC7\u6EE4\uFF080=\u4E0D\u9650\uFF09" },
+      { name: "limit", type: "number", description: "\u8FD4\u56DE\u6761\u6570\uFF08\u2264100\uFF09\uFF0C\u9ED8\u8BA4 30" }
+    ]
+  },
+  {
+    name: "env.runs.get",
+    group: "env",
+    action: "runs.get",
+    summary: "\u5355\u6B21\u73AF\u5883\u51C6\u5907\u8FD0\u884C\u8BE6\u60C5\uFF08\u9010\u6B65\u72B6\u6001/\u5931\u8D25\u5206\u7C7B/\u4EA7\u7269\uFF09",
+    method: "GET",
+    path: "/env/runs/:id",
+    role: "viewer",
+    params: []
+  },
+  {
+    name: "env.classify",
+    group: "env",
+    action: "classify",
+    summary: "\u5931\u8D25\u5F52\u7C7B\u8BD5\u7B97\uFF08\u628A\u4E00\u6BB5\u811A\u672C\u8F93\u51FA\u5F52\u6210\u5931\u8D25\u7C7B\u522B\uFF0C\u4E0D\u6267\u884C\u811A\u672C\uFF09",
+    method: "POST",
+    path: "/env/classify",
+    role: "viewer",
+    params: [
+      { name: "output", type: "string", description: "\u811A\u672C\u6587\u672C\uFF08stderr+stdout\uFF09" },
+      { name: "exitCode", type: "number", description: "\u9000\u51FA\u7801", default: 1 },
+      { name: "taxonomy", type: "string-array", description: "\u5951\u7EA6\u58F0\u660E\u7684\u5931\u8D25\u5206\u7C7B\uFF08\u9017\u53F7\u5206\u9694\uFF09" }
+    ]
   }
 ];
 

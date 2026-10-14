@@ -20,6 +20,7 @@ export type ApprovalKind =
   | 'repo.pull' | 'repo.update'
   | 'library.delete' | 'case.delete' | 'task.delete'
   | 'script.delete' | 'script.generate'
+  | 'env.step' | 'env.run'
   | 'agent.external';
 
 /** 危险操作的中文名（审批列表与错误提示用）。 */
@@ -31,6 +32,8 @@ export const APPROVAL_KIND_LABEL: Record<string, string> = {
   'task.delete': '删除任务',
   'script.delete': '删除自动化脚本',
   'script.generate': '生成自动化脚本（写入工程目录）',
+  'env.step': '执行环境准备步骤（构建/装包，会改动工程与真机）',
+  'env.run': '执行整套环境准备（多步骤，可能构建并安装到真机）',
   'agent.external': '执行外部 Agent 命令',
 };
 

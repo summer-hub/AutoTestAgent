@@ -1,4 +1,4 @@
-export type ApprovalKind = 'repo.pull' | 'repo.update' | 'library.delete' | 'case.delete' | 'task.delete' | 'script.delete' | 'script.generate' | 'agent.external';
+export type ApprovalKind = 'repo.pull' | 'repo.update' | 'library.delete' | 'case.delete' | 'task.delete' | 'script.delete' | 'script.generate' | 'env.step' | 'env.run' | 'agent.external';
 /** 危险操作的中文名（审批列表与错误提示用）。 */
 export declare const APPROVAL_KIND_LABEL: Record<string, string>;
 export declare function autoApproveEnabled(): boolean;

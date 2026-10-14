@@ -289,6 +289,8 @@ CREATE TABLE IF NOT EXISTS executions_archive (
   status TEXT NOT NULL DEFAULT 'pending',
   steps TEXT NOT NULL,
   trace_id TEXT NOT NULL DEFAULT '',
+  env_run_id INTEGER NULL,
+  resource_set_id INTEGER NULL,
   thinking TEXT NULL,
   logs TEXT NULL,
   started_at TEXT NULL,
@@ -442,6 +444,118 @@ CREATE TABLE IF NOT EXISTS demo_scenario_coverage (
   UNIQUE (library_id, library_version, scenario_no)
 );
 CREATE INDEX IF NOT EXISTS idx_demo_scenario_lib ON demo_scenario_coverage(library_id, status);
+
+-- 目录引导导入记录（R0）：随包「三方库测试表.xlsx」→ 业务库的每次导入留痕。
+-- sha256 是幂等键：同一份表重复导入不重复写库；只追加不更新，历史永远看得见。
+CREATE TABLE IF NOT EXISTS library_catalog_imports (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  source TEXT NOT NULL DEFAULT 'bundled',
+  file_path TEXT NOT NULL DEFAULT '',
+  file_sha256 TEXT NOT NULL DEFAULT '',
+  total INTEGER NOT NULL DEFAULT 0,
+  added INTEGER NOT NULL DEFAULT 0,
+  updated INTEGER NOT NULL DEFAULT 0,
+  unchanged INTEGER NOT NULL DEFAULT 0,
+  db_only INTEGER NOT NULL DEFAULT 0,
+  problems INTEGER NOT NULL DEFAULT 0,
+  problems_json TEXT NOT NULL,
+  applied INTEGER NOT NULL DEFAULT 0,
+  created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_catalog_sha ON library_catalog_imports(file_sha256);
+CREATE INDEX IF NOT EXISTS idx_catalog_at ON library_catalog_imports(created_at);
+
+-- R1：脚本资产库（deveco-cli 成熟脚本的契约化形态；与 schema.ts 逐表对应）
+CREATE TABLE IF NOT EXISTS script_library (
+  id TEXT NOT NULL PRIMARY KEY,
+  summary TEXT NOT NULL,
+  version TEXT NOT NULL DEFAULT '1.0.0',
+  contract_json TEXT NOT NULL,
+  entry_json TEXT NOT NULL,
+  sha256 TEXT NOT NULL DEFAULT '',
+  approval TEXT NOT NULL DEFAULT 'operator',
+  enabled INTEGER NOT NULL DEFAULT 1,
+  builtin INTEGER NOT NULL DEFAULT 1,
+  updated_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS script_library_versions (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  script_id TEXT NOT NULL,
+  version TEXT NOT NULL,
+  sha256 TEXT NOT NULL,
+  contract_json TEXT NOT NULL,
+  note TEXT NOT NULL DEFAULT '',
+  created_at TEXT NOT NULL,
+  UNIQUE (script_id, version)
+);
+
+-- R1：环境画像与步骤序列
+CREATE TABLE IF NOT EXISTS env_profiles (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  library_id INTEGER NOT NULL,
+  name TEXT NOT NULL,
+  status TEXT NOT NULL DEFAULT 'draft',
+  preset_kind TEXT NOT NULL DEFAULT '',
+  toolchain_json TEXT NOT NULL,
+  components_json TEXT NOT NULL,
+  source TEXT NOT NULL DEFAULT 'ai_draft',
+  confidence INTEGER NOT NULL DEFAULT 50,
+  knowledge_refs TEXT NOT NULL,
+  confirmed_by TEXT NOT NULL DEFAULT '',
+  confirmed_at TEXT NULL,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  UNIQUE (library_id, name)
+);
+CREATE INDEX IF NOT EXISTS idx_env_profiles_lib ON env_profiles(library_id, status);
+
+CREATE TABLE IF NOT EXISTS env_profile_steps (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  profile_id INTEGER NOT NULL,
+  seq INTEGER NOT NULL,
+  script_id TEXT NOT NULL,
+  params_json TEXT NOT NULL,
+  required INTEGER NOT NULL DEFAULT 1,
+  skip_if TEXT NOT NULL DEFAULT '',
+  created_at TEXT NOT NULL,
+  UNIQUE (profile_id, seq)
+);
+
+-- R1：环境准备运行记录与步骤明细
+CREATE TABLE IF NOT EXISTS env_runs (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  run_no TEXT NOT NULL,
+  profile_id INTEGER NOT NULL,
+  library_id INTEGER NOT NULL,
+  trigger TEXT NOT NULL DEFAULT 'manual',
+  status TEXT NOT NULL DEFAULT 'pending',
+  fingerprint TEXT NOT NULL DEFAULT '',
+  cached_from INTEGER NULL,
+  duration_ms INTEGER NOT NULL DEFAULT 0,
+  error TEXT NOT NULL DEFAULT '',
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  UNIQUE (run_no)
+);
+CREATE INDEX IF NOT EXISTS idx_env_runs_lib ON env_runs(library_id, status);
+CREATE INDEX IF NOT EXISTS idx_env_runs_fp ON env_runs(fingerprint);
+
+CREATE TABLE IF NOT EXISTS env_run_steps (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  run_id INTEGER NOT NULL,
+  seq INTEGER NOT NULL,
+  script_id TEXT NOT NULL,
+  status TEXT NOT NULL DEFAULT 'pending',
+  exit_code INTEGER NULL,
+  failure_kind TEXT NOT NULL DEFAULT '',
+  artifacts_json TEXT NOT NULL,
+  log_path TEXT NOT NULL DEFAULT '',
+  duration_ms INTEGER NOT NULL DEFAULT 0,
+  started_at TEXT NULL,
+  finished_at TEXT NULL,
+  UNIQUE (run_id, seq)
+);
+CREATE INDEX IF NOT EXISTS idx_env_run_steps_run ON env_run_steps(run_id, seq);
 `;
 /** 建表语句拆分（better-sqlite3 exec 支持多语句，这里仍按分号拆便于逐条容错）。 */
 export function sqliteSchemaStatements() {

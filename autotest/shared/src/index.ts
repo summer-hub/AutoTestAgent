@@ -90,6 +90,26 @@ export interface LibrarySheetSyncResult {
   };
 }
 
+/**
+ * R0：目录引导状态（GET /libraries/catalog）—— 让三个端都能自证
+ * 「随包的三方库测试表导进业务库了没有、少了哪几行」。
+ */
+export interface LibraryCatalogStatus {
+  /** 随包资产里的那份表（构建后位于 lib/assets/） */
+  bundled: { exists: boolean; path: string; sha256: string };
+  /** 数据目录里实际在用的那份表 */
+  active: { file: string; exists: boolean; configured: string };
+  /** 最近一次真实导入的留痕（无变化时不新增记录） */
+  latest: {
+    at: string; source: string; sha256: string; total: number;
+    added: number; updated: number; unchanged: number; dbOnly: number; problems: number;
+  } | null;
+  /** 最近一次导入的问题行（带 xlsx 行号，可直接回表修正） */
+  problems: Array<{ row: number; name: string; reason: string }>;
+  /** profiled = 已有环境画像的库数（R1 之前恒 0） */
+  db: { libraries: number; profiled: number; unprofiled: number };
+}
+
 /** 测试用例（主表行） */
 export interface TestCase {
   id: number;

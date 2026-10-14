@@ -41,6 +41,13 @@ import { hypiumProjectDir, writeCaseScript, ensureHypiumProject } from '../servi
 import { listEvents } from '../services/events.js';
 import { readTaskEvents } from '../services/taskEvents.js';
 import { exportLibrariesSheet, resolveSheetPath, syncLibrariesFromSheet } from '../services/librarySheet.js';
+import { catalogStatus } from '../services/catalog.js';
+import {
+  listScripts, getScript, seedBuiltinScripts, validateAllScripts, detectContractDrift,
+  validateContract,
+  runEnvProfile, loadProfileSteps, fingerprintOf,
+  classifyFailure, FAILURE_LABEL, EXIT_CODES,
+} from '../services/envkit/index.js';
 import { loadStoredSymbols, runApiExtraction } from '../services/apiExtract.js';
 import { buildCoverageMatrix, loadCoverageMatrix, renderMatrixCsv, renderMatrixMarkdown } from '../services/coverageMatrix.js';
 // 场景级覆盖度（Demo 场景 × Demo 代码）：与接口级矩阵并列的第二个覆盖维度
@@ -498,6 +505,15 @@ function defineRoutes(llm: LlmCall): void {
     return { file, exists, configuredPath: String(getSetting('libraries.xlsxPath', '') || '') };
   });
 
+  // ---- R0：目录引导状态 ----
+  //
+  // 让三个端（DSH 插件 / 独立 Web / 桌面端）都能自证"内置的三方库测试表导进来没有"：
+  // 349 行的表少一行没人会发现，所以问题行必须带行号原样透出。
+  // 路由是静态段，匹配器静态优先（两遍扫描），不会被 /libraries/:id 捕获。
+  route('GET', '/libraries/catalog', async () => {
+    return await catalogStatus();
+  });
+
   route('POST', '/libraries/sync-sheet', async ({ body, query }) => {
     const b = (body ?? {}) as { file?: string; apply?: boolean };
     const apply = b.apply === true || ['1', 'true', 'yes'].includes(String(query.get('apply') ?? '').toLowerCase());
@@ -522,6 +538,203 @@ function defineRoutes(llm: LlmCall): void {
     const r = await exportLibrariesSheet(b.file ? String(b.file) : undefined);
     console.log(`[autotest] 库状态导出：${r.rows} 行 → ${r.file}`);
     return r;
+  });
+
+  // ---- R1：环境纵轴（脚本资产 + 环境画像 + 环境准备运行）----
+  //
+  // 这一组路由是「从克隆代码到装上包」的入口。三条设计要点：
+  //  1. 契约即数据：脚本资产的输入/输出/失败分类/审批等级都在契约里（envkit/contract.ts），
+  //     API 只做转发，不在路由层重复实现校验逻辑；
+  //  2. 环境准备是长任务：run 是异步的，前端拿 run id 轮询/WS 订阅步骤进度，
+  //     不占着 HTTP 连接等几十分钟；
+  //  3. 审批复用同一套闸门：approval 级别非 none 的步骤走 requireApproval，
+  //     autoApprove 默认放行（企业部署关掉它即进入审批模式）。
+  route('GET', '/env/scripts', async () => {
+    const scripts = await listScripts();
+    const drift = await detectContractDrift();
+    return {
+      items: scripts.map((s) => ({
+        id: s.id, summary: s.summary, version: s.version, approval: s.approval,
+        enabled: s.enabled, builtin: s.builtin, sha256: s.sha256,
+        inputs: s.contract.inputs, outputs: s.contract.outputs,
+        appliesWhen: s.contract.applies_when, failureTaxonomy: s.contract.failure_taxonomy,
+        idempotent: s.contract.idempotent, timeoutSec: s.contract.timeout_sec,
+      })),
+      drift,
+      failureLabels: FAILURE_LABEL,
+      exitCodes: EXIT_CODES,
+    };
+  });
+
+  route('GET', '/env/scripts/:id', async ({ params }) => {
+    const s = await getScript(params.id);
+    if (!s) throw Object.assign(new Error(`脚本资产不存在：${params.id}`), { statusCode: 404 });
+    const problems = validateContract(s.contract);
+    return { ...s, contractProblems: problems };
+  });
+
+  // 把内置脚本播种进 DB（幂等；人改过的行不动）。首次启动由 bootstrap 调用，
+  // 这里暴露出来是为了「升级后新增了内置脚本」能手动补播种。
+  route('POST', '/env/scripts/seed', async () => {
+    const r = await seedBuiltinScripts();
+    const report = await validateAllScripts();
+    return { ...r, validation: report };
+  });
+
+  route('GET', '/env/profiles', async ({ query }) => {
+    const libraryId = Number(query.get('libraryId')) || 0;
+    const cond = libraryId ? 'WHERE p.library_id = ?' : '';
+    const args: unknown[] = libraryId ? [libraryId] : [];
+    const rows = await getDb().prepare(
+      `SELECT p.*, l.name AS library_name,
+              (SELECT COUNT(*) FROM env_profile_steps s WHERE s.profile_id = p.id) AS step_count,
+              (SELECT COUNT(*) FROM env_runs r WHERE r.profile_id = p.id) AS run_count,
+              (SELECT status FROM env_runs r WHERE r.profile_id = p.id ORDER BY id DESC LIMIT 1) AS last_run_status
+       FROM env_profiles p LEFT JOIN libraries l ON l.id = p.library_id ${cond} ORDER BY p.id DESC LIMIT 200`,
+    ).all<Record<string, unknown>>(...args);
+    return {
+      items: rows.map((r) => ({
+        id: Number(r.id), libraryId: Number(r.library_id), libraryName: String(r.library_name ?? ''),
+        name: String(r.name), status: String(r.status), presetKind: String(r.preset_kind ?? ''),
+        source: String(r.source ?? ''), confidence: Number(r.confidence ?? 50),
+        stepCount: Number(r.step_count ?? 0), runCount: Number(r.run_count ?? 0),
+        lastRunStatus: String(r.last_run_status ?? ''),
+        toolchain: (() => { try { return JSON.parse(String(r.toolchain_json ?? '{}')); } catch { return {}; } })(),
+        components: (() => { try { return JSON.parse(String(r.components_json ?? '{}')); } catch { return {}; } })(),
+        confirmedAt: (r.confirmed_at as string | null) ?? null,
+        updatedAt: String(r.updated_at ?? ''),
+      })),
+    };
+  });
+
+  route('GET', '/env/profiles/:id', async ({ params }) => {
+    const id = Number(params.id);
+    const row = await getDb().prepare('SELECT * FROM env_profiles WHERE id = ?').get<Record<string, unknown>>(id);
+    if (!row) throw Object.assign(new Error('环境画像不存在'), { statusCode: 404 });
+    const steps = await loadProfileSteps(id);
+    return {
+      id, libraryId: Number(row.library_id), name: String(row.name), status: String(row.status),
+      presetKind: String(row.preset_kind ?? ''), source: String(row.source ?? ''),
+      confidence: Number(row.confidence ?? 50),
+      toolchain: (() => { try { return JSON.parse(String(row.toolchain_json ?? '{}')); } catch { return {}; } })(),
+      components: (() => { try { return JSON.parse(String(row.components_json ?? '{}')); } catch { return {}; } })(),
+      steps,
+    };
+  });
+
+  route('POST', '/env/profiles', async ({ body }) => {
+    const b = (body ?? {}) as {
+      libraryId?: number; name?: string; presetKind?: string;
+      toolchain?: Record<string, unknown>; components?: Record<string, unknown>;
+      steps?: Array<{ scriptId: string; params?: Record<string, unknown>; required?: boolean }>;
+      confidence?: number;
+    };
+    const libraryId = Number(b.libraryId);
+    if (!libraryId) throw Object.assign(new Error('libraryId 必填'), { statusCode: 400 });
+    const name = String(b.name ?? '').trim();
+    if (!name) throw Object.assign(new Error('name 必填'), { statusCode: 400 });
+    const lib = await getDb().prepare('SELECT id FROM libraries WHERE id = ?').get<{ id: number }>(libraryId);
+    if (!lib) throw Object.assign(new Error('库不存在'), { statusCode: 404 });
+
+    const t = now();
+    const ins = await getDb().prepare(`INSERT INTO env_profiles
+      (library_id, name, status, preset_kind, toolchain_json, components_json, source, confidence, knowledge_refs, confirmed_by, confirmed_at, created_at, updated_at)
+      VALUES (?, ?, 'draft', ?, ?, ?, 'manual', ?, '[]', '', NULL, ?, ?)`)
+      .run(libraryId, name, String(b.presetKind ?? ''), JSON.stringify(b.toolchain ?? {}),
+        JSON.stringify(b.components ?? {}), Math.max(0, Math.min(100, Number(b.confidence ?? 60))), t, t);
+    const profileId = Number(ins.lastInsertRowid);
+
+    // 步骤落库：校验脚本存在 + 参数可解析，避免建出一份跑不起来的画像
+    const problems: string[] = [];
+    let seq = 0;
+    for (const s of b.steps ?? []) {
+      seq++;
+      const script = await getScript(String(s.scriptId));
+      if (!script) { problems.push(`第 ${seq} 步：脚本不存在 ${s.scriptId}`); continue; }
+      if (!script.enabled) { problems.push(`第 ${seq} 步：脚本已禁用 ${s.scriptId}`); continue; }
+      const { resolveParams } = await import('../services/envkit/contract.js');
+      const resolved = resolveParams(script.contract, s.params ?? {});
+      if (!resolved.ok) problems.push(`第 ${seq} 步（${s.scriptId}）：${resolved.problems.join('；')}`);
+      await getDb().prepare(`INSERT INTO env_profile_steps (profile_id, seq, script_id, params_json, required, skip_if, created_at)
+        VALUES (?, ?, ?, ?, ?, '', ?)`)
+        .run(profileId, seq, script.id, JSON.stringify(resolved.params), s.required === false ? 0 : 1, t);
+    }
+    return { id: profileId, problems, stepCount: seq };
+  });
+
+  route('DELETE', '/env/profiles/:id', async ({ params }) => {
+    const id = Number(params.id);
+    const row = await getDb().prepare('SELECT id FROM env_profiles WHERE id = ?').get<{ id: number }>(id);
+    if (!row) throw Object.assign(new Error('环境画像不存在'), { statusCode: 404 });
+    await getDb().prepare('DELETE FROM env_profile_steps WHERE profile_id = ?').run(id);
+    await getDb().prepare('DELETE FROM env_profiles WHERE id = ?').run(id);
+    return { ok: true };
+  });
+
+  route('POST', '/env/profiles/:id/run', async ({ params, body }) => {
+    const id = Number(params.id);
+    const b = (body ?? {}) as { trigger?: string; cwd?: string; commit?: string; allowCache?: boolean };
+    const row = await getDb().prepare('SELECT id FROM env_profiles WHERE id = ?').get<{ id: number }>(id);
+    if (!row) throw Object.assign(new Error('环境画像不存在'), { statusCode: 404 });
+    // 长任务：同步执行但立即返回 run 概要（前端「环境」页按 run id 拉步骤明细）。
+    // 批次流水线（R2）会用同一函数并传 AbortSignal。
+    const r = await runEnvProfile({
+      profileId: id, trigger: b.trigger ?? 'manual', cwd: b.cwd ? String(b.cwd) : undefined,
+      commit: b.commit ? String(b.commit) : undefined,
+      allowCache: b.allowCache !== false,
+    });
+    return r;
+  });
+
+  route('GET', '/env/runs', async ({ query }) => {
+    const libraryId = Number(query.get('libraryId')) || 0;
+    const limit = Math.min(100, Math.max(1, Number(query.get('limit')) || 30));
+    const cond = libraryId ? 'WHERE r.library_id = ?' : '';
+    const args: unknown[] = libraryId ? [libraryId] : [];
+    const rows = await getDb().prepare(
+      `SELECT r.*, l.name AS library_name FROM env_runs r
+       LEFT JOIN libraries l ON l.id = r.library_id ${cond} ORDER BY r.id DESC LIMIT ${limit}`,
+    ).all<Record<string, unknown>>(...args);
+    return {
+      items: rows.map((r) => ({
+        id: Number(r.id), runNo: String(r.run_no), profileId: Number(r.profile_id),
+        libraryId: Number(r.library_id), libraryName: String(r.library_name ?? ''),
+        status: String(r.status), trigger: String(r.trigger ?? ''),
+        cachedFrom: (r.cached_from as number | null) ?? null,
+        durationMs: Number(r.duration_ms ?? 0), error: String(r.error ?? ''),
+        createdAt: String(r.created_at ?? ''),
+      })),
+    };
+  });
+
+  route('GET', '/env/runs/:id', async ({ params }) => {
+    const id = Number(params.id);
+    const row = await getDb().prepare('SELECT * FROM env_runs WHERE id = ?').get<Record<string, unknown>>(id);
+    if (!row) throw Object.assign(new Error('环境运行记录不存在'), { statusCode: 404 });
+    const steps = await getDb().prepare(
+      'SELECT * FROM env_run_steps WHERE run_id = ? ORDER BY seq',
+    ).all<Record<string, unknown>>(id);
+    return {
+      id, runNo: String(row.run_no), profileId: Number(row.profile_id), libraryId: Number(row.library_id),
+      status: String(row.status), cachedFrom: (row.cached_from as number | null) ?? null,
+      durationMs: Number(row.duration_ms ?? 0), error: String(row.error ?? ''),
+      steps: steps.map((s) => ({
+        seq: Number(s.seq), scriptId: String(s.script_id), status: String(s.status),
+        exitCode: (s.exit_code as number | null) ?? null, failureKind: String(s.failure_kind ?? ''),
+        artifacts: (() => { try { return JSON.parse(String(s.artifacts_json ?? '[]')); } catch { return []; } })(),
+        logPath: String(s.log_path ?? ''), durationMs: Number(s.duration_ms ?? 0),
+      })),
+    };
+  });
+
+  // 失败归类试算（不执行脚本，只把一段输出归类）——前端「环境」页的失败说明与自检共用。
+  route('POST', '/env/classify', async ({ body }) => {
+    const b = (body ?? {}) as { output?: string; exitCode?: number; taxonomy?: string[] };
+    const c = classifyFailure({
+      exitCode: Number(b.exitCode ?? 1), output: String(b.output ?? ''),
+      taxonomy: (b.taxonomy ?? []) as never,
+    });
+    return { ...c, label: FAILURE_LABEL[c.kind as keyof typeof FAILURE_LABEL] ?? c.kind };
   });
 
   // ---- P2：接口面提取（导出符号 + demo 资产）----

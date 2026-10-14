@@ -1,5 +1,5 @@
 // API 客户端 — 统一走 /api（Vite 代理到后端 3280）
-import type { Analysis, CaseVersion, DetectBundleResult, Device, Execution, ExploreReportMeta, ExploreResult, Library, LibraryImpact, LibrarySheetSyncResult, ModelConfig, ModelTestResult, Paged, Page, Plan, Prompt, RepoFile, RepoFileEntry, RepoInfo, Task, TestCase } from 'shared';
+import type { Analysis, CaseVersion, DetectBundleResult, Device, Execution, ExploreReportMeta, ExploreResult, Library, LibraryCatalogStatus, LibraryImpact, LibrarySheetSyncResult, ModelConfig, ModelTestResult, Paged, Page, Plan, Prompt, RepoFile, RepoFileEntry, RepoInfo, Task, TestCase } from 'shared';
 
 // 嵌入 DSH 时由构建注入 VITE_API_BASE=/api/autotest（同源直连插件路由）；
 // 独立版默认 /api（Vite 代理到 3280）。
@@ -173,6 +173,61 @@ export const api = {
     req<LibrarySheetSyncResult>(`${API_BASE}/libraries/sync-sheet`, { method: 'POST', body: JSON.stringify(b) }),
   exportSheet: (b: { file?: string } = {}) =>
     req<{ file: string; rows: number }>(`${API_BASE}/libraries/export-sheet`, { method: 'POST', body: JSON.stringify(b) }),
+  /** R0：目录引导状态（随包表是否已导入、问题行、环境画像覆盖率） */
+  catalog: () => req<LibraryCatalogStatus>(`${API_BASE}/libraries/catalog`),
+
+  // ---- R1：环境纵轴（脚本资产 + 环境画像 + 环境准备）----
+  envScripts: () => req<{
+    items: Array<{
+      id: string; summary: string; version: string; approval: string; enabled: boolean;
+      builtin: boolean; sha256: string;
+      inputs: Array<{ name: string; type: string; required?: boolean; default?: unknown; description?: string }>;
+      outputs: Array<{ name: string; type: string; description?: string }>;
+      appliesWhen: { os?: string[]; sdk_min?: string; library_kind?: string[] };
+      failureTaxonomy: string[]; idempotent: boolean; timeoutSec: number;
+    }>;
+    drift: Array<{ id: string; stored: string; current: string }>;
+    failureLabels: Record<string, string>;
+    exitCodes: Record<string, number>;
+  }>(`${API_BASE}/env/scripts`),
+  envProfiles: (libraryId = 0) => req<{
+    items: Array<{
+      id: number; libraryId: number; libraryName: string; name: string; status: string;
+      presetKind: string; source: string; confidence: number; stepCount: number;
+      runCount: number; lastRunStatus: string; confirmedAt: string | null; updatedAt: string;
+    }>;
+  }>(`${API_BASE}/env/profiles${libraryId ? `?libraryId=${libraryId}` : ''}`),
+  envProfile: (id: number) => req<{
+    id: number; libraryId: number; name: string; status: string; presetKind: string; source: string;
+    confidence: number;
+    steps: Array<{ seq: number; scriptId: string; params: Record<string, unknown>; required: boolean; skipIf: string }>;
+  }>(`${API_BASE}/env/profiles/${id}`),
+  envProfileCreate: (b: {
+    libraryId: number; name: string; presetKind?: string;
+    toolchain?: Record<string, unknown>; components?: Record<string, unknown>;
+    steps?: Array<{ scriptId: string; params?: Record<string, unknown>; required?: boolean }>;
+  }) => req<{ id: number; problems: string[]; stepCount: number }>(`${API_BASE}/env/profiles`, {
+    method: 'POST', body: JSON.stringify(b),
+  }),
+  envProfileRun: (id: number, b: { allowCache?: boolean; commit?: string } = {}) =>
+    req<{ runId: number; status: string; cachedFrom: number | null; durationMs: number; error: string }>(
+      `${API_BASE}/env/profiles/${id}/run`, { method: 'POST', body: JSON.stringify(b) }),
+  envRuns: (libraryId = 0, limit = 30) => req<{
+    items: Array<{
+      id: number; runNo: string; profileId: number; libraryId: number; libraryName: string;
+      status: string; trigger: string; cachedFrom: number | null; durationMs: number;
+      error: string; createdAt: string;
+    }>;
+  }>(`${API_BASE}/env/runs?limit=${limit}${libraryId ? `&libraryId=${libraryId}` : ''}`),
+  envRun: (id: number) => req<{
+    id: number; runNo: string; profileId: number; libraryId: number; status: string;
+    cachedFrom: number | null; durationMs: number; error: string;
+    steps: Array<{
+      seq: number; scriptId: string; status: string; exitCode: number | null; failureKind: string;
+      artifacts: Array<{ name: string; path: string; exists: boolean; size: number; sha256: string }>;
+      logPath: string; durationMs: number;
+    }>;
+  }>(`${API_BASE}/env/runs/${id}`),
   // P2 接口面提取
   extractApi: (id: number) => req<{
     ok: boolean; entryFile: string; packageName: string; symbols: number; demoAssets: number;

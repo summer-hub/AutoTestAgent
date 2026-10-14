@@ -297,6 +297,8 @@ CREATE TABLE IF NOT EXISTS executions_archive (
   status VARCHAR(16) NOT NULL DEFAULT 'pending',
   steps MEDIUMTEXT NOT NULL,
   trace_id VARCHAR(64) NOT NULL DEFAULT '',
+  env_run_id BIGINT UNSIGNED NULL,
+  resource_set_id BIGINT UNSIGNED NULL,
   thinking MEDIUMTEXT NULL,
   logs MEDIUMTEXT NULL,
   started_at VARCHAR(32) NULL,
@@ -460,6 +462,129 @@ CREATE TABLE IF NOT EXISTS demo_scenario_coverage (
   UNIQUE KEY uk_demo_scenario (library_id, library_version, scenario_no)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 CREATE INDEX idx_demo_scenario_lib ON demo_scenario_coverage(library_id, status);
+
+-- 目录引导导入记录（R0）：随包「三方库测试表.xlsx」→ 业务库的每次导入留痕。
+-- 为什么单独一张表而不复用 settings：导入是**批量事件**，需要可回溯"哪一份表、什么哈希、
+-- 导进了多少行、哪些行有问题"。sha256 是幂等键——同一份表重复导入不重复写库。
+-- 只追加不更新：人改表 → 重新导入 → 新一条记录，历史永远看得见。
+CREATE TABLE IF NOT EXISTS library_catalog_imports (
+  id BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+  source VARCHAR(16) NOT NULL DEFAULT 'bundled',
+  file_path VARCHAR(512) NOT NULL DEFAULT '',
+  file_sha256 CHAR(64) NOT NULL DEFAULT '',
+  total INT NOT NULL DEFAULT 0,
+  added INT NOT NULL DEFAULT 0,
+  updated INT NOT NULL DEFAULT 0,
+  unchanged INT NOT NULL DEFAULT 0,
+  db_only INT NOT NULL DEFAULT 0,
+  problems INT NOT NULL DEFAULT 0,
+  problems_json MEDIUMTEXT NOT NULL,
+  applied TINYINT NOT NULL DEFAULT 0,
+  created_at VARCHAR(32) NOT NULL,
+  KEY idx_catalog_sha (file_sha256),
+  KEY idx_catalog_at (created_at)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+-- R1：脚本资产库（deveco-cli 成熟脚本的契约化形态）。
+-- 为什么必须契约化而不是散落 .sh/.ps1：脚本库是企业级资产，半年后没人敢改；
+-- 契约把「输入/输出/适用条件/失败分类/幂等/超时/审批等级/哈希」固化成可校验数据，
+-- runner 才能统一做参数校验、产物采集、退出码归一与失败归类。
+CREATE TABLE IF NOT EXISTS script_library (
+  id VARCHAR(64) NOT NULL PRIMARY KEY,
+  summary VARCHAR(255) NOT NULL,
+  version VARCHAR(32) NOT NULL DEFAULT '1.0.0',
+  contract_json MEDIUMTEXT NOT NULL,
+  entry_json MEDIUMTEXT NOT NULL,
+  sha256 CHAR(64) NOT NULL DEFAULT '',
+  approval VARCHAR(16) NOT NULL DEFAULT 'operator',
+  enabled TINYINT NOT NULL DEFAULT 1,
+  builtin TINYINT NOT NULL DEFAULT 1,
+  updated_at VARCHAR(32) NOT NULL
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+-- 脚本资产版本史：升级可追溯、可回退（与 case_versions 同思路，快照式）
+CREATE TABLE IF NOT EXISTS script_library_versions (
+  id BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+  script_id VARCHAR(64) NOT NULL,
+  version VARCHAR(32) NOT NULL,
+  sha256 CHAR(64) NOT NULL,
+  contract_json MEDIUMTEXT NOT NULL,
+  note VARCHAR(255) NOT NULL DEFAULT '',
+  created_at VARCHAR(32) NOT NULL,
+  UNIQUE KEY uk_script_ver (script_id, version)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+-- R1：环境画像（一个库在什么工具链/依赖/配置下才测得动）
+-- 一份库可有多份画像（如 debug/release、不同 ABI），uk 含 name 便于区分。
+CREATE TABLE IF NOT EXISTS env_profiles (
+  id BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+  library_id BIGINT UNSIGNED NOT NULL,
+  name VARCHAR(128) NOT NULL,
+  status VARCHAR(24) NOT NULL DEFAULT 'draft',
+  preset_kind VARCHAR(32) NOT NULL DEFAULT '',
+  toolchain_json MEDIUMTEXT NOT NULL,
+  components_json MEDIUMTEXT NOT NULL,
+  source VARCHAR(24) NOT NULL DEFAULT 'ai_draft',
+  confidence TINYINT NOT NULL DEFAULT 50,
+  knowledge_refs MEDIUMTEXT NOT NULL,
+  confirmed_by VARCHAR(64) NOT NULL DEFAULT '',
+  confirmed_at VARCHAR(32) NULL,
+  created_at VARCHAR(32) NOT NULL,
+  updated_at VARCHAR(32) NOT NULL,
+  UNIQUE KEY uk_env_profile (library_id, name)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+CREATE INDEX idx_env_profiles_lib ON env_profiles(library_id, status);
+
+-- 环境画像的步骤序列（模板即 env_profile_steps 的数据源，presets/*/steps.yaml）
+CREATE TABLE IF NOT EXISTS env_profile_steps (
+  id BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+  profile_id BIGINT UNSIGNED NOT NULL,
+  seq INT NOT NULL,
+  script_id VARCHAR(64) NOT NULL,
+  params_json MEDIUMTEXT NOT NULL,
+  required TINYINT NOT NULL DEFAULT 1,
+  skip_if VARCHAR(255) NOT NULL DEFAULT '',
+  created_at VARCHAR(32) NOT NULL,
+  UNIQUE KEY uk_env_step (profile_id, seq)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+-- 环境准备运行记录：一次「从克隆到装包」的完整执行
+-- fingerprint 命中则走缓存（cached_from 指向被复用的那次运行），不重跑 —— 这是幂等与提速的关键
+CREATE TABLE IF NOT EXISTS env_runs (
+  id BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+  run_no VARCHAR(64) NOT NULL,
+  profile_id BIGINT UNSIGNED NOT NULL,
+  library_id BIGINT UNSIGNED NOT NULL,
+  trigger VARCHAR(24) NOT NULL DEFAULT 'manual',
+  status VARCHAR(24) NOT NULL DEFAULT 'pending',
+  fingerprint VARCHAR(64) NOT NULL DEFAULT '',
+  cached_from BIGINT UNSIGNED NULL,
+  duration_ms INT NOT NULL DEFAULT 0,
+  error VARCHAR(500) NOT NULL DEFAULT '',
+  created_at VARCHAR(32) NOT NULL,
+  updated_at VARCHAR(32) NOT NULL,
+  UNIQUE KEY uk_env_runs_no (run_no)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+CREATE INDEX idx_env_runs_lib ON env_runs(library_id, status);
+CREATE INDEX idx_env_runs_fp ON env_runs(fingerprint);
+
+-- 环境运行的步骤明细：每步独立可重试、有日志、有产物、有失败分类
+CREATE TABLE IF NOT EXISTS env_run_steps (
+  id BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+  run_id BIGINT UNSIGNED NOT NULL,
+  seq INT NOT NULL,
+  script_id VARCHAR(64) NOT NULL,
+  status VARCHAR(24) NOT NULL DEFAULT 'pending',
+  exit_code INT NULL,
+  failure_kind VARCHAR(32) NOT NULL DEFAULT '',
+  artifacts_json MEDIUMTEXT NOT NULL,
+  log_path VARCHAR(512) NOT NULL DEFAULT '',
+  duration_ms INT NOT NULL DEFAULT 0,
+  started_at VARCHAR(32) NULL,
+  finished_at VARCHAR(32) NULL,
+  UNIQUE KEY uk_env_run_step (run_id, seq)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+CREATE INDEX idx_env_run_steps_run ON env_run_steps(run_id, seq);
 `;
 /** 建表语句拆分（MySQL 不允许一条 query 跑多语句）。 */
 export function schemaStatements() {
