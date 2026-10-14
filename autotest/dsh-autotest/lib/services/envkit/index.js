@@ -11,7 +11,7 @@
 // api 层只应 import 本文件，不要直接钻到某个子模块——否则换实现要改一堆调用点。
 export { FAILURE_KINDS, EXIT_CODES, TOOLCHAIN_BINS, validateContract, resolveParams, contractFingerprint, } from './contract.js';
 export { classifyFailure, normalizeExitCode, FAILURE_LABEL, isFailureKind } from './failure.js';
-export { runScriptStep, buildArgv, resolveEntry, envScriptsRoot } from './runner.js';
+export { runScriptStep, buildArgv, resolveEntry, envScriptsRoot, parseScalarOutputs } from './runner.js';
 export { BUILTIN_SCRIPTS, BUILTIN_SCRIPT_IDS, builtinScript } from './builtin.js';
 export { listScripts, getScript, seedBuiltinScripts, validateAllScripts, detectContractDrift, } from './scripts.js';
-export { runEnvProfile, loadProfileSteps, fingerprintOf, } from './envProfile.js';
+export { runEnvProfile, loadProfileSteps, fingerprintOf, substituteVars, findUnresolvedVars, } from './envProfile.js';

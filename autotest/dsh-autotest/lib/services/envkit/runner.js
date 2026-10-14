@@ -48,24 +48,57 @@ export function resolveEntry(contract) {
     const file = `${base}.sh`;
     return { file, exists: fs.existsSync(file), shell: ['bash'] };
 }
-/** 把参数按契约顺序转成命令行 argv（数组传递，不经 shell 拼接）。 */
-export function buildArgv(contract, params) {
+/**
+ * 把参数按契约顺序转成命令行 argv（数组传递，不经 shell 拼接）。
+ *
+ * ⚠️ 跨平台参数前缀是**实测踩过的坑**：Windows PowerShell 5.1 只认 `-paramName`
+ * （单横杠、大小写不敏感），**不认** `--param-name`；而 bash 只认 `--param-name`。
+ * 统一发 `--kebab-case` 会让所有 .ps1 脚本参数绑定失败、以退出码 1 结束，
+ * 进而被误归类成"业务失败但未归类"——根因在错误信息里看不出来。
+ * 所以这里按入口类型分流：ps1 用 `-name`，sh 用 `--kebab-name`。
+ */
+export function buildArgv(contract, params, opts = {}) {
     const argv = [];
+    const ps = opts.powershell === true;
+    const flag = (name) => (ps ? `-${name}` : `--${kebab(name)}`);
     for (const p of contract.inputs) {
         const v = params[p.name];
         if (v === undefined || v === null || v === '')
             continue;
         if (p.type === 'boolean') {
             if (v === true)
-                argv.push(`--${kebab(p.name)}`);
+                argv.push(flag(p.name));
             continue;
         }
-        argv.push(`--${kebab(p.name)}`, String(v));
+        argv.push(flag(p.name), String(v));
     }
     return argv;
 }
 function kebab(s) {
     return s.replace(/([a-z0-9])([A-Z])/g, '$1-$2').toLowerCase();
+}
+/**
+ * 从脚本输出里解析 `KEY=value` 行（步骤间串联的桥梁）。
+ *
+ * 约定（各 env 脚本统一遵守）：关键产物用 `UPPER_SNAKE=值` 的形式打到 stdout，
+ * 例如 build_hap 打 `HAP_PATH=/x/y.hap`、build_manifest 打 `BUNDLE_NAME=com.x`。
+ * 这里把它们归一成小驼峰（HAP_PATH → hapPath），与契约入参名对齐，
+ * 后续步骤的参数就能写 `{{hapPath}}` 引用。
+ *
+ * 只认"整行都是 KEY=value"的行，避免把日志里的 `error=xxx` 也当输出。
+ */
+export function parseScalarOutputs(tail) {
+    const out = {};
+    for (const line of tail) {
+        const m = /^([A-Z][A-Z0-9_]{2,})=(.+)$/.exec(line.trim());
+        if (!m)
+            continue;
+        const key = m[1].toLowerCase().replace(/_([a-z0-9])/g, (_, c) => c.toUpperCase());
+        const val = m[2].trim();
+        if (val)
+            out[key] = val;
+    }
+    return out;
 }
 function sha256File(file) {
     try {
@@ -81,19 +114,19 @@ export async function runScriptStep(input) {
     const startedAt = Date.now();
     const timeoutMs = input.timeoutMs ?? contract.timeout_sec * 1000;
     const { file, exists, shell } = resolveEntry(contract);
-    const argv = [...shell, file, ...buildArgv(contract, params)];
+    const argv = [...shell, file, ...buildArgv(contract, params, { powershell: process.platform === 'win32' })];
     if (!exists) {
         return {
             ok: false, exitCode: EXIT_CODES.ENV_MISSING, failureKind: 'toolchain_missing',
             failureWhat: `脚本入口不存在：${file}`, inTaxonomy: contract.failure_taxonomy.includes('toolchain_missing'),
-            durationMs: 0, artifacts: [], logPath: '', tail: [], command: argv.join(' '),
+            durationMs: 0, outputs: {}, artifacts: [], logPath: '', tail: [], command: argv.join(' '),
         };
     }
     if (signal?.aborted) {
         return {
             ok: false, exitCode: EXIT_CODES.CANCELLED, failureKind: 'cancelled', failureWhat: '开始前已取消',
             inTaxonomy: contract.failure_taxonomy.includes('cancelled'), durationMs: 0,
-            artifacts: [], logPath: '', tail: [], command: argv.join(' '),
+            outputs: {}, artifacts: [], logPath: '', tail: [], command: argv.join(' '),
         };
     }
     let logPath = '';
@@ -162,10 +195,21 @@ export async function runScriptStep(input) {
         exitCode, output: tail.join('\n'), timedOut: result.timedOut, cancelled,
         taxonomy: contract.failure_taxonomy,
     });
-    // 产物采集：契约声明了几个 output，就真的去 stat 几个
+    // 产物采集：契约声明了几个 output，就真的去 stat 几个。
+    //
+    // 产物的路径可以从两处来（这是端到端自检暴露出来的缺口）：
+    //   ① 入参里给了路径（如 hdc_install 的 hapPath 由上游步骤填充）；
+    //   ② 脚本自己打印的 KEY=value（如 build_hap 打 HAP_PATH=...、ohpm_install 打 OH_MODULES_PATH=...）。
+    // 只查入参会漏掉第 ② 类——那些脚本自己算出的产物路径，于是"产物是否存在"永远校验不到，
+    // artifact_not_found 这条最重要的判据形同虚设。所以两侧合并后再 stat。
+    const scalarOutputs = parseScalarOutputs(tail);
     const artifacts = [];
     for (const o of contract.outputs) {
-        const raw = params[o.name];
+        const fromParam = params[o.name];
+        const fromOutput = scalarOutputs[o.name];
+        const raw = fromParam !== undefined && fromParam !== null && fromParam !== ''
+            ? fromParam
+            : fromOutput;
         const p = raw ? path.resolve(cwd, String(raw)) : '';
         const exists = !!p && fs.existsSync(p);
         artifacts.push({
@@ -174,18 +218,24 @@ export async function runScriptStep(input) {
             sha256: exists && fs.statSync(p).isFile() ? sha256File(p) : '',
         });
     }
-    // 产物缺失要能盖过"退出码 0"：构建说成功但没有 hap，这是失败不是成功
-    const missingArtifacts = artifacts.filter((a) => a.name.endsWith('_path') && !a.exists);
+    // 产物缺失要能盖过"退出码 0"：构建说成功但没有 hap，这是失败不是成功。
+    // ⚠️ 判据必须是契约声明的**类型**（type=path），不是名字后缀 _path：
+    // 契约用的是小驼峰（hapPath/ohModulesPath），写下划线后缀永远匹配不上，
+    // 整条校验会静默失效（实测踩过：声明了产物却从不校验）。
+    const missingArtifacts = artifacts.filter((a, i) => contract.outputs[i]?.type === 'path' && !a.exists);
     const ok = exitCode === EXIT_CODES.OK && missingArtifacts.length === 0;
     return {
         ok, exitCode,
-        failureKind: ok ? '' : (missingArtifacts.length > 0 && exitCode === EXIT_CODES.OK ? 'artifact_not_found' : cls.kind),
-        failureWhat: ok ? '' : (missingArtifacts.length > 0 && exitCode === EXIT_CODES.OK
+        failureKind: ok ? '' : (missingArtifacts.length > 0 && (exitCode === EXIT_CODES.OK || cls.kind === 'unknown')
+            ? 'artifact_not_found'
+            : cls.kind),
+        failureWhat: ok ? '' : (missingArtifacts.length > 0 && (exitCode === EXIT_CODES.OK || cls.kind === 'unknown')
             ? `声明产物未生成：${missingArtifacts.map((a) => a.name).join(', ')}`
             : cls.what),
         matched: cls.matched,
         inTaxonomy: cls.inTaxonomy,
         durationMs: Date.now() - startedAt,
+        outputs: scalarOutputs,
         artifacts, logPath, tail: tail.slice(-20), command: argv.join(' '),
     };
 }

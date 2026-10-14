@@ -65,7 +65,7 @@
     "verify:hypium-layout": "node scripts/verify-hypium-layout.mjs",
     "verify:oracle-runtime": "node scripts/verify-oracle-runtime.mjs",
     "verify:contract": "npm run build && node scripts/verify-step-contract.mjs",
-    "verify:all": "node ../agent-tools/scripts/build.mjs && npm run build && npm run verify:architecture && npm run verify:agent-tools && npm run verify:rule-injection && npm run verify:ws && npm run verify:data && npm run verify:crypto && npm run verify:data-dir && npm run verify:api && npm run verify:auth && npm run verify:metrics && npm run verify:explorer && npm run verify:repo-paths && npm run verify:sheet && npm run verify:library-catalog && npm run verify:envkit && npm run verify:survey && npm run verify:l2 && npm run verify:api-extract && npm run verify:coverage && npm run verify:demo-scenarios && npm run verify:case-plan && npm run verify:testability && npm run verify:oracle && npm run verify:automation && npm run verify:binding && npm run verify:task-lane && npm run verify:approvals && npm run verify:task-events && npm run verify:llm-fallback && npm run verify:knowledge && npm run verify:skill-lock && npm run verify:case-link && npm run verify:hypium-layout && npm run verify:oracle-runtime && node scripts/verify-step-contract.mjs",
+    "verify:all": "node ../agent-tools/scripts/build.mjs && npm run build && npm run verify:architecture && npm run verify:agent-tools && npm run verify:rule-injection && npm run verify:ws && npm run verify:data && npm run verify:crypto && npm run verify:data-dir && npm run verify:api && npm run verify:auth && npm run verify:metrics && npm run verify:explorer && npm run verify:repo-paths && npm run verify:sheet && npm run verify:library-catalog && npm run verify:envkit && npm run verify:survey && npm run verify:l2 && npm run verify:env-e2e && npm run verify:api-extract && npm run verify:coverage && npm run verify:demo-scenarios && npm run verify:case-plan && npm run verify:testability && npm run verify:oracle && npm run verify:automation && npm run verify:binding && npm run verify:task-lane && npm run verify:approvals && npm run verify:task-events && npm run verify:llm-fallback && npm run verify:knowledge && npm run verify:skill-lock && npm run verify:case-link && npm run verify:hypium-layout && npm run verify:oracle-runtime && node scripts/verify-step-contract.mjs",
     "db:init": "tsx src/db/init.ts",
     "db:seed": "tsx src/db/seed.ts",
     "start": "node lib/standalone.js",
@@ -73,7 +73,8 @@
     "verify:library-catalog": "node scripts/verify-library-catalog.mjs",
     "verify:envkit": "node scripts/verify-envkit.mjs",
     "verify:survey": "node scripts/verify-survey.mjs",
-    "verify:l2": "node scripts/verify-l2.mjs"
+    "verify:l2": "node scripts/verify-l2.mjs",
+    "verify:env-e2e": "node scripts/verify-env-e2e.mjs"
   },
   "dependencies": {
     "@types/better-sqlite3": "^7.6.13",

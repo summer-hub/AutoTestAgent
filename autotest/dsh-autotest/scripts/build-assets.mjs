@@ -13,6 +13,7 @@
 //
 // 幂等：每次构建整体覆盖复制（资产是只读的，不存在"半新半旧"问题）。
 import { cp, mkdir, rm } from 'node:fs/promises';
+import fs from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -24,4 +25,24 @@ await mkdir(out, { recursive: true });
 // 先清后拷：避免资产被删除后旧文件残留在 lib/assets 里（比如表被换名/下线）。
 await rm(out, { recursive: true, force: true });
 await cp(src, out, { recursive: true });
-console.log(`[assets] ${src} -> ${out}`);
+
+// ---- .ps1 强制补 UTF-8 BOM ----
+// Windows 坑（rules/windows-nodejs-pitfalls）：PowerShell 5.1 对**无 BOM 的 UTF-8**
+// 按系统代码页（中文机器上是 GBK）解析，脚本里的中文注释会被解析成乱码字节，
+// 进而报 ParserError（实测报 "Try 语句缺少 Catch/Finally" / "MissingArrayIndexExpression"，
+// 错误信息完全指不到真正原因）。带 BOM 才按 UTF-8 正确解析。
+// 在构建时统一补，而不是要求每个写脚本的人记得存成带 BOM —— 那样的约定一定会被违反。
+let bomFixed = 0;
+const walk = (dir) => {
+  for (const e of fs.readdirSync(dir, { withFileTypes: true })) {
+    const p = join(dir, e.name);
+    if (e.isDirectory()) { walk(p); continue; }
+    if (!e.name.endsWith('.ps1')) continue;
+    const buf = fs.readFileSync(p);
+    if (buf[0] === 0xEF && buf[1] === 0xBB && buf[2] === 0xBF) continue;
+    fs.writeFileSync(p, Buffer.concat([Buffer.from([0xEF, 0xBB, 0xBF]), buf]));
+    bomFixed++;
+  }
+};
+walk(out);
+console.log(`[assets] ${src} -> ${out}${bomFixed > 0 ? `（补 UTF-8 BOM ${bomFixed} 个 .ps1）` : ''}`);

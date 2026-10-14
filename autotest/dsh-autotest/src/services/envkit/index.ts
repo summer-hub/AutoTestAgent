@@ -17,7 +17,7 @@ export {
 
 export { classifyFailure, normalizeExitCode, FAILURE_LABEL, isFailureKind } from './failure.js';
 
-export { runScriptStep, buildArgv, resolveEntry, envScriptsRoot } from './runner.js';
+export { runScriptStep, buildArgv, resolveEntry, envScriptsRoot, parseScalarOutputs } from './runner.js';
 export type { RunStepInput, RunStepResult, ArtifactInfo } from './runner.js';
 
 export { BUILTIN_SCRIPTS, BUILTIN_SCRIPT_IDS, builtinScript } from './builtin.js';
@@ -28,6 +28,6 @@ export {
 export type { ScriptRow, ScriptValidationReport } from './scripts.js';
 
 export {
-  runEnvProfile, loadProfileSteps, fingerprintOf,
+  runEnvProfile, loadProfileSteps, fingerprintOf, substituteVars, findUnresolvedVars,
 } from './envProfile.js';
 export type { EnvProfile, ProfileStep, StepOutcome, RunProfileResult, RunProfileOptions } from './envProfile.js';

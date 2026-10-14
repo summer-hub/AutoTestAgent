@@ -76,5 +76,17 @@ export interface RunProfileOptions {
  * 永不抛异常（审批待批除外，那是 409 需要调用方转达给人的）：失败也是结果。
  */
 export declare function runEnvProfile(opts: RunProfileOptions): Promise<RunProfileResult>;
+/**
+ * 占位符替换：把参数里的 {{varName}} 换成 vars 里的真实值。
+ *
+ * 这是「克隆→依赖→构建→装包」能串成一条链的机制：各库 clone 到哪只有运行期
+ * 才知道（{{repoDir}}），build_hap 产出的 hap 路径也只有跑完才知道（{{hapPath}}）。
+ * 二者都不能固化进画像——固化了就意味着"这份方案只对这一台机器、这一次构建有效"。
+ *
+ * 只替换**字符串值**里的占位符；数字/布尔/嵌套对象递归处理。
+ */
+export declare function substituteVars(params: Record<string, unknown>, vars: Record<string, string>): Record<string, unknown>;
+/** 找出替换后仍残留的占位符名（去重）。空数组 = 全部解析成功。 */
+export declare function findUnresolvedVars(params: Record<string, unknown>): string[];
 /** 事务导入（供自检复用，避免每个用例各写一遍 BEGIN/COMMIT）。 */
 export { transaction };

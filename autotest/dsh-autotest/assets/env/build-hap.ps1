@@ -1,4 +1,4 @@
-# 构建 HAP 包（envkit 脚本资产：build_hap）
+﻿# 构建 HAP 包（envkit 脚本资产：build_hap）
 #
 # 契约见 src/services/envkit/builtin.ts::build_hap。
 # HAP 是**真机安装的单位**——环境准备的终点就是"有一个能装的 .hap"。
@@ -19,9 +19,15 @@ param(
 )
 
 $ErrorActionPreference = "Stop"
+# 探测类失败用「写错误流 + exit」而不是 Write-Error：
+# $ErrorActionPreference="Stop" 下 Write-Error 会抛异常中断脚本，
+# 后面的 exit 2 根本执行不到——工具缺失会被误判成退出码 1（业务失败），
+# 归类成 unknown 而不是 toolchain_missing。这是实测踩过的坑。
+$script:Fail = { param([string]$msg) [Console]::Error.WriteLine($msg); exit 1 }
+$script:Missing = { param([string]$msg) [Console]::Error.WriteLine($msg); exit 2 }
 
 if (-not (Test-Path -LiteralPath $projectDir)) {
-  Write-Error "[build_hap] 工程目录不存在：$projectDir"
+  & $script:Fail "[build_hap] 工程目录不存在：$projectDir"
   exit 2
 }
 
@@ -32,14 +38,14 @@ if (Test-Path -LiteralPath $hvigorw) { $useCmd = $hvigorw }
 elseif (Get-Command hvigorw -ErrorAction SilentlyContinue) { $useCmd = "hvigorw" }
 elseif (Get-Command hvigor -ErrorAction SilentlyContinue) { $useCmd = "hvigor" }
 else {
-  Write-Error "[build_hap] 未检测到 hvigorw / hvigor。请在 DevEco Studio 环境下执行。"
+  & $script:Fail "[build_hap] 未检测到 hvigorw / hvigor。请在 DevEco Studio 环境下执行。"
   exit 2
 }
 
 # 模块目录校验：HAP 模块通常是 entry
 $moduleDir = Join-Path $projectDir $module
 if (-not (Test-Path -LiteralPath $moduleDir)) {
-  Write-Error "[build_hap] 模块目录不存在：$moduleDir"
+  & $script:Fail "[build_hap] 模块目录不存在：$moduleDir"
   exit 1
 }
 
@@ -64,7 +70,7 @@ try {
   & $useCmd "assembleHap" "--mode" "module" "-p" "module=$module@$product" "--no-daemon" 2>&1 | ForEach-Object { Write-Output $_ }
   $code = $LASTEXITCODE
   if ($code -ne 0) {
-    Write-Error "[build_hap] hvigor assembleHap 失败（退出码 $code）"
+    & $script:Fail "[build_hap] hvigor assembleHap 失败（退出码 $code）"
     exit 1
   }
 } finally {
@@ -72,12 +78,12 @@ try {
 }
 
 if (-not (Test-Path -LiteralPath $hapPath)) {
-  Write-Error "[build_hap] 构建命令成功但未找到产物：$hapPath"
+  & $script:Fail "[build_hap] 构建命令成功但未找到产物：$hapPath"
   exit 1
 }
 $size = (Get-Item -LiteralPath $hapPath).Length
 if ($size -eq 0) {
-  Write-Error "[build_hap] 产物为空文件：$hapPath"
+  & $script:Fail "[build_hap] 产物为空文件：$hapPath"
   exit 1
 }
 

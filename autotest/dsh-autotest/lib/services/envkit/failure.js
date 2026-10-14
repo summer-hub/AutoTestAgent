@@ -24,6 +24,11 @@ const SIGNALS = [
     { re: /(version (?:conflict|mismatch)|incompatible|不兼容|api level|sdk.*version|版本不匹配|expected version)/i, kind: 'sdk_version_conflict', what: '工具链/SDK 版本不匹配' },
     // 缺依赖（二进制/子模块/配置文件）
     { re: /(submodule|子模块|missing (?:dependency|dependencies|module|binary)|找不到.*(?:\.so|\.a|依赖)|no such module|cannot find module|未找到依赖)/i, kind: 'missing_dep', what: '缺二进制依赖/子模块/模块' },
+    // 缺工程文件/清单（ohpm 的 "Missing file oh-package.json5"、git 的 "no such file"）。
+    // 放在编译错误之前：缺文件是"环境/工程不完整"，不是代码写错，
+    // 归成 compile_error 会让人去查一个不存在的编译问题。
+    // 这条规则是端到端自检暴露出来的真实缺口——没它，这类失败只能落到 unknown。
+    { re: /(missing file|file not found|no such file|ENOENT|找不到文件|文件不存在|缺少.*文件)/i, kind: 'missing_dep', what: '缺工程文件/清单（如 oh-package.json5 缺失）' },
     // 编译错误
     { re: /(compile ?error|compilation failed|ERROR:.*\.(?:ets|ts|js)|构建失败|build failed|hvigor.*error)/i, kind: 'compile_error', what: '编译失败' },
     // 产物缺失（构建"成功"但没有产物——最容易骗过人的一类）

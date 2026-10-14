@@ -1,4 +1,4 @@
-# 读取并校验工程清单（envkit 脚本资产：build_manifest）
+﻿# 读取并校验工程清单（envkit 脚本资产：build_manifest）
 #
 # 契约见 src/services/envkit/builtin.ts::build_manifest。
 # 为什么单独一步：bundleName / module 名 / target API level 是后面所有步骤
@@ -17,9 +17,15 @@ param(
 )
 
 $ErrorActionPreference = "Stop"
+# 探测类失败用「写错误流 + exit」而不是 Write-Error：
+# $ErrorActionPreference="Stop" 下 Write-Error 会抛异常中断脚本，
+# 后面的 exit 2 根本执行不到——工具缺失会被误判成退出码 1（业务失败），
+# 归类成 unknown 而不是 toolchain_missing。这是实测踩过的坑。
+$script:Fail = { param([string]$msg) [Console]::Error.WriteLine($msg); exit 1 }
+$script:Missing = { param([string]$msg) [Console]::Error.WriteLine($msg); exit 2 }
 
 if (-not (Test-Path -LiteralPath $projectDir)) {
-  Write-Error "[build_manifest] 工程目录不存在：$projectDir"
+  & $script:Fail "[build_manifest] 工程目录不存在：$projectDir"
   exit 2
 }
 
@@ -27,7 +33,7 @@ $buildProfile = Join-Path $projectDir "build-profile.json5"
 $ohPackage = Join-Path $projectDir "oh-package.json5"
 
 if (-not (Test-Path -LiteralPath $buildProfile) -and -not (Test-Path -LiteralPath $ohPackage)) {
-  Write-Error "[build_manifest] 未找到 build-profile.json5 或 oh-package.json5：$projectDir"
+  & $script:Fail "[build_manifest] 未找到 build-profile.json5 或 oh-package.json5：$projectDir"
   exit 1
 }
 
@@ -58,7 +64,7 @@ function Read-JsonLoose([string]$file) {
   try {
     return $raw | Strip-Json5 | ConvertFrom-Json
   } catch {
-    Write-Error "[build_manifest] 解析失败：$file — $($_.Exception.Message)"
+    & $script:Fail "[build_manifest] 解析失败：$file — $($_.Exception.Message)"
     return $null
   }
 }
@@ -94,7 +100,7 @@ $manifestPath = Join-Path $manifestDir "manifest.json"
 $manifest | ConvertTo-Json -Depth 6 | Set-Content -LiteralPath $manifestPath -Encoding UTF8
 
 if ($manifest.errors.Count -gt 0) {
-  Write-Error ("[build_manifest] " + ($manifest.errors -join "; "))
+  & $script:Fail ("[build_manifest] " + ($manifest.errors -join "; "))
   exit 1
 }
 

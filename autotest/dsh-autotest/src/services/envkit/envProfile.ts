@@ -169,14 +169,24 @@ export async function runEnvProfile(opts: RunProfileOptions): Promise<RunProfile
   const logRoot = opts.logRoot ?? pathJoin('env-runs', String(runId));
   const outcomes: StepOutcome[] = [];
   let failed = false;
+  // 变量表：{{repoDir}} 是运行期才知道的值（各库 clone 到哪），
+  // 加上每步解析出的标量输出（{{hapPath}}/{{bundleName}}…），供后续步骤引用。
+  // 这就是"克隆→依赖→构建→装包"能串成一条链的机制：build_hap 打出 HAP_PATH，
+  // hdc_install 的 hapPath 参数写 {{hapPath}} 即可引用，不必把绝对路径固化进画像。
+  const vars: Record<string, string> = { repoDir: cwd };
 
   for (const step of steps) {
     if (opts.signal?.aborted) {
       outcomes.push({ seq: step.seq, scriptId: step.scriptId, status: 'skipped', exitCode: 4, failureKind: 'cancelled', failureWhat: '批次已取消，本步未执行', durationMs: 0, artifacts: [], logPath: '' });
+      await recordStep(runId, step.seq, step.scriptId, outcomes[outcomes.length - 1]);
       continue;
     }
     if (failed && step.required) {
+      // 前置必填步骤已失败 → 本步跳过。**也必须落库**：
+      // 否则"每步都有明细"不成立，前端看到的步骤序列会缺行，
+      // 人会以为这批步骤配置错了，实际是被前置失败挡掉的。
       outcomes.push({ seq: step.seq, scriptId: step.scriptId, status: 'skipped', exitCode: 0, failureKind: '', failureWhat: '前置必填步骤已失败，跳过', durationMs: 0, artifacts: [], logPath: '' });
+      await recordStep(runId, step.seq, step.scriptId, outcomes[outcomes.length - 1]);
       continue;
     }
 
@@ -203,9 +213,14 @@ export async function runEnvProfile(opts: RunProfileOptions): Promise<RunProfile
       }
     }
 
-    const resolved = resolveParams(script.contract, step.params);
-    if (!resolved.ok) {
-      outcomes.push({ seq: step.seq, scriptId: step.scriptId, status: 'failed', exitCode: 1, failureKind: 'unknown', failureWhat: `参数不合法：${resolved.problems.join('；')}`, durationMs: 0, artifacts: [], logPath: '' });
+    // 占位符替换：把 {{repoDir}} / {{hapPath}} / {{bundleName}} 等换成 vars 里的真实值。
+    // 未解析的占位符会留下原文并在参数校验时报出来——绝不能静默传一串 {{xxx}} 给脚本。
+    const substituted = substituteVars(step.params, vars);
+    const unresolved = findUnresolvedVars(substituted);
+    const resolved = resolveParams(script.contract, substituted);
+    if (!resolved.ok || unresolved.length > 0) {
+      const why = [...resolved.problems, ...(unresolved.length ? [`未解析的占位符：${unresolved.join(', ')}`] : [])].join('；');
+      outcomes.push({ seq: step.seq, scriptId: step.scriptId, status: 'failed', exitCode: 1, failureKind: 'unknown', failureWhat: `参数不合法：${why}`, durationMs: 0, artifacts: [], logPath: '' });
       if (step.required) failed = true;
       await recordStep(runId, step.seq, step.scriptId, outcomes[outcomes.length - 1]);
       continue;
@@ -215,6 +230,8 @@ export async function runEnvProfile(opts: RunProfileOptions): Promise<RunProfile
       contract: script.contract, params: resolved.params, cwd,
       signal: opts.signal, logDir: logRoot,
     });
+    // 本步的标量输出回填变量表，供后续步骤引用（如 build_hap → HAP_PATH → hdc_install 的 hapPath）
+    Object.assign(vars, r.outputs);
     const outcome: StepOutcome = {
       seq: step.seq, scriptId: step.scriptId,
       status: r.ok ? 'passed' : 'failed',
@@ -254,6 +271,55 @@ async function libraryRepoDir(libraryId: number): Promise<string> {
 /** 避免在文件顶部引 path 只为拼一个相对目录。 */
 function pathJoin(...parts: string[]): string {
   return parts.join('/').replace(/\\/g, '/');
+}
+
+/**
+ * 占位符替换：把参数里的 {{varName}} 换成 vars 里的真实值。
+ *
+ * 这是「克隆→依赖→构建→装包」能串成一条链的机制：各库 clone 到哪只有运行期
+ * 才知道（{{repoDir}}），build_hap 产出的 hap 路径也只有跑完才知道（{{hapPath}}）。
+ * 二者都不能固化进画像——固化了就意味着"这份方案只对这一台机器、这一次构建有效"。
+ *
+ * 只替换**字符串值**里的占位符；数字/布尔/嵌套对象递归处理。
+ */
+export function substituteVars(params: Record<string, unknown>, vars: Record<string, string>): Record<string, unknown> {
+  const out: Record<string, unknown> = {};
+  for (const [k, v] of Object.entries(params ?? {})) {
+    out[k] = substValue(v, vars);
+  }
+  return out;
+}
+
+function substValue(v: unknown, vars: Record<string, string>): unknown {
+  if (typeof v === 'string') {
+    return v.replace(/\{\{\s*([a-zA-Z][a-zA-Z0-9_]*)\s*\}\}/g, (whole, name: string) => {
+      const val = vars[name];
+      // 空串视为"未提供"：替换成空会让脚本拿到 projectDir=（空），
+      // 然后在参数校验处以"缺少必填参数"报错——错误信息指不到真正原因
+      // （其实是上游没产出/仓库目录没解析出来）。留给 findUnresolvedVars 报更准。
+      return val === undefined || val === '' ? whole : val;
+    });
+  }
+  if (Array.isArray(v)) return v.map((x) => substValue(x, vars));
+  if (v && typeof v === 'object') {
+    const o: Record<string, unknown> = {};
+    for (const [k, x] of Object.entries(v as Record<string, unknown>)) o[k] = substValue(x, vars);
+    return o;
+  }
+  return v;
+}
+
+/** 找出替换后仍残留的占位符名（去重）。空数组 = 全部解析成功。 */
+export function findUnresolvedVars(params: Record<string, unknown>): string[] {
+  const found = new Set<string>();
+  const walk = (v: unknown): void => {
+    if (typeof v === 'string') {
+      for (const m of v.matchAll(/\{\{\s*([a-zA-Z][a-zA-Z0-9_]*)\s*\}\}/g)) found.add(m[1]);
+    } else if (Array.isArray(v)) v.forEach(walk);
+    else if (v && typeof v === 'object') Object.values(v as Record<string, unknown>).forEach(walk);
+  };
+  walk(params);
+  return [...found];
 }
 
 /** 事务导入（供自检复用，避免每个用例各写一遍 BEGIN/COMMIT）。 */

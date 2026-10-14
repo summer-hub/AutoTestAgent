@@ -1,4 +1,4 @@
-# 构建 HAR 包（envkit 脚本资产：build_har）
+﻿# 构建 HAR 包（envkit 脚本资产：build_har）
 #
 # 契约见 src/services/envkit/builtin.ts::build_har。
 # HAR 是三方库的交付形态——宿主应用集成的是这个包，所以它必须真的被构建出来。
@@ -19,9 +19,15 @@ param(
 )
 
 $ErrorActionPreference = "Stop"
+# 探测类失败用「写错误流 + exit」而不是 Write-Error：
+# $ErrorActionPreference="Stop" 下 Write-Error 会抛异常中断脚本，
+# 后面的 exit 2 根本执行不到——工具缺失会被误判成退出码 1（业务失败），
+# 归类成 unknown 而不是 toolchain_missing。这是实测踩过的坑。
+$script:Fail = { param([string]$msg) [Console]::Error.WriteLine($msg); exit 1 }
+$script:Missing = { param([string]$msg) [Console]::Error.WriteLine($msg); exit 2 }
 
 if (-not (Test-Path -LiteralPath $projectDir)) {
-  Write-Error "[build_har] 工程目录不存在：$projectDir"
+  & $script:Fail "[build_har] 工程目录不存在：$projectDir"
   exit 2
 }
 
@@ -32,7 +38,7 @@ if (Test-Path -LiteralPath $hvigorw) { $useCmd = $hvigorw }
 elseif (Get-Command hvigorw -ErrorAction SilentlyContinue) { $useCmd = "hvigorw" }
 elseif (Get-Command hvigor -ErrorAction SilentlyContinue) { $useCmd = "hvigor" }
 else {
-  Write-Error "[build_har] 未检测到 hvigorw / hvigor。请在 DevEco Studio 环境下执行，或将 hvigorw 放到工程根目录。"
+  & $script:Fail "[build_har] 未检测到 hvigorw / hvigor。请在 DevEco Studio 环境下执行，或将 hvigorw 放到工程根目录。"
   exit 2
 }
 
@@ -43,7 +49,7 @@ if (-not (Test-Path -LiteralPath $moduleDir)) {
   $libDir = Join-Path $projectDir "library"
   if (Test-Path -LiteralPath $libDir) { $moduleDir = $libDir }
   else {
-    Write-Error "[build_har] 模块目录不存在：$moduleDir（也未找到 library/）"
+    & $script:Fail "[build_har] 模块目录不存在：$moduleDir（也未找到 library/）"
     exit 1
   }
 }
@@ -70,7 +76,7 @@ try {
   & $useCmd "assembleHar" "--mode" "module" "-p" "module=$module@$product" "--no-daemon" 2>&1 | ForEach-Object { Write-Output $_ }
   $code = $LASTEXITCODE
   if ($code -ne 0) {
-    Write-Error "[build_har] hvigor assembleHar 失败（退出码 $code）"
+    & $script:Fail "[build_har] hvigor assembleHar 失败（退出码 $code）"
     exit 1
   }
 } finally {
@@ -79,12 +85,12 @@ try {
 
 # 产物判据：文件存在且非空。命令成功但没产物 = artifact_not_found
 if (-not (Test-Path -LiteralPath $harPath)) {
-  Write-Error "[build_har] 构建命令成功但未找到产物：$harPath"
+  & $script:Fail "[build_har] 构建命令成功但未找到产物：$harPath"
   exit 1
 }
 $size = (Get-Item -LiteralPath $harPath).Length
 if ($size -eq 0) {
-  Write-Error "[build_har] 产物为空文件：$harPath"
+  & $script:Fail "[build_har] 产物为空文件：$harPath"
   exit 1
 }
 

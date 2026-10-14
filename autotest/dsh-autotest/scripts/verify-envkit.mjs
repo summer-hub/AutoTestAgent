@@ -186,7 +186,10 @@ console.log('\n— 契约指纹（稳定性与漂移检测）—');
 // ---------- 6. 内置脚本资产 ----------
 console.log('— 内置脚本资产（R1 首批 5 个，全部契约合法）—');
 {
-  check(K.BUILTIN_SCRIPT_IDS.length === 5, '内置 5 个脚本', K.BUILTIN_SCRIPT_IDS.join(','));
+  // R1 首批 5 个（ohpm_install/build_manifest/build_har/build_hap/hdc_install）
+  // + R4 新增 9 个（submodule_sync/binary_dep_fetch/smoke_check/gen_ca/
+  //   mock_server_up/mock_server_stop/xts_scaffold/xts_run/xts_report）= 14 个
+  check(K.BUILTIN_SCRIPT_IDS.length === 14, '内置 14 个脚本（R1 五个 + R4 九个）', K.BUILTIN_SCRIPT_IDS.join(','));
   for (const s of K.BUILTIN_SCRIPTS) {
     const p = K.validateContract(s);
     check(p.length === 0, `契约合法：${s.id}`, p.map((x) => x.reason).join('；'));
@@ -212,11 +215,11 @@ console.log('\n— 脚本注册表（播种幂等 / DB 覆盖优先）—');
   // 注意：ensureReady() 的启动 bootstrap 已经播种过，所以这里必然是 inserted=0。
   // 要验证的性质是「启动即播种」+「重复播种幂等」，而不是"我第一次调就插入 5 条"。
   const seeded = await getDb().prepare('SELECT COUNT(*) AS n FROM script_library').get();
-  check(Number(seeded.n) === 5, '启动 bootstrap 已播种 5 条内置脚本', `rows=${seeded.n}`);
+  check(Number(seeded.n) === 14, '启动 bootstrap 已播种 14 条内置脚本', `rows=${seeded.n}`);
   const r2 = await K.seedBuiltinScripts();
   check(r2.inserted === 0, '重复播种不新增（幂等）', `inserted=${r2.inserted}`);
   const all = await K.listScripts();
-  check(all.length === 5, '注册表 5 条', `total=${all.length}`);
+  check(all.length === 14, '注册表 14 条', `total=${all.length}`);
   check(all.every((s) => s.enabled), '默认全部启用');
 
   const report = await K.validateAllScripts();
