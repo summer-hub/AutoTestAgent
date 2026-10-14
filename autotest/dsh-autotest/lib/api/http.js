@@ -758,10 +758,10 @@ function defineRoutes(llm) {
         });
         console.log(`[autotest] 全量采集批次：共 ${r.total} · 完成 ${r.done} · 需 LLM ${r.needsLlm} · 失败 ${r.failed} · 跳过 ${r.skipped}（${(r.durationMs / 1000).toFixed(1)}s）`);
         return r;
-    });
+    }, { role: 'operator' });
     route('GET', '/survey/stats', async () => {
         return await surveyStats();
-    });
+    }, { role: 'viewer' });
     route('GET', '/survey/batches/:id', async ({ params }) => {
         const id = Number(params.id);
         const row = await getDb().prepare('SELECT * FROM library_survey_batches WHERE id = ?').get(id);
@@ -783,13 +783,13 @@ function defineRoutes(llm) {
                 llmReason: String(r.llm_reason ?? ''), durationMs: Number(r.duration_ms ?? 0),
             })),
         };
-    });
+    }, { role: 'viewer' });
     // 单库采集（批次之外手动跑一个；断点续跑由 batch 负责，这里强制重扫）
     route('POST', '/survey/libraries/:id', async ({ params }) => {
         const id = Number(params.id);
         const r = await surveyLibrary(id, {});
         return r;
-    });
+    }, { role: 'operator' });
     // ---- R2：测试资源（登记 / 合成 / 清单 / 临期）----
     route('GET', '/resources', async ({ query }) => {
         const kind = query.get('kind') ?? undefined;
@@ -806,7 +806,7 @@ function defineRoutes(llm) {
                 reuseCount: r.reuseCount, expiresAt: r.expiresAt,
             })),
         };
-    });
+    }, { role: 'viewer' });
     route('POST', '/resources/synthesize', async ({ body }) => {
         const b = (body ?? {});
         const kind = String(b.kind ?? 'animation');
@@ -815,19 +815,19 @@ function defineRoutes(llm) {
         }
         const r = await registerSyntheticForKind(kind);
         return r;
-    });
+    }, { role: 'operator' });
     route('GET', '/resources/expiring', async () => {
         const items = await expiringCerts();
         return { items: items.map((r) => ({ resourceId: r.resourceId, expiresAt: r.expiresAt, intent: r.intent })) };
-    });
+    }, { role: 'viewer' });
     route('POST', '/resources/:id/reuse', async ({ params }) => {
         await bumpReuse(params.id);
         return { ok: true };
-    });
+    }, { role: 'operator' });
     // ---- R2：预设库（有哪些类别有开箱方案）----
     route('GET', '/survey/presets', async () => {
         return { kinds: availablePresetKinds(), root: presetsRoot() };
-    });
+    }, { role: 'viewer' });
     // ---- R3：L2 LLM 增量采集（只跑 L0/L1 搞不定的差异库）----
     //
     // 为什么单独一组路由：L2 花 token，必须可控——能指定库、能限条数、
@@ -838,7 +838,7 @@ function defineRoutes(llm) {
         const r = await runL2Increment(llm, { ids, limit: b.limit ? Number(b.limit) : undefined });
         console.log(`[autotest] L2 增量采集：处理 ${r.processed} · 解决 ${r.resolved} · 待确认 ${r.queued} · 失败 ${r.failed} · 跳过 ${r.skipped}`);
         return r;
-    });
+    }, { role: 'operator' });
     // 待 L2 处理的库清单（前端「全量分析」页展示"还有多少库要花 token"）
     route('GET', '/survey/l2/pending', async ({ query }) => {
         const limit = Math.min(200, Math.max(1, Number(query.get('limit')) || 50));
@@ -854,7 +854,7 @@ function defineRoutes(llm) {
                 kind: String(r.kind ?? 'unknown'), kindReason: String(r.kind_reason ?? ''), confidence: Number(r.confidence ?? 0),
             })),
         };
-    });
+    }, { role: 'viewer' });
     // ---- P2：接口面提取（导出符号 + demo 资产）----
     //
     // 这是覆盖矩阵的分母：没有一份完整、可定位的符号清单，"哪些接口没被测到"就是不可证伪的。
