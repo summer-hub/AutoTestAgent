@@ -1,0 +1,40 @@
+{
+  "kind": "storage",
+  "label": "数据存储",
+  "toolchain": {
+    "devecoCli": ">=5.0.0",
+    "sdk": ">=4.1",
+    "ohpmRegistry": ""
+  },
+  "components": {
+    "binaryDeps": [
+      {
+        "name": "sqlite-native",
+        "abi": "arm64-v8a",
+        "buildIfMissing": true,
+        "note": "存储类库常见 C++ 核心（sqlite/wcdb 等）；预编译缺失时按 ABI 现编"
+      }
+    ],
+    "ohpmPackages": [],
+    "fileConfigs": [],
+    "submodules": []
+  },
+  "steps": [
+    { "scriptId": "ohpm_install", "params": { "projectDir": "" }, "required": true },
+    { "scriptId": "build_manifest", "params": { "projectDir": "" }, "required": true },
+    { "scriptId": "build_hap", "params": { "projectDir": "", "module": "entry", "buildMode": "debug" }, "required": true },
+    { "scriptId": "hdc_install", "params": { "hapPath": "", "replace": true }, "required": true }
+  ],
+  "oracles": [
+    { "type": "control_text", "note": "界面显示查询/写入结果条数与内容" },
+    { "type": "hilog_keyword", "note": "SQL 执行成功/失败日志关键字" },
+    { "type": "no_crash", "note": "执行期间无崩溃" }
+  ],
+  "resources": [
+    { "kind": "db_fixture", "id": "storage-seed-basic", "origin": "synthesized", "note": "预置数据库：含表结构与种子行（验证读取）" },
+    { "kind": "db_fixture", "id": "storage-corrupt", "origin": "synthesized", "note": "损坏的数据库文件（空值/异常场景，必须走错误回调）" },
+    { "kind": "db_fixture", "id": "storage-large", "origin": "synthesized", "note": "大数据量库（万级行，验证批量读写性能与内存）" },
+    { "kind": "db_fixture", "origin": "repo_scan", "note": "仓库内 .sql/.db 样本（检出登记）" }
+  ],
+  "knownIssues": []
+}

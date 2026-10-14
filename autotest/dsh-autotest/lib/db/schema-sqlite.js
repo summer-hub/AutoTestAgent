@@ -556,6 +556,120 @@ CREATE TABLE IF NOT EXISTS env_run_steps (
   UNIQUE (run_id, seq)
 );
 CREATE INDEX IF NOT EXISTS idx_env_run_steps_run ON env_run_steps(run_id, seq);
+
+-- R2：全量库静态画像（L0 采集的产物，零 LLM 确定性；与 schema.ts 逐表对应）
+CREATE TABLE IF NOT EXISTS library_facts (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  library_id INTEGER NOT NULL,
+  last_commit TEXT NOT NULL DEFAULT '',
+  kind TEXT NOT NULL DEFAULT 'unknown',
+  kind_reason TEXT NOT NULL DEFAULT '',
+  confidence INTEGER NOT NULL DEFAULT 0,
+  build_target TEXT NOT NULL DEFAULT '',
+  has_submodules INTEGER NOT NULL DEFAULT 0,
+  has_binary INTEGER NOT NULL DEFAULT 0,
+  binary_kinds TEXT NOT NULL DEFAULT '',
+  has_demo INTEGER NOT NULL DEFAULT 0,
+  entry_file TEXT NOT NULL DEFAULT '',
+  readme_chars INTEGER NOT NULL DEFAULT 0,
+  facts_json TEXT NOT NULL,
+  resource_candidates_json TEXT NOT NULL,
+  readme_intel_json TEXT NOT NULL,
+  survey_run_id INTEGER NULL,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  UNIQUE (library_id)
+);
+CREATE INDEX IF NOT EXISTS idx_library_facts_kind ON library_facts(kind, confidence);
+
+-- R2：单库采集记录（断点续跑的单位）
+CREATE TABLE IF NOT EXISTS library_survey_runs (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  library_id INTEGER NOT NULL,
+  batch_id INTEGER NULL,
+  status TEXT NOT NULL DEFAULT 'pending',
+  last_commit TEXT NOT NULL DEFAULT '',
+  duration_ms INTEGER NOT NULL DEFAULT 0,
+  failure_kind TEXT NOT NULL DEFAULT '',
+  failure_what TEXT NOT NULL DEFAULT '',
+  needs_llm INTEGER NOT NULL DEFAULT 0,
+  llm_reason TEXT NOT NULL DEFAULT '',
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  UNIQUE (library_id)
+);
+CREATE INDEX IF NOT EXISTS idx_survey_runs_batch ON library_survey_runs(batch_id, status);
+
+-- R2：采集批次（进度与指标的可观测单位）
+CREATE TABLE IF NOT EXISTS library_survey_batches (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  batch_no TEXT NOT NULL,
+  scope TEXT NOT NULL DEFAULT 'all',
+  library_ids TEXT NOT NULL DEFAULT '[]',
+  total INTEGER NOT NULL DEFAULT 0,
+  done INTEGER NOT NULL DEFAULT 0,
+  failed INTEGER NOT NULL DEFAULT 0,
+  skipped INTEGER NOT NULL DEFAULT 0,
+  needs_llm INTEGER NOT NULL DEFAULT 0,
+  status TEXT NOT NULL DEFAULT 'pending',
+  concurrency INTEGER NOT NULL DEFAULT 4,
+  started_at TEXT NULL,
+  finished_at TEXT NULL,
+  error TEXT NOT NULL DEFAULT '',
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  UNIQUE (batch_no)
+);
+CREATE INDEX IF NOT EXISTS idx_survey_batch_status ON library_survey_batches(status);
+
+-- R2：测试资源登记（与 schema.ts 逐表对应）
+CREATE TABLE IF NOT EXISTS test_resources (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  resource_id TEXT NOT NULL,
+  kind TEXT NOT NULL,
+  origin TEXT NOT NULL,
+  scope_kind TEXT NOT NULL DEFAULT 'global',
+  scope_key TEXT NOT NULL DEFAULT '',
+  library_id INTEGER NULL,
+  generator TEXT NOT NULL DEFAULT '',
+  schema_kind TEXT NOT NULL DEFAULT '',
+  schema_version TEXT NOT NULL DEFAULT '',
+  file_path TEXT NOT NULL DEFAULT '',
+  file_sha256 TEXT NOT NULL DEFAULT '',
+  file_size INTEGER NOT NULL DEFAULT 0,
+  validated INTEGER NOT NULL DEFAULT 0,
+  valid_problems TEXT NOT NULL,
+  intent TEXT NOT NULL DEFAULT '',
+  reuse_count INTEGER NOT NULL DEFAULT 0,
+  expires_at TEXT NULL,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  UNIQUE (resource_id)
+);
+CREATE INDEX IF NOT EXISTS idx_test_resources_scope ON test_resources(scope_kind, scope_key, kind);
+CREATE INDEX IF NOT EXISTS idx_test_resources_lib ON test_resources(library_id, kind);
+
+CREATE TABLE IF NOT EXISTS test_resource_versions (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  resource_id TEXT NOT NULL,
+  version TEXT NOT NULL,
+  file_sha256 TEXT NOT NULL DEFAULT '',
+  note TEXT NOT NULL DEFAULT '',
+  created_at TEXT NOT NULL,
+  UNIQUE (resource_id, version)
+);
+
+-- README 情报（L0 采集的产物）
+CREATE TABLE IF NOT EXISTS readme_intel (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  library_id INTEGER NOT NULL,
+  kind TEXT NOT NULL,
+  text TEXT NOT NULL,
+  line INTEGER NOT NULL DEFAULT 0,
+  status TEXT NOT NULL DEFAULT 'open',
+  created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_readme_intel_lib ON readme_intel(library_id, kind, status);
 `;
 /** 建表语句拆分（better-sqlite3 exec 支持多语句，这里仍按分号拆便于逐条容错）。 */
 export function sqliteSchemaStatements() {

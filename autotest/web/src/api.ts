@@ -578,6 +578,34 @@ export const api = {
       `${API_BASE}/analyses/attribution`, { method: 'POST', body: JSON.stringify(b) },
     ),
 
+  // ---- R2：全量库采集（L0 画像 + 预设匹配 + 资源）----
+  surveyStats: () => req<{
+    batches: Array<Record<string, unknown>>;
+    byKind: Array<{ kind: string; count: number; needsLlm: number }>;
+    totals: { libraries: number; surveyed: number; needsLlm: number; failed: number; presetsMatched: number };
+  }>(`${API_BASE}/survey/stats`),
+  surveyBatchRun: (b: { scope?: string; kinds?: string[]; ids?: number[]; concurrency?: number } = {}) =>
+    req<{ batchId: number; total: number; done: number; failed: number; skipped: number; needsLlm: number; byKind: Record<string, number>; durationMs: number }>(
+      `${API_BASE}/survey/batches`, { method: 'POST', body: JSON.stringify(b) }),
+  surveyBatch: (id: number) => req<{
+    id: number; batchNo: string; scope: string; total: number; done: number; failed: number;
+    skipped: number; needsLlm: number; status: string; concurrency: number;
+    startedAt: string | null; finishedAt: string | null;
+    runs: Array<{ libraryId: number; libraryName: string; status: string; failureKind: string; failureWhat: string; needsLlm: boolean; llmReason: string; durationMs: number }>;
+  }>(`${API_BASE}/survey/batches/${id}`),
+  surveyLibrary: (id: number) => req<{ ok: boolean; skipped: boolean; needsLlm: boolean; failureKind: string; failureWhat: string; kind?: string }>(
+    `${API_BASE}/survey/libraries/${id}`, { method: 'POST', body: JSON.stringify({}) }),
+  surveyPresets: () => req<{ kinds: string[]; root: string }>(`${API_BASE}/survey/presets`),
+  resources: (kind?: string, scopeKey?: string) => req<{
+    items: Array<{
+      resourceId: string; kind: string; origin: string; scopeKind: string; scopeKey: string;
+      libraryId: number | null; generator: string; filePath: string; sha256: string; size: number;
+      validated: boolean; problems: string[]; intent: string; reuseCount: number; expiresAt: string | null;
+    }>;
+  }>(`${API_BASE}/resources${kind ? `?kind=${encodeURIComponent(kind)}` : ''}${scopeKey ? `${kind ? '&' : '?'}scopeKey=${encodeURIComponent(scopeKey)}` : ''}`),
+  resourcesSynthesize: (kind: string) => req<{ registered: number; problems: number; ids: string[] }>(
+    `${API_BASE}/resources/synthesize`, { method: 'POST', body: JSON.stringify({ kind }) }),
+
   // 系统配置（M7）
   settings: () => req<Array<{ key: string; value: string | number | boolean | null; updatedAt: string | null }>>(`${API_BASE}/settings`),
   workspaceInfo: () =>

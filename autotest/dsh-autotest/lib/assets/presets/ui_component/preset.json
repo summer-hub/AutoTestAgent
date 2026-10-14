@@ -1,0 +1,34 @@
+{
+  "kind": "ui_component",
+  "label": "UI 组件",
+  "toolchain": {
+    "devecoCli": ">=5.0.0",
+    "sdk": ">=4.1",
+    "ohpmRegistry": ""
+  },
+  "components": {
+    "binaryDeps": [],
+    "ohpmPackages": [],
+    "fileConfigs": [],
+    "submodules": []
+  },
+  "steps": [
+    { "scriptId": "ohpm_install", "params": { "projectDir": "" }, "required": true },
+    { "scriptId": "build_manifest", "params": { "projectDir": "" }, "required": true },
+    { "scriptId": "build_hap", "params": { "projectDir": "", "module": "entry", "buildMode": "debug" }, "required": true },
+    { "scriptId": "hdc_install", "params": { "hapPath": "", "replace": true }, "required": true }
+  ],
+  "oracles": [
+    { "type": "control_text", "note": "控件文本等于/包含预期值（组件渲染结果）" },
+    { "type": "state_flag", "note": "勾选/选中/禁用状态与操作一致" },
+    { "type": "screenshot_diff", "note": "组件外观与基线比对（布局与样式）" },
+    { "type": "hilog_keyword", "note": "事件回调日志关键字（点击/滑动/长按）" },
+    { "type": "no_crash", "note": "执行期间无崩溃" }
+  ],
+  "resources": [
+    { "kind": "image", "id": "ui-icon-basic", "origin": "canonical", "note": "标准图标（验证图片加载与占位）" },
+    { "kind": "image", "id": "ui-icon-huge", "origin": "synthesized", "note": "超大图（验证缩放与内存）" },
+    { "kind": "image", "origin": "repo_scan", "note": "仓库资源目录下的图片（检出登记）" }
+  ],
+  "knownIssues": []
+}

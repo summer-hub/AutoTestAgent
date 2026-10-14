@@ -1,0 +1,44 @@
+{
+  "kind": "animation",
+  "label": "动画渲染",
+  "toolchain": {
+    "devecoCli": ">=5.0.0",
+    "sdk": ">=4.1",
+    "ohpmRegistry": ""
+  },
+  "components": {
+    "binaryDeps": [
+      {
+        "name": "lottie-native",
+        "abi": "arm64-v8a",
+        "buildIfMissing": true,
+        "note": "动画引擎常见 C++ 核心（如 lottie_turbo）；预编译产物缺失时按 ABI 现编"
+      }
+    ],
+    "ohpmPackages": [],
+    "fileConfigs": [],
+    "submodules": []
+  },
+  "steps": [
+    { "scriptId": "ohpm_install", "params": { "projectDir": "" }, "required": true },
+    { "scriptId": "build_manifest", "params": { "projectDir": "" }, "required": true },
+    { "scriptId": "build_hap", "params": { "projectDir": "", "module": "entry", "buildMode": "debug" }, "required": true },
+    { "scriptId": "hdc_install", "params": { "hapPath": "", "replace": true }, "required": true }
+  ],
+  "oracles": [
+    { "type": "composition_meta", "note": "LottieComposition 的 layer 数 / asset 数 / duration / frameRate 与资源声明一致（解析正确性）" },
+    { "type": "screenshot_diff", "note": "首帧 / 指定帧截图与基线比对（帧渲染）" },
+    { "type": "hilog_keyword", "note": "hilog 出现渲染完成或错误码关键字" },
+    { "type": "no_crash", "note": "执行期间无该应用 E 级日志、无崩溃" }
+  ],
+  "resources": [
+    { "kind": "animation_json", "origin": "repo_scan", "note": "仓库 demo/example 目录下的 bodymovin JSON（检出登记，不猜内容）" },
+    { "kind": "animation_json", "id": "lottie-minimal", "origin": "synthesized", "note": "最小动画：单 shape 单 keyframe（验证基本解析链路）" },
+    { "kind": "animation_json", "id": "lottie-empty-layers", "origin": "synthesized", "note": "空 layers 数组（空值场景）" },
+    { "kind": "animation_json", "id": "lottie-huge-layers", "origin": "synthesized", "note": "超大 layers（大数据场景，验证不崩且时长在阈值内）" },
+    { "kind": "animation_json", "id": "lottie-nested-precomp", "origin": "synthesized", "note": "嵌套预合成（验证递归解析）" },
+    { "kind": "animation_json", "id": "lottie-malformed", "origin": "synthesized", "note": "畸形 JSON / 编码错误（必须走 error 回调且 hilog 有错误码）" },
+    { "kind": "animation_json", "origin": "canonical", "note": "上游 lottie-web / lottie-android 官方样本与 AE 导出样例（固化 URL + 版本）" }
+  ],
+  "knownIssues": []
+}

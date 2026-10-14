@@ -585,6 +585,126 @@ CREATE TABLE IF NOT EXISTS env_run_steps (
   UNIQUE KEY uk_env_run_step (run_id, seq)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 CREATE INDEX idx_env_run_steps_run ON env_run_steps(run_id, seq);
+
+-- R2：全量库静态画像（L0 采集的产物，零 LLM 确定性）。
+-- 这是全量规模化的地基：348 个库逐个问 LLM 成本不可控，而同一类库的事实高度同构，
+-- 所以先用确定性采集把"客观事实"拿到手（类别/构建目标/依赖/二进制/资源候选），
+-- LLM 只在差异库上工作（R3 的 L2）。
+CREATE TABLE IF NOT EXISTS library_facts (
+  id BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+  library_id BIGINT UNSIGNED NOT NULL,
+  last_commit VARCHAR(64) NOT NULL DEFAULT '',
+  kind VARCHAR(32) NOT NULL DEFAULT 'unknown',
+  kind_reason VARCHAR(500) NOT NULL DEFAULT '',
+  confidence TINYINT NOT NULL DEFAULT 0,
+  build_target VARCHAR(24) NOT NULL DEFAULT '',
+  has_submodules TINYINT NOT NULL DEFAULT 0,
+  has_binary TINYINT NOT NULL DEFAULT 0,
+  binary_kinds VARCHAR(255) NOT NULL DEFAULT '',
+  has_demo TINYINT NOT NULL DEFAULT 0,
+  entry_file VARCHAR(512) NOT NULL DEFAULT '',
+  readme_chars INT NOT NULL DEFAULT 0,
+  facts_json MEDIUMTEXT NOT NULL,
+  resource_candidates_json MEDIUMTEXT NOT NULL,
+  readme_intel_json MEDIUMTEXT NOT NULL,
+  survey_run_id BIGINT UNSIGNED NULL,
+  created_at VARCHAR(32) NOT NULL,
+  updated_at VARCHAR(32) NOT NULL,
+  UNIQUE KEY uk_library_facts (library_id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+CREATE INDEX idx_library_facts_kind ON library_facts(kind, confidence);
+
+-- R2：单库采集记录（断点续跑的单位：重跑只补未完成/失败的）
+CREATE TABLE IF NOT EXISTS library_survey_runs (
+  id BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+  library_id BIGINT UNSIGNED NOT NULL,
+  batch_id BIGINT UNSIGNED NULL,
+  status VARCHAR(24) NOT NULL DEFAULT 'pending',
+  last_commit VARCHAR(64) NOT NULL DEFAULT '',
+  duration_ms INT NOT NULL DEFAULT 0,
+  failure_kind VARCHAR(32) NOT NULL DEFAULT '',
+  failure_what VARCHAR(500) NOT NULL DEFAULT '',
+  needs_llm TINYINT NOT NULL DEFAULT 0,
+  llm_reason VARCHAR(500) NOT NULL DEFAULT '',
+  created_at VARCHAR(32) NOT NULL,
+  updated_at VARCHAR(32) NOT NULL,
+  UNIQUE KEY uk_survey_run_lib (library_id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+CREATE INDEX idx_survey_runs_batch ON library_survey_runs(batch_id, status);
+
+-- R2：采集批次（一个批次 = N 个库的 L0→L1；进度与指标的可观测单位）
+CREATE TABLE IF NOT EXISTS library_survey_batches (
+  id BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+  batch_no VARCHAR(64) NOT NULL,
+  scope VARCHAR(24) NOT NULL DEFAULT 'all',
+  library_ids VARCHAR(4000) NOT NULL DEFAULT '[]',
+  total INT NOT NULL DEFAULT 0,
+  done INT NOT NULL DEFAULT 0,
+  failed INT NOT NULL DEFAULT 0,
+  skipped INT NOT NULL DEFAULT 0,
+  needs_llm INT NOT NULL DEFAULT 0,
+  status VARCHAR(24) NOT NULL DEFAULT 'pending',
+  concurrency INT NOT NULL DEFAULT 4,
+  started_at VARCHAR(32) NULL,
+  finished_at VARCHAR(32) NULL,
+  error VARCHAR(500) NOT NULL DEFAULT '',
+  created_at VARCHAR(32) NOT NULL,
+  updated_at VARCHAR(32) NOT NULL,
+  UNIQUE KEY uk_survey_batch_no (batch_no)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+CREATE INDEX idx_survey_batch_status ON library_survey_batches(status);
+
+-- R2：测试资源登记（模板 + 生成器 + 版本，全部带 sha256 与 schema 校验）。
+-- 核心纪律：资源绝不现场编——三类来源（仓库检出/上游 canonical/程序合成）全部登记，
+-- 可复现、可回归、复用次数可度量。构造失败率是 R2 的验收指标之一。
+CREATE TABLE IF NOT EXISTS test_resources (
+  id BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+  resource_id VARCHAR(128) NOT NULL,
+  kind VARCHAR(32) NOT NULL,
+  origin VARCHAR(24) NOT NULL,
+  scope_kind VARCHAR(24) NOT NULL DEFAULT 'global',
+  scope_key VARCHAR(128) NOT NULL DEFAULT '',
+  library_id BIGINT UNSIGNED NULL,
+  generator VARCHAR(128) NOT NULL DEFAULT '',
+  schema_kind VARCHAR(64) NOT NULL DEFAULT '',
+  schema_version VARCHAR(32) NOT NULL DEFAULT '',
+  file_path VARCHAR(512) NOT NULL DEFAULT '',
+  file_sha256 CHAR(64) NOT NULL DEFAULT '',
+  file_size BIGINT NOT NULL DEFAULT 0,
+  validated TINYINT NOT NULL DEFAULT 0,
+  valid_problems MEDIUMTEXT NOT NULL,
+  intent VARCHAR(500) NOT NULL DEFAULT '',
+  reuse_count INT NOT NULL DEFAULT 0,
+  expires_at VARCHAR(32) NULL,
+  created_at VARCHAR(32) NOT NULL,
+  updated_at VARCHAR(32) NOT NULL,
+  UNIQUE KEY uk_test_resource (resource_id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+CREATE INDEX idx_test_resources_scope ON test_resources(scope_kind, scope_key, kind);
+CREATE INDEX idx_test_resources_lib ON test_resources(library_id, kind);
+
+-- 资源版本史（升级可追溯；与 script_library_versions 同思路）
+CREATE TABLE IF NOT EXISTS test_resource_versions (
+  id BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+  resource_id VARCHAR(128) NOT NULL,
+  version VARCHAR(32) NOT NULL,
+  file_sha256 CHAR(64) NOT NULL DEFAULT '',
+  note VARCHAR(255) NOT NULL DEFAULT '',
+  created_at VARCHAR(32) NOT NULL,
+  UNIQUE KEY uk_resource_ver (resource_id, version)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+-- README 情报（L0 采集的产物，供 L2 与人工队列消费）
+CREATE TABLE IF NOT EXISTS readme_intel (
+  id BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+  library_id BIGINT UNSIGNED NOT NULL,
+  kind VARCHAR(32) NOT NULL,
+  text MEDIUMTEXT NOT NULL,
+  line INT NOT NULL DEFAULT 0,
+  status VARCHAR(24) NOT NULL DEFAULT 'open',
+  created_at VARCHAR(32) NOT NULL,
+  KEY idx_readme_intel_lib (library_id, kind, status)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 `;
 /** 建表语句拆分（MySQL 不允许一条 query 跑多语句）。 */
 export function schemaStatements() {

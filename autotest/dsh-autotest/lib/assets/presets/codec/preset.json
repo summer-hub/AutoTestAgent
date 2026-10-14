@@ -1,0 +1,41 @@
+{
+  "kind": "codec",
+  "label": "编解码",
+  "toolchain": {
+    "devecoCli": ">=5.0.0",
+    "sdk": ">=4.1",
+    "ohpmRegistry": ""
+  },
+  "components": {
+    "binaryDeps": [
+      {
+        "name": "codec-native",
+        "abi": "arm64-v8a",
+        "buildIfMissing": true,
+        "note": "编解码类库常见 C++ 核心（libpng/libjpeg/libwebp/ffmpeg 等）"
+      }
+    ],
+    "ohpmPackages": [],
+    "fileConfigs": [],
+    "submodules": []
+  },
+  "steps": [
+    { "scriptId": "ohpm_install", "params": { "projectDir": "" }, "required": true },
+    { "scriptId": "build_manifest", "params": { "projectDir": "" }, "required": true },
+    { "scriptId": "build_hap", "params": { "projectDir": "", "module": "entry", "buildMode": "debug" }, "required": true },
+    { "scriptId": "hdc_install", "params": { "hapPath": "", "replace": true }, "required": true }
+  ],
+  "oracles": [
+    { "type": "screenshot_diff", "note": "解码结果与基线图比对（像素级正确性）" },
+    { "type": "hilog_keyword", "note": "编解码完成/失败日志关键字（含错误码）" },
+    { "type": "no_crash", "note": "执行期间无崩溃" }
+  ],
+  "resources": [
+    { "kind": "image", "id": "codec-basic-png", "origin": "canonical", "note": "标准测试图（含彩色/灰度/透明/调色板四种形态）" },
+    { "kind": "image", "id": "codec-malformed", "origin": "synthesized", "note": "截断/损坏的图片文件（异常场景，必须走错误回调）" },
+    { "kind": "image", "id": "codec-huge", "origin": "synthesized", "note": "超大分辨率图（大数据场景，验证内存与耗时）" },
+    { "kind": "media", "id": "codec-video-basic", "origin": "canonical", "note": "标准测试视频（验证抽帧与转码）" },
+    { "kind": "image", "origin": "repo_scan", "note": "仓库资源目录下的图片（检出登记）" }
+  ],
+  "knownIssues": []
+}

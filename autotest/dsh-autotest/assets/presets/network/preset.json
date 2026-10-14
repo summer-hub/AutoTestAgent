@@ -1,0 +1,38 @@
+{
+  "kind": "network",
+  "label": "网络请求",
+  "toolchain": {
+    "devecoCli": ">=5.0.0",
+    "sdk": ">=4.1",
+    "ohpmRegistry": ""
+  },
+  "components": {
+    "binaryDeps": [],
+    "ohpmPackages": [],
+    "fileConfigs": [
+      {
+        "path": "entry/src/main/resources/rawfile/network_config.json5",
+        "template": "{\n  \"cleartextTraffic\": true,\n  \"trustedCAs\": [\"{{caCertPath}}\"]\n}",
+        "vars": { "caCertPath": "本地自签 CA 路径（由 gen-ca 生成后回填）" }
+      }
+    ],
+    "submodules": []
+  },
+  "steps": [
+    { "scriptId": "ohpm_install", "params": { "projectDir": "" }, "required": true },
+    { "scriptId": "build_manifest", "params": { "projectDir": "" }, "required": true },
+    { "scriptId": "build_hap", "params": { "projectDir": "", "module": "entry", "buildMode": "debug" }, "required": true },
+    { "scriptId": "hdc_install", "params": { "hapPath": "", "replace": true }, "required": true }
+  ],
+  "oracles": [
+    { "type": "hilog_keyword", "note": "请求成功/失败/超时回调的日志关键字（含错误码）" },
+    { "type": "control_text", "note": "界面显示响应摘要或错误码文本" },
+    { "type": "no_crash", "note": "执行期间无崩溃" }
+  ],
+  "resources": [
+    { "kind": "ca_cert", "id": "autotest-local-ca", "origin": "synthesized", "note": "openssl 生成自签 CA → 服务端证书 → 客户端 trust 配置 → hdc push（HTTPS 抓包与双向认证必备）" },
+    { "kind": "server_fixture", "id": "mock-basic", "origin": "synthesized", "note": "本地 mock server 的响应样本：可注入 200/4xx/5xx/超时/断网" },
+    { "kind": "server_fixture", "origin": "repo_scan", "note": "仓库内 fixture/mock 目录下的响应样本（检出登记）" }
+  ],
+  "knownIssues": []
+}

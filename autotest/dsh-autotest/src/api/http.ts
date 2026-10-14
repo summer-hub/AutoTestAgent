@@ -43,6 +43,12 @@ import { readTaskEvents } from '../services/taskEvents.js';
 import { exportLibrariesSheet, resolveSheetPath, syncLibrariesFromSheet } from '../services/librarySheet.js';
 import { catalogStatus } from '../services/catalog.js';
 import {
+  runSurveyBatch, surveyLibrary, surveyStats, availablePresetKinds, presetsRoot,
+} from '../services/survey/index.js';
+import {
+  listResources, registerSyntheticForKind, expiringCerts, bumpReuse,
+} from '../services/resourcekit/index.js';
+import {
   listScripts, getScript, seedBuiltinScripts, validateAllScripts, detectContractDrift,
   validateContract,
   runEnvProfile, loadProfileSteps, fingerprintOf,
@@ -735,6 +741,107 @@ function defineRoutes(llm: LlmCall): void {
       taxonomy: (b.taxonomy ?? []) as never,
     });
     return { ...c, label: FAILURE_LABEL[c.kind as keyof typeof FAILURE_LABEL] ?? c.kind };
+  });
+
+  // ---- R2：全量库采集（L0 画像 + 预设匹配 + 资源登记）----
+  //
+  // 全量规模化的入口：一个批次跑 N 个库的 L0→L1，受控并发、断点续跑、单库失败隔离。
+  // 批次是长任务，前端按批次 id 轮询进度（env run 同款思路）。
+  route('POST', '/survey/batches', async ({ body }) => {
+    const b = (body ?? {}) as { scope?: string; kinds?: string[]; ids?: number[]; concurrency?: number };
+    const scope = ['all', 'kinds', 'ids'].includes(String(b.scope)) ? String(b.scope) : 'all';
+    const kinds = Array.isArray(b.kinds) ? (b.kinds as never[]) : undefined;
+    const ids = Array.isArray(b.ids) ? b.ids.map(Number).filter((n) => Number.isFinite(n) && n > 0) : undefined;
+    if (scope === 'kinds' && (!kinds || kinds.length === 0)) {
+      throw Object.assign(new Error('scope=kinds 时必须给出 kinds'), { statusCode: 400 });
+    }
+    if (scope === 'ids' && (!ids || ids.length === 0)) {
+      throw Object.assign(new Error('scope=ids 时必须给出 ids'), { statusCode: 400 });
+    }
+    const r = await runSurveyBatch({
+      scope: scope as 'all' | 'kinds' | 'ids', kinds: kinds as never, ids,
+      concurrency: b.concurrency ? Number(b.concurrency) : undefined,
+    });
+    console.log(`[autotest] 全量采集批次：共 ${r.total} · 完成 ${r.done} · 需 LLM ${r.needsLlm} · 失败 ${r.failed} · 跳过 ${r.skipped}（${(r.durationMs / 1000).toFixed(1)}s）`);
+    return r;
+  });
+
+  route('GET', '/survey/stats', async () => {
+    return await surveyStats();
+  });
+
+  route('GET', '/survey/batches/:id', async ({ params }) => {
+    const id = Number(params.id);
+    const row = await getDb().prepare('SELECT * FROM library_survey_batches WHERE id = ?').get<Record<string, unknown>>(id);
+    if (!row) throw Object.assign(new Error('采集批次不存在'), { statusCode: 404 });
+    const runs = await getDb().prepare(
+      `SELECT r.*, l.name AS library_name FROM library_survey_runs r
+       LEFT JOIN libraries l ON l.id = r.library_id
+       WHERE r.batch_id = ? ORDER BY r.id LIMIT 500`,
+    ).all<Record<string, unknown>>(id);
+    return {
+      id, batchNo: String(row.batch_no), scope: String(row.scope), total: Number(row.total),
+      done: Number(row.done), failed: Number(row.failed), skipped: Number(row.skipped),
+      needsLlm: Number(row.needs_llm), status: String(row.status), concurrency: Number(row.concurrency),
+      startedAt: (row.started_at as string | null) ?? null,
+      finishedAt: (row.finished_at as string | null) ?? null,
+      runs: runs.map((r) => ({
+        libraryId: Number(r.library_id), libraryName: String(r.library_name ?? ''),
+        status: String(r.status), failureKind: String(r.failure_kind ?? ''),
+        failureWhat: String(r.failure_what ?? ''), needsLlm: Number(r.needs_llm ?? 0) === 1,
+        llmReason: String(r.llm_reason ?? ''), durationMs: Number(r.duration_ms ?? 0),
+      })),
+    };
+  });
+
+  // 单库采集（批次之外手动跑一个；断点续跑由 batch 负责，这里强制重扫）
+  route('POST', '/survey/libraries/:id', async ({ params }) => {
+    const id = Number(params.id);
+    const r = await surveyLibrary(id, {});
+    return r;
+  });
+
+  // ---- R2：测试资源（登记 / 合成 / 清单 / 临期）----
+  route('GET', '/resources', async ({ query }) => {
+    const kind = query.get('kind') ?? undefined;
+    const scopeKey = query.get('scopeKey') ?? undefined;
+    const items = await listResources({
+      kind: kind ? (kind as never) : undefined,
+      scopeKey: scopeKey ?? undefined,
+    });
+    return {
+      items: items.map((r) => ({
+        resourceId: r.resourceId, kind: r.kind, origin: r.origin, scopeKind: r.scopeKind, scopeKey: r.scopeKey,
+        libraryId: r.libraryId, generator: r.generator, filePath: r.filePath, sha256: r.fileSha256,
+        size: r.fileSize, validated: r.validated, problems: r.validProblems, intent: r.intent,
+        reuseCount: r.reuseCount, expiresAt: r.expiresAt,
+      })),
+    };
+  });
+
+  route('POST', '/resources/synthesize', async ({ body }) => {
+    const b = (body ?? {}) as { kind?: string };
+    const kind = String(b.kind ?? 'animation');
+    if (!['animation', 'storage', 'network', 'codec', 'ui_component'].includes(kind)) {
+      throw Object.assign(new Error(`不支持的类别：${kind}`), { statusCode: 400 });
+    }
+    const r = await registerSyntheticForKind(kind as 'animation');
+    return r;
+  });
+
+  route('GET', '/resources/expiring', async () => {
+    const items = await expiringCerts();
+    return { items: items.map((r) => ({ resourceId: r.resourceId, expiresAt: r.expiresAt, intent: r.intent })) };
+  });
+
+  route('POST', '/resources/:id/reuse', async ({ params }) => {
+    await bumpReuse(params.id);
+    return { ok: true };
+  });
+
+  // ---- R2：预设库（有哪些类别有开箱方案）----
+  route('GET', '/survey/presets', async () => {
+    return { kinds: availablePresetKinds(), root: presetsRoot() };
   });
 
   // ---- P2：接口面提取（导出符号 + demo 资产）----
