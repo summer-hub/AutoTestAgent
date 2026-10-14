@@ -125,7 +125,13 @@ console.log('\n— 生命周期（ai_draft → human_confirmed）—');
   eq(K.kindForStage('oracle_missing'), 'oracle_recipe', 'oracle 缺失 → 判据配方');
   eq(K.kindForStage('demo_patch'), 'demo_patch', '补丁问题 → demo 补丁类知识');
   eq(K.kindForStage('flaky'), 'traversal_quirk', 'flaky → 遍历怪癖');
-  eq(Object.keys(K.SCOPE_LABEL).length, 5, '5 种作用域都有中文标签');
+  // R3 起为 7 种：原 5 种 + toolchain / resource_kind。
+  // 环境方案按工具链归因、资源构造经验按资源类型归因，少了这两类就只能塞进
+  // library/global，跨库复用与检索优先级都会错。
+  eq(Object.keys(K.SCOPE_LABEL).length, 7, '7 种作用域都有中文标签（原 5 种 + R3 两种）');
+  for (const s of ['toolchain', 'resource_kind']) {
+    check(!!K.SCOPE_LABEL[s], `R3 新作用域有标签：${s}`, K.SCOPE_LABEL[s]);
+  }
 }
 
 // ---------- 4. Agent 绑定 ----------

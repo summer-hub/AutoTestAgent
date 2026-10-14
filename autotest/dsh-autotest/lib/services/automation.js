@@ -25,6 +25,9 @@ export const BLOCKER_LABEL = {
     device_blocked: '无可用设备',
     long_running: '预计超时',
     untestable: '判定为无法测',
+    env_blocked: '环境准备受阻',
+    resource_missing: '缺测试资源',
+    toolchain_missing: '工具链缺失',
 };
 /** 每步固定开销（秒）：点击/输入/断言在真机上都不快，低估会让"预计时长"失去意义。 */
 const STEP_OVERHEAD_SEC = 4;
@@ -56,6 +59,9 @@ const SIGNALS = [
     { re: /(插拔|物理|旋转机身|摇晃|遮挡|息屏)/i, stage: 'external_dep', what: '需要物理操作' },
     { re: /(视频|video|播放画面|起播|音视频)/i, stage: 'video', what: '涉及视频/音频效果' },
     { re: /(动画|animation|lottie|逐帧|补间|动效)/i, stage: 'animation', what: '涉及动画效果' },
+    // R3 新增：步骤里出现工具链命令 → 归 toolchain_missing（而不是笼统算 external_dep）。
+    // 放最后是因为它的信号最具体（命令名），不会误吞前面的强信号。
+    { re: /(hvigorw|hvigor\s|ohpm\s|deveco-cli|devecocli|hdc\s+(?:install|shell|list)|assembleHar|assembleHap)/i, stage: 'toolchain_missing', what: '需要工具链命令（deveco-cli/hvigorw/ohpm/hdc）' },
 ];
 /** 该 stage 是否有"能替代人工判定"的机器判据（有则不再算阻塞）。 */
 function hasMachineSubstitute(stage, oracles) {
@@ -153,6 +159,13 @@ export function buildQuestion(blockers, input) {
         ask.push('确认是否可接受该时长；可接受请在系统配置里调高时长阈值，否则拆分用例');
     if (blockers.includes('untestable'))
         ask.push('确认该用例是否必要；若必要请给出人工验证方案与结论');
+    // R3 新增三类：问题必须具体到动作（否则队列只是把问题换个地方堆着）
+    if (blockers.includes('env_blocked'))
+        ask.push('环境准备失败：查看「环境准备」页该库最近一次运行，按步骤的失败分类处理（缺依赖则补二进制依赖或子模块，编译失败则看构建日志），修好后重跑环境准备');
+    if (blockers.includes('resource_missing'))
+        ask.push('缺少测试资源：到「全量分析」页的资源区合成该类资源（如动画 json 的六种变体），或把仓库自带资源登记后重试');
+    if (blockers.includes('toolchain_missing'))
+        ask.push('缺少工具链：安装并配置 HarmonyOS 命令行工具（deveco-cli / hvigorw / ohpm / hdc）到 PATH，然后在「系统配置」确认工具链版本，再重跑环境准备');
     return ask.join('；') || '请人工确认该用例能否自动化';
 }
 /**

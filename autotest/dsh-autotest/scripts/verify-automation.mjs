@@ -125,7 +125,13 @@ console.log('\n— 验收项：每条用例都有明确归属 —');
     '★ 进人工队列的都必须有原因与"需要人做什么"');
   const stages = new Set(verdicts.flatMap((v) => v.blockers));
   check([...stages].every((s) => !!BLOCKER_LABEL[s]), '阻塞类别都有中文标签（前端能直接显示）', JSON.stringify([...stages]));
-  eq(Object.keys(BLOCKER_LABEL).length, 9, '阻塞类别共 9 种（设计 7 种 + long_running + untestable）');
+  // R3 起为 12 种：原 9 种 + env_blocked / resource_missing / toolchain_missing。
+  // 三者是链头（克隆→依赖→构建→装包→资源）出问题时的归属，不新增就会笼统算成
+  // external_dep，人不知道该修工具链还是补资源。
+  eq(Object.keys(BLOCKER_LABEL).length, 12, '阻塞类别共 12 种（原 9 种 + R3 三种环境/资源类）');
+  for (const s of ['env_blocked', 'resource_missing', 'toolchain_missing']) {
+    check(!!BLOCKER_LABEL[s], `R3 新类别有标签：${s}`, BLOCKER_LABEL[s]);
+  }
 }
 
 // ---------- 5. 队列问题生成 ----------

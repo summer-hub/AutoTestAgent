@@ -14,20 +14,39 @@ import crypto from 'node:crypto';
 import { getDb, now } from '../db/connection.js';
 import { workspaceDir } from './gitRepo.js';
 
-export type ScopeKind = 'library' | 'api' | 'control' | 'scenario' | 'global';
-export type KnowledgeKind = 'traversal_quirk' | 'oracle_recipe' | 'special_handling' | 'blocked_reason' | 'demo_patch' | 'human_verdict';
+// R3 扩展：新增 toolchain（工具链）与 resource_kind（资源类型）两种作用域，
+// 以及 env_recipe/resource_recipe/dep_fix/cert_recipe/build_fix 五种知识类别。
+// 原 6 类全在"遍历/判据"语义域，装不下"环境怎么准备、资源怎么构造"这两类结论。
+export type ScopeKind = 'library' | 'api' | 'control' | 'scenario' | 'toolchain' | 'resource_kind' | 'global';
+export type KnowledgeKind =
+  | 'traversal_quirk' | 'oracle_recipe' | 'special_handling' | 'blocked_reason' | 'demo_patch' | 'human_verdict'
+  | 'env_recipe' | 'resource_recipe' | 'dep_fix' | 'cert_recipe' | 'build_fix';
 export type KnowledgeStatus = 'ai_draft' | 'human_confirmed' | 'rejected' | 'deprecated';
 
 export const SCOPE_LABEL: Record<ScopeKind, string> = {
-  library: '库级', api: '接口级', control: '控件级', scenario: '场景级', global: '全局',
+  library: '库级', api: '接口级', control: '控件级', scenario: '场景级',
+  toolchain: '工具链级', resource_kind: '资源类型级', global: '全局',
 };
 export const KIND_LABEL: Record<KnowledgeKind, string> = {
   traversal_quirk: '遍历怪癖', oracle_recipe: '判据配方', special_handling: '特殊处置',
   blocked_reason: '阻塞原因', demo_patch: 'demo 补丁', human_verdict: '人工结论',
+  env_recipe: '环境方案', resource_recipe: '资源构造', dep_fix: '依赖修复',
+  cert_recipe: '证书构造', build_fix: '构建修复',
 };
 export const STATUS_LABEL: Record<KnowledgeStatus, string> = {
   ai_draft: 'AI 草稿（未确认）', human_confirmed: '人工已确认', rejected: '已否决', deprecated: '已过时',
 };
+
+/**
+ * 合法值清单（parseEntry 的白名单）。
+ * 抽成常量而不是在解析处写死数组：R3 新增的 5 种 kind 与 2 种 scope 曾因
+ * 解析处硬编码而被静默降级成 global/human_verdict——条目存得进、检索不到。
+ */
+export const SCOPES: ScopeKind[] = ['library', 'api', 'control', 'scenario', 'toolchain', 'resource_kind', 'global'];
+export const KINDS: KnowledgeKind[] = [
+  'traversal_quirk', 'oracle_recipe', 'special_handling', 'blocked_reason', 'demo_patch', 'human_verdict',
+  'env_recipe', 'resource_recipe', 'dep_fix', 'cert_recipe', 'build_fix',
+];
 
 export interface KnowledgeEntry {
   id: string;
@@ -110,9 +129,9 @@ export function parseEntry(md: string): Omit<KnowledgeEntry, 'wikiPath'> | null 
   if (!meta.id || !meta.title) return null;
   return {
     id: meta.id,
-    scopeKind: ['library', 'api', 'control', 'scenario', 'global'].includes(scopeKind) ? scopeKind : 'global',
+    scopeKind: SCOPES.includes(scopeKind) ? scopeKind : 'global',
     scopeKey: meta.scope_key ?? '',
-    kind: ['traversal_quirk', 'oracle_recipe', 'special_handling', 'blocked_reason', 'demo_patch', 'human_verdict'].includes(kind) ? kind : 'human_verdict',
+    kind: KINDS.includes(kind) ? kind : 'human_verdict',
     title: meta.title,
     keywords: (meta.keywords ?? '').split(/\s+/).filter(Boolean),
     status: ['ai_draft', 'human_confirmed', 'rejected', 'deprecated'].includes(status) ? status : 'ai_draft',
@@ -137,11 +156,19 @@ export interface RetrieveQuery {
   controlFingerprint?: string;
   scenarioKind?: string;
   stage?: string;
+  /** R3 新增：库类别（animation/network/storage…）——跨库召回同类经验的关键维度 */
+  libraryKind?: string;
+  /** R3 新增：工具链标识（如 "deveco-cli>=5.0" / "api12"）——环境方案按工具链归因 */
+  toolchain?: string;
+  /** R3 新增：资源类型（animation_json/ca_cert…）——资源构造经验按类型召回 */
+  resourceKind?: string;
   /** 预算（字符数）：按 score 截断 */
   budgetChars?: number;
 }
 
-const SCOPE_PRIORITY: Record<ScopeKind, number> = { api: 5, control: 4, library: 3, scenario: 2, global: 1 };
+const SCOPE_PRIORITY: Record<ScopeKind, number> = {
+  api: 5, control: 4, library: 3, scenario: 2, toolchain: 3, resource_kind: 3, global: 1,
+};
 
 /** 关键词分词：中文按字/词混合、英文按单词；去停用词与单字噪声。 */
 export function tokenize(text: string): string[] {
@@ -175,13 +202,21 @@ export function retrieve(query: RetrieveQuery, entries: KnowledgeEntry[], budget
     ...tokenize(query.library ?? ''),
     ...tokenize(query.scenarioKind ?? ''),
     ...tokenize(query.controlFingerprint ?? ''),
+    ...tokenize(query.libraryKind ?? ''),
+    ...tokenize(query.toolchain ?? ''),
+    ...tokenize(query.resourceKind ?? ''),
   ]);
   const scored: Array<{ entry: KnowledgeEntry; score: number; why: string }> = [];
   for (const e of usable) {
     const scopeExact = (query.apiName && e.scopeKind === 'api' && e.scopeKey === query.apiName)
       || (query.library && e.scopeKind === 'library' && e.scopeKey === query.library)
       || (query.scenarioKind && e.scopeKind === 'scenario' && e.scopeKey === query.scenarioKind)
-      || (query.controlFingerprint && e.scopeKind === 'control' && e.scopeKey === query.controlFingerprint);
+      || (query.controlFingerprint && e.scopeKind === 'control' && e.scopeKey === query.controlFingerprint)
+      // R3 新增三个维度的结构化命中：工具链级 / 资源类型级 / 库类别（后者按 library scope 存，
+      // scopeKey 即类别名，实现"跨库召回同类经验"——lottie 的动画经验可被另一个动画库复用）
+      || (query.toolchain && e.scopeKind === 'toolchain' && e.scopeKey === query.toolchain)
+      || (query.resourceKind && e.scopeKind === 'resource_kind' && e.scopeKey === query.resourceKind)
+      || (query.libraryKind && e.scopeKind === 'library' && e.scopeKey === query.libraryKind);
     const kwHits = e.keywords.filter((k) => queryTokens.has(k.toLowerCase())).length
       + tokenize(e.title).filter((t) => queryTokens.has(t)).length;
     if (!scopeExact && kwHits === 0) continue;
@@ -247,6 +282,10 @@ export function entryDir(e: Pick<KnowledgeEntry, 'scopeKind' | 'scopeKey'>): str
     case 'api': return path.join(root, 'apis', safe(e.scopeKey));
     case 'control': return path.join(root, 'controls');
     case 'scenario': return path.join(root, 'scenarios');
+    // R3 新增两种作用域。漏了它们会掉进 default 落到 global/——
+    // 条目存得进、目录错、检索时按 scope 分层就乱了。
+    case 'toolchain': return path.join(root, 'toolchains', safe(e.scopeKey));
+    case 'resource_kind': return path.join(root, 'resources', safe(e.scopeKey));
     default: return path.join(root, 'global');
   }
 }
@@ -364,6 +403,11 @@ export function kindForStage(stage: string): KnowledgeKind {
     case 'external_dep': case 'animation': case 'video': case 'device_blocked': case 'untestable': return 'blocked_reason';
     case 'flaky': return 'traversal_quirk';
     case 'long_running': return 'special_handling';
+    // R3 新增三类环境/资源阻塞：各自的结论属于不同知识类别，
+    // 归错类会让"下次同类失败该召回哪条经验"出错。
+    case 'env_blocked': return 'env_recipe';
+    case 'resource_missing': return 'resource_recipe';
+    case 'toolchain_missing': return 'build_fix';
     default: return 'human_verdict';
   }
 }
@@ -394,7 +438,12 @@ export async function sediteFromQueue(item: {
 
 /** 为某个阶段检索并渲染注入文本（各阶段按 §7.5 的预算与 kinds 取用）。 */
 export function injectForStage(stage: string, query: RetrieveQuery): { text: string; picked: Array<{ title: string; why: string }>; truncated: number } {
-  const budgets: Record<string, number> = { explore: 800, case_draft: 1500, case_optimize: 1500, triage: 800, script_gen: 1200 };
+  const budgets: Record<string, number> = {
+    explore: 800, case_draft: 1500, case_optimize: 1500, triage: 800, script_gen: 1200,
+    // R3 新增两个阶段：环境准备与资源构造。预算比遍历类高——
+    // 环境方案要带命令与版本约束，截太省会让注入的经验不完整、不可执行。
+    env_prep: 1800, resource_build: 1200,
+  };
   const budget = budgets[stage] ?? 1200;
   const { entries } = loadEntriesFromDisk();
   const r = retrieve({ ...query, stage }, entries, budget);

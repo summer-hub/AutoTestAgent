@@ -25,7 +25,12 @@ export type BlockerStage =
   | 'flaky'           // 历史执行结果不稳定
   | 'device_blocked'  // 没有可用设备
   | 'long_running'    // 预计单次执行超过时长阈值（设计提到阈值，未单列类别，这里补上以便可执行）
-  | 'untestable';     // 可测性判定为 D
+  | 'untestable'      // 可测性判定为 D
+  // R3 新增三类环境/资源阻塞：链头（克隆→依赖→构建→装包→资源）出问题时进这里，
+  // 而不是笼统算成 external_dep——归错类会让知识库召回错经验、人也不知道该修什么。
+  | 'env_blocked'        // 环境准备失败（依赖装不上/构建失败/包装不上）
+  | 'resource_missing'   // 缺测试资源且无法自动构造
+  | 'toolchain_missing'; // 缺工具链（deveco-cli/hvigorw/ohpm/hdc）
 
 export const BLOCKER_LABEL: Record<BlockerStage, string> = {
   demo_patch: '补丁待批准',
@@ -37,6 +42,9 @@ export const BLOCKER_LABEL: Record<BlockerStage, string> = {
   device_blocked: '无可用设备',
   long_running: '预计超时',
   untestable: '判定为无法测',
+  env_blocked: '环境准备受阻',
+  resource_missing: '缺测试资源',
+  toolchain_missing: '工具链缺失',
 };
 
 export interface TriageInput {
@@ -96,6 +104,9 @@ const SIGNALS: Array<{ re: RegExp; stage: BlockerStage; what: string }> = [
   { re: /(插拔|物理|旋转机身|摇晃|遮挡|息屏)/i, stage: 'external_dep', what: '需要物理操作' },
   { re: /(视频|video|播放画面|起播|音视频)/i, stage: 'video', what: '涉及视频/音频效果' },
   { re: /(动画|animation|lottie|逐帧|补间|动效)/i, stage: 'animation', what: '涉及动画效果' },
+  // R3 新增：步骤里出现工具链命令 → 归 toolchain_missing（而不是笼统算 external_dep）。
+  // 放最后是因为它的信号最具体（命令名），不会误吞前面的强信号。
+  { re: /(hvigorw|hvigor\s|ohpm\s|deveco-cli|devecocli|hdc\s+(?:install|shell|list)|assembleHar|assembleHap)/i, stage: 'toolchain_missing', what: '需要工具链命令（deveco-cli/hvigorw/ohpm/hdc）' },
 ];
 
 /** 该 stage 是否有"能替代人工判定"的机器判据（有则不再算阻塞）。 */
@@ -192,6 +203,10 @@ export function buildQuestion(blockers: BlockerStage[], input: TriageInput): str
   if (blockers.includes('device_blocked')) ask.push('连接一台在线真机或启动模拟器后重新分流');
   if (blockers.includes('long_running')) ask.push('确认是否可接受该时长；可接受请在系统配置里调高时长阈值，否则拆分用例');
   if (blockers.includes('untestable')) ask.push('确认该用例是否必要；若必要请给出人工验证方案与结论');
+  // R3 新增三类：问题必须具体到动作（否则队列只是把问题换个地方堆着）
+  if (blockers.includes('env_blocked')) ask.push('环境准备失败：查看「环境准备」页该库最近一次运行，按步骤的失败分类处理（缺依赖则补二进制依赖或子模块，编译失败则看构建日志），修好后重跑环境准备');
+  if (blockers.includes('resource_missing')) ask.push('缺少测试资源：到「全量分析」页的资源区合成该类资源（如动画 json 的六种变体），或把仓库自带资源登记后重试');
+  if (blockers.includes('toolchain_missing')) ask.push('缺少工具链：安装并配置 HarmonyOS 命令行工具（deveco-cli / hvigorw / ohpm / hdc）到 PATH，然后在「系统配置」确认工具链版本，再重跑环境准备');
   return ask.join('；') || '请人工确认该用例能否自动化';
 }
 

@@ -32,6 +32,7 @@ import { readTaskEvents } from '../services/taskEvents.js';
 import { exportLibrariesSheet, resolveSheetPath, syncLibrariesFromSheet } from '../services/librarySheet.js';
 import { catalogStatus } from '../services/catalog.js';
 import { runSurveyBatch, surveyLibrary, surveyStats, availablePresetKinds, presetsRoot, } from '../services/survey/index.js';
+import { runL2Increment } from '../services/survey/llm.js';
 import { listResources, registerSyntheticForKind, expiringCerts, bumpReuse, } from '../services/resourcekit/index.js';
 import { listScripts, getScript, seedBuiltinScripts, validateAllScripts, detectContractDrift, validateContract, runEnvProfile, loadProfileSteps, classifyFailure, FAILURE_LABEL, EXIT_CODES, } from '../services/envkit/index.js';
 import { loadStoredSymbols, runApiExtraction } from '../services/apiExtract.js';
@@ -826,6 +827,33 @@ function defineRoutes(llm) {
     // ---- R2：预设库（有哪些类别有开箱方案）----
     route('GET', '/survey/presets', async () => {
         return { kinds: availablePresetKinds(), root: presetsRoot() };
+    });
+    // ---- R3：L2 LLM 增量采集（只跑 L0/L1 搞不定的差异库）----
+    //
+    // 为什么单独一组路由：L2 花 token，必须可控——能指定库、能限条数、
+    // 结果要能看出"哪些库解决了、哪些只是转去问人"。批量跑则由前端按需触发。
+    route('POST', '/survey/l2', async ({ body }) => {
+        const b = (body ?? {});
+        const ids = Array.isArray(b.ids) ? b.ids.map(Number).filter((n) => Number.isFinite(n) && n > 0) : undefined;
+        const r = await runL2Increment(llm, { ids, limit: b.limit ? Number(b.limit) : undefined });
+        console.log(`[autotest] L2 增量采集：处理 ${r.processed} · 解决 ${r.resolved} · 待确认 ${r.queued} · 失败 ${r.failed} · 跳过 ${r.skipped}`);
+        return r;
+    });
+    // 待 L2 处理的库清单（前端「全量分析」页展示"还有多少库要花 token"）
+    route('GET', '/survey/l2/pending', async ({ query }) => {
+        const limit = Math.min(200, Math.max(1, Number(query.get('limit')) || 50));
+        const rows = await getDb().prepare(`SELECT l.id, l.name, r.llm_reason, f.kind, f.kind_reason, f.confidence
+       FROM library_survey_runs r
+       JOIN libraries l ON l.id = r.library_id
+       LEFT JOIN library_facts f ON f.library_id = l.id
+       WHERE r.needs_llm = 1 AND r.status = 'needs_llm'
+       ORDER BY l.id LIMIT ?`).all(limit);
+        return {
+            items: rows.map((r) => ({
+                libraryId: Number(r.id), libraryName: String(r.name), llmReason: String(r.llm_reason ?? ''),
+                kind: String(r.kind ?? 'unknown'), kindReason: String(r.kind_reason ?? ''), confidence: Number(r.confidence ?? 0),
+            })),
+        };
     });
     // ---- P2：接口面提取（导出符号 + demo 资产）----
     //

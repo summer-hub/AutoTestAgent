@@ -1,4 +1,4 @@
-export type BlockerStage = 'demo_patch' | 'oracle_missing' | 'external_dep' | 'animation' | 'video' | 'flaky' | 'device_blocked' | 'long_running' | 'untestable';
+export type BlockerStage = 'demo_patch' | 'oracle_missing' | 'external_dep' | 'animation' | 'video' | 'flaky' | 'device_blocked' | 'long_running' | 'untestable' | 'env_blocked' | 'resource_missing' | 'toolchain_missing';
 export declare const BLOCKER_LABEL: Record<BlockerStage, string>;
 export interface TriageInput {
     caseId: number;

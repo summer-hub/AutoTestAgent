@@ -1,9 +1,16 @@
-export type ScopeKind = 'library' | 'api' | 'control' | 'scenario' | 'global';
-export type KnowledgeKind = 'traversal_quirk' | 'oracle_recipe' | 'special_handling' | 'blocked_reason' | 'demo_patch' | 'human_verdict';
+export type ScopeKind = 'library' | 'api' | 'control' | 'scenario' | 'toolchain' | 'resource_kind' | 'global';
+export type KnowledgeKind = 'traversal_quirk' | 'oracle_recipe' | 'special_handling' | 'blocked_reason' | 'demo_patch' | 'human_verdict' | 'env_recipe' | 'resource_recipe' | 'dep_fix' | 'cert_recipe' | 'build_fix';
 export type KnowledgeStatus = 'ai_draft' | 'human_confirmed' | 'rejected' | 'deprecated';
 export declare const SCOPE_LABEL: Record<ScopeKind, string>;
 export declare const KIND_LABEL: Record<KnowledgeKind, string>;
 export declare const STATUS_LABEL: Record<KnowledgeStatus, string>;
+/**
+ * 合法值清单（parseEntry 的白名单）。
+ * 抽成常量而不是在解析处写死数组：R3 新增的 5 种 kind 与 2 种 scope 曾因
+ * 解析处硬编码而被静默降级成 global/human_verdict——条目存得进、检索不到。
+ */
+export declare const SCOPES: ScopeKind[];
+export declare const KINDS: KnowledgeKind[];
 export interface KnowledgeEntry {
     id: string;
     scopeKind: ScopeKind;
@@ -38,6 +45,12 @@ export interface RetrieveQuery {
     controlFingerprint?: string;
     scenarioKind?: string;
     stage?: string;
+    /** R3 新增：库类别（animation/network/storage…）——跨库召回同类经验的关键维度 */
+    libraryKind?: string;
+    /** R3 新增：工具链标识（如 "deveco-cli>=5.0" / "api12"）——环境方案按工具链归因 */
+    toolchain?: string;
+    /** R3 新增：资源类型（animation_json/ca_cert…）——资源构造经验按类型召回 */
+    resourceKind?: string;
     /** 预算（字符数）：按 score 截断 */
     budgetChars?: number;
 }
