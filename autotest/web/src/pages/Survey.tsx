@@ -22,12 +22,14 @@ export default function SurveyPage() {
   const [error, setError] = useState('');
   const [msg, setMsg] = useState('');
   const [busy, setBusy] = useState(false);
+  const [l2Pending, setL2Pending] = useState<Awaited<ReturnType<typeof api.surveyL2Pending>> | null>(null);
 
   const load = useCallback(() => {
     setError('');
     api.surveyStats().then(setStats).catch((e) => setError(String((e as Error).message)));
     api.surveyPresets().then(setPresets).catch(() => { /* 老后端无此接口时静默降级 */ });
     api.resources().then(setResources).catch(() => {});
+    api.surveyL2Pending().then(setL2Pending).catch(() => { /* 老后端无此接口时静默降级 */ });
   }, []);
 
   useEffect(() => { load(); }, [load]);
@@ -48,6 +50,21 @@ export default function SurveyPage() {
     setDetail(null);
     try { setDetail(await api.surveyBatch(id)); }
     catch (e) { setError(String((e as Error).message)); }
+  };
+
+  /**
+   * 跑 L2 LLM 增量采集：只处理 L0/L1 搞不定的差异库。
+   * 这是全量规模化的最后一环——L0/L1 覆盖大多数库，LLM 只做增量，
+   * 单位成本从"每库"降到"每类 + 每异常"。
+   */
+  const runL2 = async (limit = 10) => {
+    setError(''); setMsg(''); setBusy(true);
+    try {
+      const r = await api.surveyL2({ limit });
+      setMsg(`L2 增量采集完成：处理 ${r.processed} · 解决 ${r.resolved} · 待人工确认 ${r.queued} · 失败 ${r.failed} · 跳过 ${r.skipped}`);
+      load();
+    } catch (e) { setError(String((e as Error).message)); }
+    finally { setBusy(false); }
   };
 
   const synthesize = async (kind: string) => {
@@ -73,6 +90,12 @@ export default function SurveyPage() {
         </div>
         <div style={{ flex: 1 }} />
         <button className="btn sm" onClick={load} disabled={busy}>刷新</button>
+        <button className="btn" onClick={() => void runL2(10)} disabled={busy || (l2Pending?.items.length ?? 0) === 0}
+          title={l2Pending && l2Pending.items.length > 0
+            ? `对 ${l2Pending.items.length} 个 L0/L1 搞不定的差异库跑 LLM 增量（花 token，受 agent.maxTokensPerTask 预算闸门保护）`
+            : '暂无待 L2 处理的库（L0/L1 已全部覆盖）'}>
+          {busy ? '处理中…' : `跑 L2 增量${l2Pending && l2Pending.items.length > 0 ? `（${l2Pending.items.length}）` : ''}`}
+        </button>
         <button className="btn primary" onClick={() => void runBatch('all')} disabled={busy}>
           {busy ? '采集中…' : '跑全量采集'}
         </button>
@@ -124,6 +147,39 @@ export default function SurveyPage() {
       {/* ---------- 概览：预设与资源 ---------- */}
       {tab === 'overview' && (
         <div style={{ marginTop: 12 }}>
+          {/* L2 待处理清单：这些库 L0/L1 搞不定，需要 LLM 增量（花 token）。
+              透明展示"为什么要花钱、花在哪个库、缺什么证据"——否则预算闸门
+              拦下来时，人不知道该补什么。 */}
+          {(l2Pending?.items.length ?? 0) > 0 && (
+            <div className="card" style={{ marginBottom: 10, borderColor: 'var(--accent-dim)' }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                <b>待 L2 增量处理</b>
+                <span className="tag amber">{l2Pending!.items.length} 个库</span>
+                <div style={{ flex: 1 }} />
+                <button className="btn sm primary" disabled={busy} onClick={() => void runL2(10)}>
+                  {busy ? '处理中…' : '跑 L2（每轮 10 个）'}
+                </button>
+              </div>
+              <div className="muted" style={{ fontSize: 12, marginTop: 4 }}>
+                这些库的 L0 静态画像搞不定（类别未识别 / README 有外部前置 / 二进制依赖要决策 / 无预设），
+                需要 LLM 读 README 补环境方案。每次调用计入 token 预算（agent.maxTokensPerTask）。
+              </div>
+              <div style={{ marginTop: 8, maxHeight: 220, overflow: 'auto' }}>
+                {(l2Pending?.items ?? []).slice(0, 20).map((p) => (
+                  <div key={p.libraryId} style={{ fontSize: 11.8, marginBottom: 4, paddingLeft: 8, borderLeft: '2px solid var(--border, #333)' }}>
+                    <span className="mono">{p.libraryName}</span>{' '}
+                    <span className="tag gray">{p.kind}</span>
+                    <span className="muted"> {p.confidence}%</span>
+                    <div className="muted" style={{ fontSize: 10.5 }}>{p.llmReason || '（未记录原因）'}</div>
+                  </div>
+                ))}
+                {(l2Pending?.items.length ?? 0) > 20 && (
+                  <div className="muted" style={{ fontSize: 11 }}>…等共 {l2Pending!.items.length} 个（每轮处理 10 个）</div>
+                )}
+              </div>
+            </div>
+          )}
+
           <div className="card">
             <b>预设库</b>
             <div className="muted" style={{ fontSize: 12, marginTop: 4 }}>

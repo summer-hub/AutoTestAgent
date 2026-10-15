@@ -596,6 +596,15 @@ export const api = {
   surveyLibrary: (id: number) => req<{ ok: boolean; skipped: boolean; needsLlm: boolean; failureKind: string; failureWhat: string; kind?: string }>(
     `${API_BASE}/survey/libraries/${id}`, { method: 'POST', body: JSON.stringify({}) }),
   surveyPresets: () => req<{ kinds: string[]; root: string }>(`${API_BASE}/survey/presets`),
+  // R3：L2 LLM 增量采集（只跑 L0/L1 搞不定的差异库，花 token，受预算闸门保护）
+  surveyL2: (b: { ids?: number[]; limit?: number; taskId?: number } = {}) =>
+    req<{
+      processed: number; resolved: number; queued: number; failed: number; skipped: number;
+      details: Array<{ libraryId: number; libraryName: string; status: string; kind?: string; profileId?: number; queued: number; reason: string }>;
+    }>(`${API_BASE}/survey/l2`, { method: 'POST', body: JSON.stringify(b) }),
+  surveyL2Pending: (limit = 50) => req<{
+    items: Array<{ libraryId: number; libraryName: string; llmReason: string; kind: string; kindReason: string; confidence: number }>;
+  }>(`${API_BASE}/survey/l2/pending?limit=${limit}`),
   resources: (kind?: string, scopeKey?: string) => req<{
     items: Array<{
       resourceId: string; kind: string; origin: string; scopeKind: string; scopeKey: string;
