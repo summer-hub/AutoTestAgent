@@ -20,7 +20,8 @@
     "typecheck": "npm run typecheck -w web && cd dsh-autotest && npm run typecheck",
     "verify:all": "npm run build:plugin && cd dsh-autotest && npm run verify:all",
     "verify:tabbar": "node scripts/browser-test/verify-tabbar.mjs",
-    "verify:theme": "node scripts/browser-test/verify-theme.mjs"
+    "verify:theme": "node scripts/browser-test/verify-theme.mjs",
+    "verify:workspace": "node scripts/browser-test/verify-workspace.mjs"
   },
   "engines": {
     "node": ">=20"
