@@ -19,6 +19,7 @@
 - **可回归自检**：`npm run verify:all` 覆盖 37 套离线自检（事务隔离 / 归档列 / 密钥脱敏 / 运行态清理 / 数据目录迁出 / API 门禁 / 凭据加密 / 认证 RBAC / 指标与日志 / 遍历候选规则 / 仓库路径 / xlsx 同步 / 目录引导 / 接口面提取 / 覆盖矩阵 / demo 场景 / 用例计划 / 可测性与补丁 / oracle 与反假通过 / 分流规则 / 脚本绑定 / 任务 lane 与取消 / 危险操作审批 / 轨迹事件流 / LLM 重试换模型与 token 预算与限流 / 知识库 / 技能供应链锁 / 用例↔接口关联 / Hypium 工程布局与命名契约 / 判据运行期真跑 / 步骤句式契约 / 架构治理 / agent 接口层 / 规则注入 / WS 通道 / envkit 契约与失败分类 / 全量采集流水线 / L2 增量采集 / 环境端到端），CI 逐个接入（详见[autotest/README.md](autotest/README.md)）
 - **环境与资源纵轴（R0–R4，2026-10 重构）**：把平台核心对象从「用例」扩展为「**一次可复现的测试运行**= 代码 × 环境画像 × 资源集 × 用例 × 设备」。此前约 90% 工程量在链尾（用例→矩阵→脚本→执行→归因），而链头（克隆→依赖→构建→装包→资源→环境）近乎为 0；本纵轴补齐它，**不推倒重来**（三入口 / md 唯一事实源 / RBAC / 审批 / WS / agent 接口层全部保留复用）。设计取舍与全量规模化策略见 [docs/重构方案-环境与资源纵轴.md](docs/重构方案-环境与资源纵轴.md)
 - **问题归因闭环（R5）**：对**任意**用例有疑问都能发起一次完整调查——在「测试用例」页填「问题现象」→ AI 克隆工程、组装上下文（用例/oracle/页面源码/真机遍历 dump/接口签名/执行日志/README）定位根因并给出**可回查的证据** → 有真机则自测试复现（**无真机一律失败并写明原因，绝不回退模拟**）→ 人工验收（通过则沉淀为知识条目，下次同类问题可召回；驳回也留理由供反查）。与既有归因分析分工明确：那个分析**执行失败**（输入是失败轨迹），本功能分析**人的疑问**（输入是用例 + 人写的现象）。新增 `cases.symptom` 列与 `issue_tickets` 工单表、`services/issueRoot.ts`、executor `analyze_issue` 任务、`/issues*` 6 条路由（RBAC：读 viewer / 写 operator）、web「问题归因」页、agent-tools `issues.*` 6 条规格
+- **多标签导航 + 主题切换（R7，参考 ruoyi-vue-pro）**：打开过的页面在顶部形成页签，可点击切换、单个关闭、关闭其他/全部、刷新当前页，刷新浏览器后恢复（hash 仍是唯一事实源，首页不可关、不允许关到空）；顶栏支持亮/暗主题与 6 种主题色切换，写 localStorage 持久化，嵌入 DSH 时默认跟随宿主皮肤、显式选择可覆盖（CSS 变量按 `data-theme`/`data-accent` 分组，显式主题用字面量确保压过宿主同步）。另做 UI 视觉体系统一：按钮层级补 danger、统一空状态、表格末行去双线与表头吸顶、浅色主题卡片阴影
 
 ## 安装
 
@@ -387,6 +388,18 @@ node scripts/browser-test/ui-walk.mjs --base http://127.0.0.1:3280 --out .test-r
 # 桌面端：给 Tauri 的 WebView2 开调试端口后，直连桌面端自己的窗口跑同一套遍历
 WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS="--remote-debugging-port=9223" ./autotest-desktop.exe &
 node scripts/browser-test/ui-walk.mjs --base http://127.0.0.1:<端口> --out .test-results/desktop --connect 9223
+```
+
+**R7 新增两个 UI 专项自检**（真 Chrome 断言 DOM 与 CSS 变量，需先起服务；`cd autotest` 后执行）：
+
+```bash
+# 多标签导航：初始态/开多标签/点击切换/关闭（激活权移交）/关闭其他·全部/
+#             刷新后恢复/hash 双向同步/深链接直达（30 项断言）
+npm run verify:tabbar
+
+# 主题切换：默认跟随宿主/浅色字面量压过宿主深色/主题色生效/持久化/
+#           auto 模式干净回退（27 项断言）
+npm run verify:theme
 ```
 
 测试报告与截图归档在 `autotest/.test-results/`（`REPORT.md` + 每页 PNG + 机读 `report.json`）。这套工具曾抓出两个真实浏览器才暴露的缺陷：gzip 分支 MIME 错误导致首页被当文件下载（白屏）、`/libraries/sheet` 被 `/libraries/:id` 路由遮蔽（404）。

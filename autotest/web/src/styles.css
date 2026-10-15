@@ -263,3 +263,134 @@ tr:hover td { background: var(--panel2); }
 .ana-bar { position: relative; height: 4px; border-radius: 4px; background: var(--panel3); overflow: hidden; }
 .ana-bar::after { content: ''; position: absolute; top: 0; left: -40%; width: 40%; height: 100%; border-radius: 4px; background: var(--accent); animation: ana-slide 1.2s ease-in-out infinite; }
 @keyframes ana-slide { 0% { left: -40%; } 100% { left: 100%; } }
+
+/* ---- 多标签导航（tags-view，参考 ruoyi-vue-pro）----
+   标签栏必须是滚动容器的**兄弟节点**而非子节点：放在 .content / .embed-content
+   里面会随页面内容一起滚走（这两个容器都是 overflow-y:auto）。 */
+.tabbar { flex: none; display: flex; align-items: stretch; height: 34px; background: var(--bg2); border-bottom: 1px solid var(--border); }
+.tabbar-track { flex: 1; min-width: 0; display: flex; align-items: stretch; overflow-x: auto; overflow-y: hidden; scrollbar-width: none; }
+.tabbar-track::-webkit-scrollbar { height: 0; width: 0; }
+.tab { display: inline-flex; align-items: center; gap: 6px; padding: 0 12px; font-size: 12.5px; color: var(--text2); border-right: 1px solid var(--border); cursor: pointer; white-space: nowrap; user-select: none; position: relative; max-width: 180px; }
+.tab:hover { background: var(--panel); color: var(--text); }
+.tab.active { background: var(--panel); color: var(--accent2); }
+/* 激活态顶部细条：比整块高亮更轻，20 个标签时不会显得花 */
+.tab.active::before { content: ''; position: absolute; left: 0; right: 0; top: 0; height: 2px; background: var(--accent); }
+.tab-title { overflow: hidden; text-overflow: ellipsis; }
+.tab-close { display: inline-flex; align-items: center; justify-content: center; width: 15px; height: 15px; border: none; border-radius: 4px; background: transparent; color: var(--text3); cursor: pointer; font-size: 13px; line-height: 1; padding: 0; opacity: 0; transition: opacity .15s, background .15s, color .15s; flex-shrink: 0; }
+/* 悬停标签或激活标签才显示关闭钮：默认全显示会让 20 个标签都很吵 */
+.tab:hover .tab-close, .tab.active .tab-close { opacity: 1; }
+.tab-close:hover { background: var(--red-dim); color: var(--red); }
+.tabbar-actions { flex: none; display: flex; align-items: center; gap: 2px; padding: 0 6px; border-left: 1px solid var(--border); }
+.tab-act { display: inline-flex; align-items: center; justify-content: center; width: 24px; height: 24px; border: none; border-radius: 6px; background: transparent; color: var(--text3); cursor: pointer; font-size: 13px; line-height: 1; padding: 0; }
+.tab-act:hover:not(:disabled) { background: var(--panel2); color: var(--accent2); }
+.tab-act:disabled { opacity: .35; cursor: default; }
+/* 嵌入 DSH iframe（窄空间）：更矮更紧凑 */
+.tabbar-compact { height: 30px; }
+.tabbar-compact .tab { padding: 0 9px; font-size: 12px; max-width: 130px; }
+.tabbar-compact .tab-act { width: 22px; height: 22px; }
+
+/* ============================================================
+   主题切换（亮/暗 + 主题色）
+   ------------------------------------------------------------
+   优先级设计（关键，不能搞反）：
+     :root                          → auto 模式：跟随 DSH 宿主（--dsw-* 优先，回退深色）
+     :root[data-theme="light|dark"] → 显式模式：平台自己的配色，**不引用 --dsw-***
+   为什么显式模式绝不引用 --dsw-*：嵌入 DSH 时 theme.ts 会把宿主的 --dsw-* 变量
+   以 inline style 写到 <html> 上；若浅色主题仍写 var(--dsw-alias-bg-base, #fff)，
+   解析结果会是宿主的深色值——用户点了浅色却看到深色，且完全看不出原因。
+   用字面量 + 属性选择器（特异性 0,2,0 > :root 的 0,1,0）即可稳定覆盖。
+   ============================================================ */
+:root[data-theme="dark"] {
+  --bg: #151517; --bg2: #232324; --panel: #2c2c2e; --panel2: #353536; --panel3: #43454a;
+  --border: rgba(255, 255, 255, .12); --border2: rgba(255, 255, 255, .16);
+  --text: #f9fafb; --text2: #adb2b8; --text3: #6b7689;
+}
+:root[data-theme="light"] {
+  --bg: #eef0f4; --bg2: #ffffff; --panel: #ffffff; --panel2: #f4f5f8; --panel3: #e6e8ee;
+  --border: rgba(15, 23, 42, .10); --border2: rgba(15, 23, 42, .14);
+  --text: #171a21; --text2: #4d5666; --text3: #5f6b7f;
+  /* 浅色下阴影替代边框，卡片才有"浮起"的层次（深色下边框已足够） */
+  --shadow-card: 0 1px 2px rgba(15, 23, 42, .06), 0 1px 3px rgba(15, 23, 42, .04);
+}
+:root[data-theme="dark"] { --shadow-card: none; }
+:root:not([data-theme="light"]):not([data-theme="dark"]) { --shadow-card: none; }
+
+/* 嵌入 DSH 时 body 背景默认透明（让宿主皮肤透出来）。
+   用户显式选了主题就必须 opaque，否则会出现"宿主深色背景 + 平台浅色面板"的撕裂感。 */
+:root[data-theme="light"] body.dsh-embed-host,
+:root[data-theme="dark"] body.dsh-embed-host { background: var(--bg) !important; }
+
+/* ---- 主题色（accent）预设：只覆盖主色三件套，其余令牌保持当前主题 ---- */
+:root[data-accent="blue"]   { --accent: #5686fe; --accent2: #679efe; --accent-dim: rgba(86, 134, 254, .14); }
+:root[data-accent="green"]  { --accent: #16a34a; --accent2: #22c55e; --accent-dim: rgba(34, 197, 94, .14); }
+:root[data-accent="purple"] { --accent: #7c3aed; --accent2: #8b5cf6; --accent-dim: rgba(124, 58, 237, .14); }
+:root[data-accent="orange"] { --accent: #d97706; --accent2: #f59e0b; --accent-dim: rgba(217, 119, 6, .14); }
+:root[data-accent="red"]    { --accent: #dc2626; --accent2: #ef4444; --accent-dim: rgba(220, 38, 38, .14); }
+/* 跟随宿主（默认）：不写 --accent，让 :root 里的 var(--dsw-*, 回退) 继续生效 */
+:root[data-accent="auto"]   { --accent: var(--dsw-alias-button-primary-fill, #5686fe); --accent2: var(--dsw-alias-button-primary-hover, #679efe); --accent-dim: var(--dsw-alias-interactive-bg-hover-accent, rgba(86, 134, 254, .14)); }
+
+/* ---- 主题切换控件（顶栏按钮 + 浮层）---- */
+.theme-btn { display: inline-flex; align-items: center; justify-content: center; width: 30px; height: 30px; border: 1px solid var(--border); border-radius: 8px; background: var(--panel); color: var(--text2); cursor: pointer; font-size: 14px; line-height: 1; padding: 0; position: relative; }
+.theme-btn:hover { color: var(--accent2); border-color: var(--accent); }
+.theme-pop { position: absolute; top: 38px; right: 0; z-index: 60; width: 216px; background: var(--panel); border: 1px solid var(--border2); border-radius: 12px; box-shadow: 0 8px 28px rgba(0, 0, 0, .28); padding: 12px; }
+.theme-pop-title { font-size: 11.5px; color: var(--text3); margin: 0 0 6px; letter-spacing: .04em; }
+.theme-seg { display: flex; gap: 4px; margin-bottom: 12px; }
+.theme-seg button { flex: 1; padding: 6px 0; font-size: 12px; border: 1px solid var(--border); border-radius: 7px; background: transparent; color: var(--text2); cursor: pointer; font-family: inherit; }
+.theme-seg button:hover { background: var(--panel2); }
+.theme-seg button.on { background: var(--accent-dim); border-color: var(--accent); color: var(--accent2); }
+.theme-swatches { display: flex; gap: 8px; }
+.theme-swatch { width: 26px; height: 26px; border-radius: 50%; border: 2px solid transparent; cursor: pointer; padding: 0; position: relative; }
+.theme-swatch.on { border-color: var(--text); }
+.theme-swatch.on::after { content: '✓'; position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; color: #fff; font-size: 12px; }
+
+/* ============================================================
+   UI 视觉体系统一打磨（R7，参考 ruoyi-vue-pro 的视觉语言）
+   ------------------------------------------------------------
+   原则：只做"统一"不做"重写"——补齐缺失的层级与状态，收敛已有的零散写法。
+   1. 按钮层级：primary（主操作）/ 默认（次操作）/ ghost（弱操作）/ danger（破坏性）；
+      此前 danger 从未定义，破坏性操作（删除）和普通按钮长得一样，误触成本高。
+   2. 空状态：此前没有统一样式，各页面各自拼 div，视觉杂乱；
+      这里给 .empty 一套中性的空态，含图标位 + 主文案 + 次文案。
+   3. 表格：统一圆角与容器感（外层卡片包裹时不再出现"表格顶到卡片边缘"）。
+   4. 浅色主题下的阴影层次：--shadow-card 已按主题定义，这里让 .card 用它。
+   ============================================================ */
+
+/* ---- 1. 按钮层级补全 ---- */
+.btn.danger { background: var(--red-dim); border-color: var(--red-dim); color: var(--red); }
+.btn.danger:hover { border-color: var(--red); color: var(--red); background: var(--red); color: #fff; }
+/* 图标按钮（表格行内"⚙ 转脚本"这类带图标的文字按钮已有 .btn.sm，这里补纯图标规格） */
+.btn.icon { padding: 5px 8px; }
+/* 禁用态：此前只有浏览器默认（灰底+灰字），与我们的面板色不搭 */
+.btn:disabled { opacity: .5; cursor: not-allowed; }
+.btn:disabled:hover { border-color: var(--border2); color: var(--text); }
+.btn.primary:disabled:hover { border-color: var(--accent); color: #fff; }
+
+/* ---- 2. 空状态（统一）---- */
+.empty { display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 6px; padding: 44px 20px; text-align: center; color: var(--text3); }
+.empty .empty-ic { font-size: 30px; opacity: .55; line-height: 1; }
+.empty .empty-t { font-size: 13px; color: var(--text2); font-weight: 500; }
+.empty .empty-d { font-size: 11.8px; max-width: 420px; line-height: 1.7; }
+/* 卡片内的空态更紧凑（不撑满整卡） */
+.card .empty { padding: 28px 16px; }
+
+/* ---- 3. 表格容器感 ---- */
+/* 表格放在卡片里时，最后一行边框会与卡片边框形成"双线"；这里去掉末行下边框 */
+.card table tr:last-child td { border-bottom: none; }
+/* 表头粘住：长表格滚动时列名不消失（嵌入模式内容区是可滚动的，这点尤其有用） */
+.card table thead th { position: sticky; top: 0; background: var(--panel); z-index: 1; }
+
+/* ---- 4. 浅色主题的卡片阴影（深色下边框已足够，浅色需要阴影才有层次）---- */
+.card { box-shadow: var(--shadow-card, none); }
+
+/* ---- 5. 页面头部统一（标题 + 描述 + 操作区）---- */
+/* 多数页面已在 JSX 里用 .page-title/.page-desc + flex 排布，这里补齐间距节奏 */
+.page-title { font-size: 17px; font-weight: 650; letter-spacing: -.01em; }
+.page-desc { color: var(--text3); font-size: 12.5px; margin-bottom: 18px; line-height: 1.7; }
+
+/* ---- 6. 标签（tag）补两种常用态 ---- */
+/* outline：比 .plain 更轻，用于"非状态性"的分类标注 */
+.tag.outline { border: 1px dashed var(--border2); background: transparent; color: var(--text3); }
+
+/* ---- 7. 滚动条在浅色下的可见度 ---- */
+:root[data-theme="light"] ::-webkit-scrollbar-thumb { background: #c8cdd8; }
+:root[data-theme="light"] ::-webkit-scrollbar-thumb:hover { background: #aeb5c2; }

@@ -22,6 +22,8 @@ import SurveyPage from './pages/Survey';
 import IssuesPage from './pages/Issues';
 import SettingsModal from './components/SettingsModal';
 import LoginScreen from './components/LoginScreen';
+import TabBar from './components/TabBar';
+import ThemeSwitch from './components/ThemeSwitch';
 import { ErrorBoundary } from './components/ErrorBoundary';
 import { ROLE_LABEL, setRole } from './authState';
 
@@ -105,6 +107,9 @@ export default function App() {
   });
   // 认证态势（P0-1）：checked=已问过服务端；enabled=服务端开启认证；role=当前身份（null=待登录）
   const [auth, setAuth] = useState<{ checked: boolean; enabled: boolean; role: string | null }>({ checked: false, enabled: false, role: null });
+  // 标签栏「刷新当前页」用：bump 这个 key 会让内容区整棵子树 remount（等价于重新进页面），
+  // 比 window.location.reload() 轻——不掉 hash、不重连 WS、不重新走登录门。
+  const [contentKey, setContentKey] = useState(0);
 
   useEffect(() => {
     try { localStorage.setItem('autotest.navCollapsed', navCollapsed ? '1' : '0'); } catch { /* 忽略（隐私模式等） */ }
@@ -157,7 +162,7 @@ export default function App() {
   }, []);
 
   const renderPage = () => (
-    <ErrorBoundary resetKey={page}>
+    <ErrorBoundary resetKey={page} key={`${page}:${contentKey}`}>
       {page === 'home' && <HomePage />}
       {page === 'tasks' && <TasksPage />}
       {page === 'libraries' && <LibrariesPage />}
@@ -232,6 +237,7 @@ export default function App() {
             <span className="tb-pill" title={backend ? `后端版本 ${backend.version} · ${backend.db}` : '加载中'}>
               <span className="dot green" /> {pillText}
             </span>
+            <ThemeSwitch />
             <button
               type="button"
               className="embed-collapse"
@@ -249,7 +255,10 @@ export default function App() {
             <span className="crumb-sep">/</span>
             <b>{TITLES[page]}</b>
           </nav>
-          <div className="embed-content">{renderPage()}</div>
+          <TabBar active={page} titles={TITLES} onNavigate={goto} onRefresh={() => setContentKey((k) => k + 1)} compact />
+          <div className="embed-content">
+            {renderPage()}
+          </div>
         </main>
       </div>
     );
@@ -291,11 +300,15 @@ export default function App() {
             工作台 / <b>{TITLES[page]}</b>
           </div>
           <div className="tb-spacer" />
+          <ThemeSwitch />
           <div className="tb-pill" title={backend ? `后端版本 ${backend.version} · ${backend.db}` : '加载中'}>
             <span className="dot green" /> {pillText}
           </div>
         </header>
-        <div className="content">{renderPage()}</div>
+        <TabBar active={page} titles={TITLES} onNavigate={goto} onRefresh={() => setContentKey((k) => k + 1)} />
+        <div className="content">
+          {renderPage()}
+        </div>
       </div>
 
       <SettingsModal open={settingsOpen} onClose={() => setSettingsOpen(false)} />

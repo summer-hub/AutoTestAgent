@@ -18,7 +18,9 @@
     "start:dev": "cd dsh-autotest && npm run dev:server",
     "dev:web": "npm run dev -w web",
     "typecheck": "npm run typecheck -w web && cd dsh-autotest && npm run typecheck",
-    "verify:all": "npm run build:plugin && cd dsh-autotest && npm run verify:all"
+    "verify:all": "npm run build:plugin && cd dsh-autotest && npm run verify:all",
+    "verify:tabbar": "node scripts/browser-test/verify-tabbar.mjs",
+    "verify:theme": "node scripts/browser-test/verify-theme.mjs"
   },
   "engines": {
     "node": ">=20"

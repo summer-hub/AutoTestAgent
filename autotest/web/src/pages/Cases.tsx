@@ -486,7 +486,7 @@ export default function CasesPage() {
               {(['通过', '失败', '待确认', '未执行'] as const).map((st) => (
                 <button key={st} className="btn sm" disabled={batchBusy} onClick={() => void batchStatus(st)}>{st}</button>
               ))}
-              <button className="btn sm" style={{ color: 'var(--red)' }} disabled={batchBusy} onClick={() => void batchDelete()}>🗑 批量删除</button>
+              <button className="btn sm danger" disabled={batchBusy} onClick={() => void batchDelete()}>🗑 批量删除</button>
               <button className="btn sm ghost" onClick={() => setSel(new Set())}>取消选择</button>
             </div>
           )}
