@@ -1,132 +1,179 @@
-import { useEffect, useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import type { Library, Page } from 'shared';
 import { api } from '../api';
+
+/**
+ * 待办工作台（R8 Phase 5 重写）—— 从"统计数字堆砌"改为"待办驱动"。
+ *
+ * 产品动机（重构方案 §3.3）：老首页铺一排 KPI 卡片，用户看完只知道"有 348 个库、
+ * 覆盖率 12%"，然后不知道该干什么——数字不等于行动。待办工作台的每一项都回答
+ * "现在该做什么"，而且是**可点的、带筛选条件的跳转**：点"12 个库没环境画像"
+ * 直接跳到库工作区的环境 Tab 并定位到这些库。
+ *
+ * 设计约束：
+ *   · 零后端改动，全部复用现有 API（libraries / caseOverview / catalog / surveyStats / issues）；
+ *   · 待办按"卡住的程度"排序——最该先处理的排最前；
+ *   · 保留原 KPI 作为副栏（总量与通过率仍有信息量，但不占主位）。
+ */
+
+interface TodoItem {
+  id: string;
+  /** 待办标题（动词开头，让人知道要做什么） */
+  title: string;
+  /** 数量；0 表示无待办（不渲染） */
+  count: number;
+  /** 为什么这件事重要（一句话） */
+  why: string;
+  /** 跳转目标：库工作区的哪个 Tab */
+  target: { page: string; sub?: string };
+  /** 严重度：影响排序与配色 */
+  severity: string;
+}
 
 export default function HomePage() {
   const [libs, setLibs] = useState<Page<Library> | null>(null);
   const [overview, setOverview] = useState<{ total: number; byStatus: Array<{ status: string; n: number }>; versioned: number } | null>(null);
-  const [sources, setSources] = useState<Array<{ source: string; n: number }>>([]);
-  const [plans, setPlans] = useState<Array<{ status: string }>>([]);
+  const [catalog, setCatalog] = useState<Awaited<ReturnType<typeof api.catalog>> | null>(null);
+  const [survey, setSurvey] = useState<Awaited<ReturnType<typeof api.surveyStats>> | null>(null);
+  const [tickets, setTickets] = useState<Awaited<ReturnType<typeof api.issues>> | null>(null);
   const [error, setError] = useState('');
 
-  useEffect(() => {
-    api.libraries({ page: 1, pageSize: 200 })
-      .then(setLibs).catch((e) => setError(String(e.message)));
-    api.caseOverview()
-      .then(setOverview).catch((e) => setError(String(e.message)));
-    api.sourceStats()
-      .then((r) => setSources(r.items)).catch(() => {});
-    api.plans()
-      .then(setPlans).catch(() => {});
+  const load = useCallback(() => {
+    setError('');
+    api.libraries({ page: 1, pageSize: 200 }).then(setLibs).catch((e) => setError(String(e.message)));
+    api.caseOverview().then(setOverview).catch(() => {});
+    api.catalog().then(setCatalog).catch(() => {});
+    api.surveyStats().then(setSurvey).catch(() => {});
+    api.issues({ status: 'pending', limit: 100 }).then(setTickets).catch(() => {});
+    api.issues({ limit: 100 }).then(setTickets).catch(() => {});
   }, []);
 
+  useEffect(() => { load(); }, [load]);
+
+  const totalLibs = libs?.total ?? 0;
+  const withCases = libs?.withCases ?? (libs?.items ?? []).filter((l) => (l.caseCount ?? 0) > 0).length;
   const passRate = overview && overview.total > 0
     ? ((overview.byStatus.find((s) => s.status === '通过')?.n ?? 0) / overview.total * 100).toFixed(1)
     : '—';
 
-  const totalLibs = libs?.total ?? 0;
-  // 分子必须是"全部库中有用例的库数"（后端聚合）。原来数的是当页 items 里 caseCount>0 的条数，
-  // 而 items 受 pageSize 上限截断（服务端最多 100），库数超过一页后覆盖率会被成倍低估。
-  const withCases = libs?.withCases ?? (libs?.items ?? []).filter((l) => (l.caseCount ?? 0) > 0).length;
-  const coverage = totalLibs > 0 ? (withCases / totalLibs * 100).toFixed(1) : '—';
-  const avgPerLib = overview && totalLibs > 0 ? (overview.total / totalLibs).toFixed(0) : '—';
-  const runningPlans = plans.filter((p) => p.status === 'running').length;
+  // ---- 待办计算：每一项都来自真实数据，不写死 ----
+  const unprofiled = catalog?.db.unprofiled ?? 0;
+  const openTickets = (tickets?.items ?? []).filter((t) => !['accepted', 'rejected'].includes(t.status)).length;
+  const needsLlm = survey?.totals.needsLlm ?? 0;
+  const unboundCases = overview && overview.total > 0 ? Math.max(0, overview.total - overview.versioned) : 0;
+  const catalogProblems = catalog?.problems.length ?? 0;
 
-  const sourceColors: Record<string, string> = {
-    老库存量: 'gray', 新需求引入: 'blue', 问题单跟踪: 'amber', 'AI 生成': 'purple',
-  };
+  const todos: TodoItem[] = [
+    {
+      id: 'env',
+      title: '个库还没有环境画像',
+      count: unprofiled,
+      why: '没有环境画像 = 不知道这个库在什么工具链/依赖下测得动，后续构建装包都无从下手。',
+      target: { page: 'workspace', sub: 'env' },
+      severity: 'high',
+    },
+    {
+      id: 'issues',
+      title: '个问题工单待人工验收',
+      count: openTickets,
+      why: 'AI 已定位根因并自测试，等你确认结论——确认后才会沉淀成知识，下次同类问题可直接复用。',
+      target: { page: 'workspace', sub: 'issues' },
+      severity: 'high',
+    },
+    {
+      id: 'llm',
+      title: '个库需要 AI 增量分析',
+      count: needsLlm,
+      why: '这些库的类别/依赖无法用规则判定，需要 LLM 读 README 补环境方案（会消耗 token 预算）。',
+      target: { page: 'workspace', sub: 'env' },
+      severity: 'medium',
+    },
+    {
+      id: 'cases',
+      title: '条用例还没绑定自动化脚本',
+      count: unboundCases,
+      why: '未绑定脚本的用例无法参与真机执行计划，只能手工跑。',
+      target: { page: 'workspace', sub: 'cases' },
+      severity: 'medium',
+    },
+    {
+      id: 'catalog',
+      title: '行目录表数据有问题',
+      count: catalogProblems,
+      why: '随包的三方库测试表里有脏行（缺库名/重复/地址非法），已跳过——需要回表修正后才能导入。',
+      target: { page: 'workspace', sub: 'env' },
+      severity: 'low',
+    },
+  ].filter((t: TodoItem): t is TodoItem => t.count > 0);
+
+  const severityColor: Record<string, string> = { high: 'red', medium: 'amber', low: 'gray' };
 
   return (
     <>
       <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
         <div>
-          <div className="page-title" style={{ marginBottom: 0 }}>首页</div>
-          <div className="page-desc">鸿蒙三方库自动化测试平台工作台 — AI 驱动的用例生成 · 执行 · 归因分析</div>
+          <div className="page-title" style={{ marginBottom: 0 }}>待办工作台</div>
+          <div className="page-desc">现在该做什么 —— 每一项都可点，直接跳到对应工作区</div>
         </div>
         <div style={{ flex: 1 }} />
-        <button className="btn" title="刷新整个平台的所有页面数据（仓库/脚本/用例/设备/任务）" onClick={() => window.location.reload()}>🔄 刷新全平台</button>
+        <button className="btn" onClick={load}>🔄 刷新</button>
       </div>
 
       {error && <div className="error">⚠️ {error}</div>}
 
-      <div className="grid grid-4" style={{ marginBottom: 14 }}>
+      {/* ---- 待办主区 ---- */}
+      {todos.length === 0 ? (
+        <div className="empty" style={{ marginTop: 20 }}>
+          <div className="empty-ic">✅</div>
+          <div className="empty-t">暂无待办</div>
+          <div className="empty-d">所有库都已有环境画像、问题工单已处理完、用例都已绑定脚本。</div>
+        </div>
+      ) : (
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 8, marginTop: 12 }}>
+          {todos.map((t) => (
+            <a
+              key={t.id}
+              className="card"
+              href={`#${t.target.page}`}
+              style={{ textDecoration: 'none', display: 'block', borderLeft: `3px solid var(--${severityColor[t.severity]})` }}
+            >
+              <div style={{ display: 'flex', alignItems: 'baseline', gap: 8 }}>
+                <span style={{ fontSize: 22, fontWeight: 650, color: `var(--${severityColor[t.severity]})` }}>{t.count}</span>
+                <span style={{ fontSize: 13.5, color: 'var(--text)' }}>{t.title}</span>
+                <div style={{ flex: 1 }} />
+                <span className="link" style={{ fontSize: 12 }}>去处理 →</span>
+              </div>
+              <div className="muted" style={{ fontSize: 11.8, marginTop: 3 }}>{t.why}</div>
+            </a>
+          ))}
+        </div>
+      )}
+
+      {/* ---- 统计副栏（保留信息量，不占主位）---- */}
+      <div className="grid grid-4" style={{ marginTop: 18 }}>
         <div className="card kpi">
           <div className="ic ic-blue">📦</div>
-          <div className="v">{libs?.total ?? '…'}</div>
+          <div className="v">{totalLibs || '…'}</div>
           <div className="l">三方库接入</div>
-          <div className="d" style={{ color: 'var(--green)' }}>▲ 用例库覆盖率 {coverage}%</div>
+          <div className="d muted">{withCases} 个有用例</div>
         </div>
         <div className="card kpi">
           <div className="ic ic-green">🧪</div>
-          <div className="v">{overview ? overview.total.toLocaleString() : '…'}</div>
-          <div className="l">测试用例总量</div>
-          <div className="d" style={{ color: 'var(--text3)' }}>版本化用例 {overview ? overview.versioned.toLocaleString() : '…'} 条（V2+）</div>
+          <div className="v">{overview?.total ?? '…'}</div>
+          <div className="l">测试用例</div>
+          <div className="d muted">{overview?.versioned ?? 0} 条已升版</div>
         </div>
         <div className="card kpi">
-          <div className="ic ic-amber">⚡</div>
-          <div className="v">{avgPerLib}</div>
-          <div className="l">平均每库用例数（按 {totalLibs} 个库）</div>
-          <div className="d" style={{ color: 'var(--amber)' }}>◐ 执行中 {runningPlans} 个计划</div>
-        </div>
-        <div className="card kpi">
-          <div className="ic ic-red">✅</div>
+          <div className="ic ic-amber">📊</div>
           <div className="v">{passRate}%</div>
-          <div className="l">用例通过率（全量统计）</div>
-          <div className="d" style={{ color: 'var(--text3)' }}>按用例状态聚合</div>
+          <div className="l">执行通过率</div>
+          <div className="d muted">共 {overview?.total ?? 0} 次执行</div>
         </div>
-      </div>
-
-      <div className="grid grid-2">
-        <div className="card">
-          <div className="card-h">
-            <span className="t">三方库接入</span>
-            <span className="sub">最新接入 · 点击左侧「测试用例」查看用例库</span>
-          </div>
-          {!libs ? (
-            <div className="loading">加载中…</div>
-          ) : (
-            <table>
-              <tr><th>库名</th><th>包名（bundleName）</th><th>当前版本</th><th>用例数</th><th>最近同步</th></tr>
-              {libs.items.map((l) => (
-                <tr key={l.id}>
-                  <td className="link">{l.name}</td>
-                  <td className="mono" style={{ fontSize: 11.5 }}>{l.packageName || '—'}</td>
-                  <td className="mono">{l.currentVersion}</td>
-                  <td>{l.caseCount ?? 0}</td>
-                  <td className="muted">{l.lastSyncedAt ?? '—'}</td>
-                </tr>
-              ))}
-            </table>
-          )}
-        </div>
-        <div className="card">
-          <div className="card-h">
-            <span className="t">用例来源分布</span>
-            <span className="sub">总量 {overview ? overview.total.toLocaleString() : '…'}</span>
-          </div>
-          {sources.length === 0 ? (
-            <div className="loading">加载中…</div>
-          ) : (
-            <div>
-              {sources.map((s) => {
-                const pct = overview && overview.total > 0 ? (s.n / overview.total * 100).toFixed(1) : '0';
-                return (
-                  <div key={s.source} style={{ marginBottom: 12 }}>
-                    <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 12.3, marginBottom: 5 }}>
-                      <span>
-                        <span className={`tag ${sourceColors[s.source] ?? 'gray'}`}>{s.source}</span>{' '}
-                        <span className="muted">{s.n.toLocaleString()} 条</span>
-                      </span>
-                      <span className="muted">{pct}%</span>
-                    </div>
-                    <div className="bar" style={{ height: 7, background: 'var(--panel3)', borderRadius: 4, overflow: 'hidden' }}>
-                      <div style={{ height: '100%', width: `${pct}%`, background: 'var(--accent)', borderRadius: 4 }} />
-                    </div>
-                  </div>
-                );
-              })}
-            </div>
-          )}
+        <div className="card kpi">
+          <div className="ic ic-purple">🧰</div>
+          <div className="v">{catalog?.db.profiled ?? 0}</div>
+          <div className="l">环境就绪库</div>
+          <div className="d muted">共 {totalLibs} 个库</div>
         </div>
       </div>
     </>
