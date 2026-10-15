@@ -1,26 +1,29 @@
 import { useEffect, useState } from 'react';
 import { api } from './api';
-import HomePage from './pages/Home';
-import CasesPage from './pages/Cases';
-import TasksPage from './pages/Tasks';
-import PlansPage from './pages/Plans';
-import AnalysisPage from './pages/Analysis';
-import AttributionPage from './pages/Attribution';
-import DebugPage from './pages/Debug';
-import DevicesPage from './pages/Devices';
-import PromptsPage from './pages/Prompts';
-import SettingsPage from './pages/Settings';
-import ScriptsPage from './pages/Scripts';
-import LibrariesPage from './pages/Libraries';
-import ApiPage from './pages/Api';
-import CoveragePage from './pages/Coverage';
-import HumanQueuePage from './pages/HumanQueue';
-import KnowledgePage from './pages/Knowledge';
-import AgentBindingsPage from './pages/AgentBindings';
-import EnvPage from './pages/Env';
-import SurveyPage from './pages/Survey';
-import IssuesPage from './pages/Issues';
+import HomePage from './views/Home';
+import CasesPage from './views/Cases';
+import TasksPage from './views/Tasks';
+import PlansPage from './views/Plans';
+import AnalysisPage from './views/Analysis';
+import AttributionPage from './views/Attribution';
+import DebugPage from './views/Debug';
+import DevicesPage from './views/Devices';
+import PromptsPage from './views/Prompts';
+import SettingsPage from './views/Settings';
+import ScriptsPage from './views/Scripts';
+import LibrariesPage from './views/Libraries';
+import ApiPage from './views/Api';
+import CoveragePage from './views/Coverage';
+import HumanQueuePage from './views/HumanQueue';
+import KnowledgePage from './views/Knowledge';
+import AgentBindingsPage from './views/AgentBindings';
+import EnvPage from './views/Env';
+import SurveyPage from './views/Survey';
+import IssuesPage from './views/Issues';
 import LibraryWorkspace from './pages/LibraryWorkspace';
+import AssetsPage from './pages/Assets';
+import ExecutionPage from './pages/Execution';
+import ConfigPage from './pages/Config';
 import SettingsModal from './components/SettingsModal';
 import LoginScreen from './components/LoginScreen';
 import TabBar from './components/TabBar';
@@ -28,7 +31,7 @@ import ThemeSwitch from './components/ThemeSwitch';
 import { ErrorBoundary } from './components/ErrorBoundary';
 import { ROLE_LABEL, setRole } from './authState';
 
-export type PageKey = 'home' | 'workspace' | 'tasks' | 'libraries' | 'api' | 'coverage' | 'human' | 'knowledge' | 'cases' | 'scripts' | 'plans' | 'analysis' | 'attribution' | 'debug' | 'devices' | 'prompts' | 'agents' | 'env' | 'survey' | 'issues' | 'settings';
+export type PageKey = 'home' | 'workspace' | 'assets' | 'execution' | 'config' | 'tasks' | 'libraries' | 'api' | 'coverage' | 'human' | 'knowledge' | 'cases' | 'scripts' | 'plans' | 'analysis' | 'attribution' | 'debug' | 'devices' | 'prompts' | 'agents' | 'env' | 'survey' | 'issues' | 'settings';
 
 const NAV: Array<{ group: string; items: Array<{ key: PageKey; icon: string; label: string; badge?: string }> }> = [
   {
@@ -36,47 +39,16 @@ const NAV: Array<{ group: string; items: Array<{ key: PageKey; icon: string; lab
     items: [
       { key: 'home', icon: '🏠', label: '首页' },
       { key: 'workspace', icon: '🗂️', label: '库工作区' },
-      { key: 'tasks', icon: '📋', label: '任务管理' },
-    ],
-  },
-  {
-    group: '测试资产',
-    items: [
-      { key: 'libraries', icon: '📚', label: '库管理' },
-      { key: 'api', icon: '🔌', label: '接口清单' },
-      { key: 'coverage', icon: '🧭', label: '覆盖矩阵' },
-      { key: 'human', icon: '🙋', label: '人工队列' },
-      { key: 'knowledge', icon: '📖', label: '知识库' },
-      { key: 'cases', icon: '🧪', label: '测试用例' },
-      { key: 'scripts', icon: '🤖', label: '自动化脚本' },
-      { key: 'env', icon: '🧰', label: '环境准备' },
-      { key: 'survey', icon: '🔬', label: '全量分析' },
-      { key: 'issues', icon: '🩺', label: '问题归因' },
-    ],
-  },
-  {
-    group: '智能分析',
-    items: [
-      { key: 'plans', icon: '📅', label: '执行计划' },
-      { key: 'analysis', icon: '📊', label: '数据分析' },
-      { key: 'attribution', icon: '🔍', label: '归因分析' },
-      { key: 'debug', icon: '🐞', label: '调试会话' },
-    ],
-  },
-  {
-    group: '资源与配置',
-    items: [
-      { key: 'devices', icon: '📱', label: '设备管理' },
-      { key: 'prompts', icon: '🧠', label: 'Prompt 管理' },
-      { key: 'agents', icon: '🔗', label: 'Agent 绑定' },
-      { key: 'settings', icon: '⚙️', label: '系统配置' },
+      { key: 'assets', icon: '📦', label: '资产' },
+      { key: 'execution', icon: '⚡', label: '执行' },
+      { key: 'config', icon: '⚙️', label: '配置' },
     ],
   },
 ];
 
 const TITLES: Record<PageKey, string> = {
   home: '首页', tasks: '任务管理', libraries: '库管理', api: '接口清单', coverage: '覆盖矩阵', human: '人工队列', knowledge: '知识库', cases: '测试用例', scripts: '自动化脚本', plans: '执行计划', analysis: '数据分析',
-  attribution: '归因分析', debug: '调试会话', devices: '设备管理', prompts: 'Prompt 管理', agents: 'Agent 绑定', env: '环境准备', survey: '全量分析', issues: '问题归因', workspace: '库工作区', settings: '系统配置',
+  attribution: '归因分析', debug: '调试会话', devices: '设备管理', prompts: 'Prompt 管理', agents: 'Agent 绑定', env: '环境准备', survey: '全量分析', issues: '问题归因', workspace: '库工作区', assets: '资产', execution: '执行', config: '配置', settings: '系统配置',
 };
 
 /** 页面 → 所属分组（面包屑第一段，如「智能分析 / 执行计划」）。 */
@@ -185,6 +157,9 @@ export default function App() {
       {page === 'survey' && <SurveyPage />}
       {page === 'issues' && <IssuesPage />}
       {page === 'workspace' && <LibraryWorkspace />}
+      {page === 'assets' && <AssetsPage />}
+      {page === 'execution' && <ExecutionPage />}
+      {page === 'config' && <ConfigPage />}
       {page === 'settings' && <SettingsPage />}
     </ErrorBoundary>
   );
