@@ -13,10 +13,11 @@
 - **数据分析 / 归因**：从 GitCode 拉取真实 PR，AI 分析用例更新点、影响范围与风险；失败执行支持自由勾选（可跨库）归因；可指定 #PR 单独分析、实时进度动画、结果小卡片放大查看
 - **前端插件化**：DSH client 插件侧边栏入口 + 主区 iframe 嵌入，复用 DSH 深色风格
 - **并发与缓存**：LRU/Redis 缓存（写路径按前缀失效）、MySQL 连接池；`repository.ts` 预留了 `library_id % 16` 分表路由层，**当前仍是单表**（`caseTableFor()` 恒返回 `cases`），README 中的 QPS 数字来自开发期单机 SQLite 压测
-- **agent 接口层双件套**（CLI + MCP Server）：`agent-tools/` 把平台能力包装成 AI Agent Bot 即插即用的接口——CLI（octo-cli 模式：stdout JSON envelope + stderr 确定性错误分类 + 退出码 0/2/3/4/5 + 零交互）与 MCP stdio server（initialize / tools/list / tools/call）；**34 条命令规格是单一事实源**（CLI help 树 / MCP inputSchema / 路由漂移检测三端消费），危险操作本地 `--confirm` + 服务端审批流双闸门，令牌走平台 RBAC
-- **规则注入（B3）**：`rules/` 10 条开发纪律（octospec 风格 frontmatter：`inject_when.paths/touches` + `load_bearing` + `priority`）——按代码触碰路径/主题向编码 agent 注入（CLI / MCP `rules.inject` / 本地 `scripts/inject-rules.mjs`，支持 `--from-git`），预算内全文、超预算退摘要行；索引 CI 防漂移
+- **agent 接口层双件套**（CLI + MCP Server）：`agent-tools/` 把平台能力包装成 AI Agent Bot 即插即用的接口——CLI（octo-cli 模式：stdout JSON envelope + stderr 确定性错误分类 + 退出码 0/2/3/4/5 + 零交互）与 MCP stdio server（initialize / tools/list / tools/call）；**44 条命令规格是单一事实源**（CLI help 树 / MCP inputSchema / 路由漂移检测三端消费），危险操作本地 `--confirm` + 服务端审批流双闸门，令牌走平台 RBAC
+- **规则注入（B3）**：`rules/` 11 条开发纪律（octospec 风格 frontmatter：`inject_when.paths/touches` + `load_bearing` + `priority`）——按代码触碰路径/主题向编码 agent 注入（CLI / MCP `rules.inject` / 本地 `scripts/inject-rules.mjs`，支持 `--from-git`），预算内全文、超预算退摘要行；索引 CI 防漂移
 - **WebSocket 实时通道（B4）**：`/api/autotest/ws`（token 走 query、复用 enforceAuth 鉴权含回环豁免）；task_events 追加即广播，`task:<id>`/`global` 双频道按 (taskId,seq) 去重；零依赖 RFC6455 帧编解码；Web 端 Tasks/Debug「WS 优先 + 轮询兜底」自动切换
-- **可回归自检**：`npm run verify:all` 覆盖 31 套离线自检（事务隔离 / 归档列 / 密钥脱敏 / 运行态清理 / 数据目录迁出 / API 门禁 / 凭据加密 / 认证 RBAC / 指标与日志 / 遍历候选规则 / 仓库路径 / xlsx 同步 / 接口面提取 / 覆盖矩阵 / demo 场景 / 用例计划 / 可测性与补丁 / oracle 与反假通过 / 分流规则 / 脚本绑定 / 任务 lane 与取消 / 危险操作审批 / 轨迹事件流 / LLM 重试换模型与 token 预算与限流 / 知识库 / 技能供应链锁 / 用例↔接口关联 / Hypium 工程布局与命名契约 / 判据运行期真跑 / 步骤句式契约 / 架构治理 / agent 接口层 / 规则注入 / WS 通道），CI 逐个接入（详见[autotest/README.md](autotest/README.md)）
+- **可回归自检**：`npm run verify:all` 覆盖 37 套离线自检（事务隔离 / 归档列 / 密钥脱敏 / 运行态清理 / 数据目录迁出 / API 门禁 / 凭据加密 / 认证 RBAC / 指标与日志 / 遍历候选规则 / 仓库路径 / xlsx 同步 / 目录引导 / 接口面提取 / 覆盖矩阵 / demo 场景 / 用例计划 / 可测性与补丁 / oracle 与反假通过 / 分流规则 / 脚本绑定 / 任务 lane 与取消 / 危险操作审批 / 轨迹事件流 / LLM 重试换模型与 token 预算与限流 / 知识库 / 技能供应链锁 / 用例↔接口关联 / Hypium 工程布局与命名契约 / 判据运行期真跑 / 步骤句式契约 / 架构治理 / agent 接口层 / 规则注入 / WS 通道 / envkit 契约与失败分类 / 全量采集流水线 / L2 增量采集 / 环境端到端），CI 逐个接入（详见[autotest/README.md](autotest/README.md)）
+- **环境与资源纵轴（R0–R4，2026-10 重构）**：把平台核心对象从「用例」扩展为「**一次可复现的测试运行**= 代码 × 环境画像 × 资源集 × 用例 × 设备」。此前约 90% 工程量在链尾（用例→矩阵→脚本→执行→归因），而链头（克隆→依赖→构建→装包→资源→环境）近乎为 0；本纵轴补齐它，**不推倒重来**（三入口 / md 唯一事实源 / RBAC / 审批 / WS / agent 接口层全部保留复用）。设计取舍与全量规模化策略见 [docs/重构方案-环境与资源纵轴.md](docs/重构方案-环境与资源纵轴.md)
 
 ## 安装
 
@@ -166,6 +167,90 @@ Invoke-RestMethod http://localhost:3080/api/autotest/libraries/catalog
 每次导入都会在 `library_catalog_imports` 表留一条痕（来源、文件 sha256、新增/更新/无变化/问题行数），
 按 `npm run verify:library-catalog` 可离线复验上述全部边界。
 
+## 环境与资源纵轴（R1–R4）
+
+补齐「从克隆代码到装上包」这条链头。核心主张：**AI 的单位成本从"每库"降到"每类 + 每异常"**——
+348 个库逐个问 LLM 成本不可控（约 350 万 tokens 输入），而同一类库的依赖形态、构建方式、
+资源构造高度同构，逐库问是把同样的钱花 348 遍。
+
+### 四级分层（L0 → L3）
+
+| 层 | 做什么 | 成本 | 产物 |
+|---|---|---|---|
+| **L0** 静态画像 | 扫 README / `oh-package.json5` / `build-profile.json5` / 工程结构 / `.gitmodules` / 二进制产物 / 样本资源 | 零 LLM，确定性 | `library_facts`（类别、构建目标、ABI、依赖、资源候选、README 情报） |
+| **L1** 预设匹配 | 按库类别套 `assets/presets/<类别>/preset.json` | 零 LLM | `env_profiles`（status=draft, source=preset） |
+| **L2** LLM 增量 | **只跑 L0/L1 搞不定的差异库**（类别未识别 / README 有外部前置 / 二进制依赖要决策 / 无预设） | 花 token，受 `agent.maxTokensPerTask` 预算闸门保护 | `env_profiles`（source=ai_draft）+ 不确定项入人工队列 |
+| **L3** 人工确认 | 按「库类别 × 阻塞原因」聚合，一次解决一类 | 人 | 确认后的画像 + 知识条目 |
+
+> L0/L1 能覆盖大多数库；LLM 只做增量。全量推进按**类别分批**（先 animation 样板，再按库数量从大到小），
+> 每批验收三项指标：画像完整率、预设命中率（目标 ≥ 70%）、L2 触发率（应随批次下降）。
+
+### 脚本资产库（14 个，契约化）
+
+平台只认**契约**不认脚本实现——契约七项（输入 / 输出 / 适用条件 / 失败分类 / 幂等 / 超时 / 审批等级）
+是单一事实源，实现可按需替换。本体在 `assets/env/<entry>.{ps1,sh}`（**成对**，跨平台行为逐条对齐），
+构建时由 `scripts/build-assets.mjs` 复制进 `lib/assets/env/` 并统一补 UTF-8 BOM
+（PowerShell 5.1 对无 BOM 的 UTF-8 按 GBK 解析中文注释，会报指不到真因的 ParserError）。
+
+| 脚本 | 用途 | 关键纪律 |
+|---|---|---|
+| `ohpm_install` | 装 ohpm 依赖 | 产物 `oh_modules` 必须真存在 |
+| `build_manifest` | 读工程清单，产出 bundleName 等 | 读不到就明说，不返回猜的清单 |
+| `build_har` / `build_hap` | 构建 HAR / HAP | 退出码 0 但没产物 = `artifact_not_found`，判失败 |
+| `hdc_install` | 装机 | 成功判据是输出含 `Successfully install`（hdc 部分版本失败也返回 0） |
+| `submodule_sync` | 同步 git 子模块 | 无 `.gitmodules` 是**正常情况**，成功跳过而非失败 |
+| `binary_dep_fetch` | 取二进制依赖 | 缓存 → 下载 → 现编三源统一；ABI 白名单防目录穿越 |
+| `smoke_check` | 冒烟（已装→能拉起→不崩） | 四级校验，成功判据显式 `SMOKE_OK` |
+| `gen_ca` | 自签 CA + 服务端证书 | SAN 必填（现代客户端不认 CN）；幂等复用未临期证书 |
+| `mock_server_up` / `mock_server_stop` | 本地 mock HTTP server | 后台常驻 + pid 文件；空 fixture 目录是失败 |
+| `xts_scaffold` / `xts_run` / `xts_report` | XTS 三条 | **只做 scaffold + run + 解析，刻意不生成用例** |
+
+失败分类共 11 类（`network` / `permission` / `toolchain_missing` / `sdk_version_conflict` /
+`compile_error` / `missing_dep` / `device_offline` / `artifact_not_found` / `timeout` /
+`cancelled` / `unknown`），优先级：取消 > 超时 > 退出码 > 信号文本。
+归类结果不在契约声明内时 `inTaxonomy=false`——这是在提醒该扩码表，不是 bug。
+
+### 环境画像与端到端
+
+一次环境准备 = 建 run → 逐 step 执行 → 汇总终态。三条关键机制：
+
+- **占位符替换**：`{{repoDir}}` 在运行期才替换（各库 clone 到哪只有那时知道）；
+  `{{hapPath}}` 等由上游步骤的**标量输出**串联（`build_hap` 打 `HAP_PATH` →
+  `hdc_install` 的 `hapPath` 引用它）。绝对路径不固化进画像——否则方案只对一台机器一次构建有效。
+- **产物必须真存在**：runner 按契约 `type=path` 判定 + 从入参与标量输出两侧取路径后 `stat`。
+- **缓存复用含失败**：环境失败在工具链不变时每次都会同样失败，不复用等于反复白等
+  （R1 验收指标「二次执行耗时 < 20%」正靠这个）。
+
+### 测试资源：三类来源，全部登记
+
+回答"lottie 的 json 资源该怎么找、怎么测"——**绝不现场编**，否则结果不可复现、无法回归：
+
+| 来源 | 做法 |
+|---|---|
+| 仓库检出 | clone 后扫 `demo/example` 等目录，按 schema 特征识别，带理由登记 |
+| 上游 canonical | lottie-web / lottie-android 官方样本与 AE 导出样例，固化 URL + 版本 |
+| 程序合成 | `synthesizeAnimation()` 六种变体对应六类测试意图 |
+
+animation_json 六变体：`minimal`（基本解析链路）/ `empty-layers`（空值场景）/
+`huge-layers`（大数据，200 图层）/ `nested-precomp`（递归解析）/ `malformed`（畸形 JSON）/
+`bad-encoding`（编码错误）。**schema 校验区分"畸形"与"合法边界"**——畸形资源天生不合法是它的用途
+（必须走 error 回调），而空 layers 是合法输入，两者不能混为一谈。资源全部带 sha256 + 版本史 +
+复用计数 + 临期检出。
+
+### 前端两个新页面
+
+- **环境准备**（`🧰`）：脚本资产契约可见 / 环境画像 / 运行记录与逐步失败分类
+- **全量分析**（`🔬`）：画像完整率 / 预设命中率 / L2 触发率 / 批次明细 / 资源清单 / L2 待处理队列
+
+### 相关命令
+
+```bash
+npm run verify:envkit      # 契约校验 / 失败分类 / 退出码归一 / 画像编排（含缓存复用）
+npm run verify:survey      # 类别判定 / 事实构建 / 预设匹配 / 资源合成 / 批次语义
+npm run verify:l2          # L2 校验闸门（桩 LLM 覆盖四条路径）
+npm run verify:env-e2e     # 端到端：占位符替换 + 输出串联 + 产物校验 + 失败分类
+```
+
 ### 一键部署（阶段 2：Docker Compose 数据服务）
 
 ```bash
@@ -263,12 +348,17 @@ Tauri v2 外壳（~33MB，非 Electron）托管内置独立服务器：随包分
 │   │                     #   lib/index.js      → DSH 插件（Cordis）
 │   │                     #   lib/standalone.js → 独立服务器（node lib/standalone.js）
 │   │                     #   dist/web          → 独立版前端产物
+│   │                     #   assets/env/       → R1-R4：14 个环境脚本资产（.ps1 + .sh 成对）
+│   │                     #   assets/presets/   → R2：按库类别的预设方案五件套
+│   │                     #   assets/三方库测试表.xlsx → R0：随包初始种子
 │   ├── web/              # 前端 React 18 + Vite（双构建：build:embed / build:standalone）
-│   ├── agent-tools/      # agent 接口层：CLI + MCP Server（34 条命令规格单一事实源，双端生成）
-│   ├── rules/            # B3：10 条开发纪律（octospec frontmatter + inject_when + _index.yaml）
+│   ├── agent-tools/      # agent 接口层：CLI + MCP Server（44 条命令规格单一事实源，双端生成）
+│   ├── rules/            # B3：11 条开发纪律（octospec frontmatter + inject_when + _index.yaml）
 │   ├── desktop/          # 桌面端（Tauri v2）：Rust 壳托管独立服务器 + WebView
 │   └── shared/           # 前后端共享领域类型
-├── docs/                 # 部署方案（deploy/）、独立版与桌面端手册、架构评审
+├── data/                 # 人维护的三方库测试表（源表；随包种子在 dsh-autotest/assets/）
+├── docs/                 # 部署方案（deploy/）、独立版与桌面端手册、架构评审、
+│                         # 重构方案-环境与资源纵轴.md（R0-R4 设计与验收）
 ├── preview/              # 高保真交互原型与预览图
 └── .github/workflows/    # 打 tag 自动跑门禁 → 构建 → 发布 Release + tarball
 ```
@@ -300,7 +390,7 @@ node scripts/browser-test/ui-walk.mjs --base http://127.0.0.1:<端口> --out .te
 
 测试报告与截图归档在 `autotest/.test-results/`（`REPORT.md` + 每页 PNG + 机读 `report.json`）。这套工具曾抓出两个真实浏览器才暴露的缺陷：gzip 分支 MIME 错误导致首页被当文件下载（白屏）、`/libraries/sheet` 被 `/libraries/:id` 路由遮蔽（404）。
 
-**agent 接口层**（`agent-tools/`，给 AI Agent Bot 通过 exec 调用的 CLI + MCP Server，34 条命令单一事实源）：
+**agent 接口层**（`agent-tools/`，给 AI Agent Bot 通过 exec 调用的 CLI + MCP Server，44 条命令单一事实源）：
 
 ```bash
 # 构建（两个单文件产物，Node ≥20 直接跑，零依赖安装）
@@ -321,7 +411,7 @@ AUTOTEST_TOKEN=at_xxx node agent-tools/dist/cli.mjs plans.run 1             # �
 
 退出码（agent 可机械分支）：`0` 成功 · `2` 本地校验失败（命令不存在/参数缺失，请求未发出）· `3` 服务端拒绝（403 权限不足/404/409 审批中/5xx）· `4` 认证失败（401/令牌无效）· `5` 传输失败（网络/超时/非 JSON）。删除类命令需 `--confirm`（审批模式下服务端还会二次拦截，见「企业级能力」节）。规格↔路由漂移由 `verify:agent-tools` 自检兜底（API 演进后规格腐烂会被抓住）。
 
-**规则注入**（B3，`rules/` 10 条开发纪律；编码时按触碰路径/主题注入 agent 上下文，而非事后 FAIL）：
+**规则注入**（B3，`rules/` 11 条开发纪律；编码时按触碰路径/主题注入 agent 上下文，而非事后 FAIL）：
 
 ```bash
 node scripts/inject-rules.mjs --paths dsh-autotest/src/db/connection.ts   # 按路径命中（glob）

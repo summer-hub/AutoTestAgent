@@ -124,7 +124,7 @@ cd dsh-autotest && npm pack                # 产出 dsh-autotest-<version>.tgz
 "dsh-autotest": "https://github.com/summer-hub/AutoTestAgent/releases/download/v1.0.0-rc.1/dsh-autotest-1.0.0-rc.1.tgz"
 ```
 
-仓库已配好 GitHub Actions（打 `v*` tag 自动构建并发布 Release + tarball）。发布前会跑类型检查、31 套自检、`lib/` 产物一致性与 tag/版本一致性校验：
+仓库已配好 GitHub Actions（打 `v*` tag 自动构建并发布 Release + tarball）。发布前会跑类型检查、37 套自检、`lib/` 产物一致性与 tag/版本一致性校验：
 
 ```bash
 # 先改 dsh-autotest/package.json 的 version，并 npm run build:plugin 提交产物，再打 tag
@@ -175,6 +175,18 @@ autotest/
 | `analyses` | 分析/归因结果 | kind+granularity 索引 |
 | `agent_events` | 链路追踪事件（LLM 调用 / 遍历 op / dry-run 步） | 追加式，按 task/kind 索引 |
 | `library_catalog_imports` | **R0 目录引导导入留痕**：随包三方库测试表 → 业务库的每次导入 | 只追加不更新；sha256 是幂等键，同表重复导入不写库也不刷记录 |
+| `script_library` / `script_library_versions` | **R1 脚本资产库**：14 个环境脚本的契约（输入/输出/适用条件/失败分类/幂等/超时/审批）+ 版本史 | DB 覆盖优先于内置；契约指纹漂移可检出（升级后契约变了会被抓住） |
+| `env_profiles` / `env_profile_steps` | **R1 环境画像**：一个库在什么工具链/依赖/步骤序列下才测得动 | 一个库可有多份画像（uk 含 name）；步骤参数用 `{{repoDir}}` 占位 |
+| `env_runs` / `env_run_steps` | **R1 环境准备运行**：一次「克隆→装包」的完整执行与逐步明细 | fingerprint 命中即缓存复用（**含 failed**：环境失败在工具链不变时每次同样失败，不复用等于反复白等） |
+| `library_facts` | **R2 L0 静态画像**：类别、构建目标、二进制 ABI、依赖、资源候选、README 情报 | 一个库一份最新事实（uk = library_id）；按 (kind, confidence) 索引供预设匹配 |
+| `library_survey_runs` | **R2 单库采集记录**：断点续跑的单位 | 成功/待 LLM 且 commit 未变 → 跳过；**失败的仍重试**（环境失败重跑一次可能就成功） |
+| `library_survey_batches` | **R2 采集批次**：进度与验收指标的可观测单位 | 进度逐步落库（不是跑完才一次性写），前端可实时看 |
+| `test_resources` / `test_resource_versions` | **R2 测试资源登记**：三类来源（仓库检出/上游 canonical/程序合成） | resource_id 稳定主键（重复登记不新建行）；sha256 + 版本史 + 复用计数 + 临期检出 |
+| `readme_intel` | **R2 README 情报**：构建命令/依赖/前置条件/已知问题/样本资源 | 按 (library_id, kind, status) 索引，供 L2 与人工队列消费 |
+
+> `executions` 表另增加 `env_run_id` / `resource_set_id` 两列——一次执行必须能回答
+> 「跑在哪个环境、用哪批资源」，否则回归结果不可信。归档表 `executions_archive`
+> 列必须与主表一一对应（缺列会让 `INSERT..SELECT` 静默失效，自检有专项守着）。
 
 Redis 缓存与连接池已落地；分表路由层存在但未启用（当前 SQLite 起步，`repository.ts` 是切换点）。
 
@@ -193,6 +205,12 @@ Redis 缓存与连接池已落地；分表路由层存在但未启用（当前 S
 - ✅ **M9** 脚本执行链路（Hypium 模块真机执行 + xdevice 结果解析）+ 失败策略（continue / retry_twice / abort_library）+ 用例版本对比 / 分页组件
 - ✅ **M10** 稳固性轮次：SQLite 事务隔离、归档列漂移、密钥出参脱敏、请求安全闸门、分页信封、计划生命周期与 reaper、`lib/` 与 CI 门禁
 - ✅ **架构整改**（见 `docs/架构评审-2026-09-21.md`）：任务 lane + 取消、轨迹事件溯源、数据目录迁出 `node_modules`、LLM 重试换模型 / Redis 全局限流 / 单任务 token 预算
+- ✅ **R0 目录引导**（`docs/重构方案-环境与资源纵轴.md`）：`三方库测试表.xlsx` 随包分发（构建时复制进 `lib/assets/`）+ 启动 bootstrap 幂等导入；**SQLite/MySQL 业务库为唯一事实源**，xlsx 只是初始种子与人工增量入口、绝不回写；三入口（DSH 插件 / 独立 Web / 桌面端）共用同一 `dataDir()` 与同一 bootstrap，`GET /libraries/catalog` 可自证导入结果
+- ✅ **R1 环境纵轴地基**：`services/envkit/`（契约层 / 失败分类 11 类 / runner / 内置脚本 / 注册表 / 画像编排）+ 5 个脚本资产（ohpm_install / build_manifest / build_har / build_hap / hdc_install，`.ps1`+`.sh` 成对）+ `script_library` 与 `env_profiles`/`env_runs` 六张表 + 审批 `env.step`/`env.run` + 10 条 `env.*` agent 规格 + web「环境准备」页
+- ✅ **R2 全量库规模化**：L0→L3 四级分层（**AI 单位成本从"每库"降到"每类 + 每异常"**）；`services/survey/` L0 静态画像（零 LLM 确定性：类别判定 / 事实构建 / README 情报 / 资源候选）+ `assets/presets/` 五类预设 + 批量流水线（受控并发默认 4、断点续跑、单库失败隔离、可取消、进度逐步落库）+ `resourcekit`（三类来源登记、animation_json 六变体、schema 区分畸形与合法边界）+ web「全量分析」页
+- ✅ **R3 智能增量与知识沉淀**：知识库新增 5 种 kind（env_recipe / resource_recipe / dep_fix / cert_recipe / build_fix）与 2 种 scope（toolchain / resource_kind）+ 3 个检索维度（**libraryKind 让"lottie 的动画经验"可被另一个动画库复用**）+ `injectForStage` 新增 env_prep / resource_build；L2 LLM 增量采集只跑差异库（校验闸门：scriptId 必须真实存在、参数必须过契约；不确定项入队而非把猜测当结论）；人工队列新增 env_blocked / resource_missing / toolchain_missing 三类
+- ✅ **R4 构建安装闭环与端到端**：脚本资产扩至 14 个（+submodule_sync / binary_dep_fetch / smoke_check / gen_ca / mock_server_up / mock_server_stop / xts_scaffold / xts_run / xts_report）；**占位符替换与步骤输出串联**（`{{repoDir}}` 运行期替换、`build_hap` 打 `HAP_PATH` → `hdc_install` 引用）让「克隆→依赖→构建→装包→冒烟」串成一条链；R2/R3 新路由补 RBAC 角色标注
+- ✅ **R0–R4 收口（G1–G4）**：L2 透传 taskId 使 token 预算闸门生效；前端接入 L2 触发与待处理清单；人工队列按「库类别 × 阻塞原因」聚合；文档补齐
 
 ## 核心业务语义
 
@@ -215,12 +233,12 @@ Redis 缓存与连接池已落地；分表路由层存在但未启用（当前 S
 
 ## 自检（提交前 / CI 门禁）
 
-31 套自检都**不连 MySQL、不调 LLM**（用临时 SQLite 库与临时工作区，不碰你的数据；LLM 层用可观测的假 `ctx.llm`，Redis 用内存假 RESP 服务）；无设备时真机相关分组自动跳过，无 hypium 时判据运行期那套自动跳过。CI 在打包发布前强制运行。
+37 套自检都**不连 MySQL、不调 LLM**（用临时 SQLite 库与临时工作区，不碰你的数据；LLM 层用可观测的假 `ctx.llm`，Redis 用内存假 RESP 服务）；无设备时真机相关分组自动跳过，无 hypium 时判据运行期那套自动跳过。CI 在打包发布前强制运行。
 
 ```bash
 cd autotest
 npm run typecheck     # web + 插件类型检查
-npm run verify:all    # 构建 + 31 套自检（无设备 / 无 hypium 的项自动跳过）
+npm run verify:all    # 构建 + 37 套自检（无设备 / 无 hypium 的项自动跳过）
 ```
 
 | 命令 | 覆盖内容 |
@@ -234,20 +252,24 @@ npm run verify:all    # 构建 + 31 套自检（无设备 / 无 hypium 的项自
 | `npm run verify:approvals` | 危险操作审批（P0-4）：autoApprove 默认兼容（不建单）、关闭后删除类操作 409 入队、重复操作幂等复用同一条、一次性批准令牌（批准→重试放行→再调重新待批）、终态守卫、拒绝后仍拦截、批准后端到端真删、operator 决策/viewer 只读的角色门禁 |
 | `npm run verify:skill-lock` | 技能供应链锁（P1-2）：锁文件与 skills/ digest 一致、单字节篡改检出且 changedFiles 指到具体文件、新增未锁定 → unlocked、删除 → missing、无锁文件全量 unlocked、enforce 开关双向语义（告警不拦截 / 拒绝加载） |
 | `npm run verify:architecture` | 架构治理（P1-1）：DSH 解耦白名单外零 `@deepseek-ai` import（58 文件）、shared 仅类型（无 node 内置/无运行时导出）、web 跨包只准 shared（禁碰服务端内部）、desktop Rust 不反向引用源码目录、分层顺序（db→services→api 静态引用不准向上，登记例外除外）、YAML 与脚本白名单/例外双边防漂移 |
-| `npm run verify:agent-tools` | agent 接口层（B1+B2，`agent-tools/`）：① 规格↔路由漂移——34 条命令规格的 method+path 全部命中真实路由（API 演进后规格腐烂被当场抓住），角色标注合法；② CLI 端到端（进程内真实 HTTP 服务 + spawn 构建产物）：envelope 可解析、退出码 0/2/3/4/5 分类正确、认证开启无 token→4、admin key→0、viewer 写操作→3（注意：/health 按设计免鉴权，401 用例须用非 authOpen 端点）；③ MCP 端到端（stdio JSON-RPC）：initialize serverInfo、tools/list 数量=规格数、tools/call 成功 content、未知工具/缺参 isError、通知消息不回应 |
-| `npm run verify:rule-injection` | 规则注入（B3，`rules/` 10 条）：索引一致（gen-rules-index --check）、rulesRoot 解析、路径命中（db/ → 事务隔离+分层+DSH 解耦）、主题命中（touches=[transaction]）、预算截断（小预算退摘要行且 load_bearing 优先、总量不超）、无命中为空、服务端 GET /rules/inject + agent-tools CLI rules.inject 端到端 |
+| `npm run verify:agent-tools` | agent 接口层（B1+B2，`agent-tools/`）：① 规格↔路由漂移——44 条命令规格的 method+path 全部命中真实路由（API 演进后规格腐烂被当场抓住），角色标注合法；② CLI 端到端（进程内真实 HTTP 服务 + spawn 构建产物）：envelope 可解析、退出码 0/2/3/4/5 分类正确、认证开启无 token→4、admin key→0、viewer 写操作→3（注意：/health 按设计免鉴权，401 用例须用非 authOpen 端点）；③ MCP 端到端（stdio JSON-RPC）：initialize serverInfo、tools/list 数量=规格数、tools/call 成功 content、未知工具/缺参 isError、通知消息不回应 |
+| `npm run verify:rule-injection` | 规则注入（B3，`rules/` 11 条）：索引一致（gen-rules-index --check）、rulesRoot 解析、路径命中（db/ → 事务隔离+分层+DSH 解耦）、主题命中（touches=[transaction]）、预算截断（小预算退摘要行且 load_bearing 优先、总量不超）、无命中为空、服务端 GET /rules/inject + agent-tools CLI rules.inject 端到端 |
 | `npm run verify:ws` | WS 实时通道（B4，`/api/autotest/ws`）：握手 101；ping→pong / 未知 action→error / 非法频道→error；subscribe task:<id>→subscribed→appendTrace→task_event 帧（字段完整）；global 频道双频道去重（同一事件只投一次）；退订确认；auth 开启+关豁免无 token→401 拒绝、admin token→可用；未 mask 帧→1002 关闭；连接计数与关闭握手 |
 | `npm run verify:explorer` | 遍历候选判定（用 `clickable` 而非"有文本"）、去重键、控件分类、预算、覆盖率报告、无文本控件不丢 |
 | `npm run verify:repo-paths` | 仓库地址拆分、子目录穿越防护、同仓共享克隆、legacy 克隆接管、子目录版本号 |
 | `npm run verify:sheet` | xlsx 解析/表头识别/diff、同步幂等、**不覆盖 Agent 字段**、绝不删库 |
 | `npm run verify:library-catalog` | **R0 目录引导**：随包种子定位与 sha256、首次导入真实规模、幂等（第二次 added=0 且不新增留痕）、只增不删、**不覆盖 Agent 字段**（package_name/main_ability/last_commit/version）、表读不出不阻断启动、catalogStatus 形状 |
+| `npm run verify:envkit` | **R1 环境纵轴**：契约七项校验（缺一即拦）、参数解析（默认值/必填/未知参数/枚举/类型）、argv 组装（★ PowerShell 用 `-name` 而 bash 用 `--kebab-name`）、失败分类四级优先级与 11 类码表、退出码归一（null→2/超时→3/取消→4）、契约指纹稳定性与漂移、内置脚本入口存在、注册表播种幂等与 DB 覆盖、画像编排（★ 缓存复用含 failed、参数不合法拦在 spawn 前、指纹随 commit 变化） |
+| `npm run verify:survey` | **R2 全量采集**：库类别判定（6 类有序规则 + 强/弱信号 + 可解释理由）、事实构建（二进制 ABI 长模式优先/子模块/构建目标/入口）、README 情报五类抽取、资源候选发现、动画 JSON schema（区分畸形与合法边界）、六种合成变体、预设五件套且步骤无悬空脚本引用、资源登记幂等/版本/复用/未知类型拒绝、批次语义（★ 单库失败隔离、断点续跑跳过成功而重试失败、强制重扫仍隔离、统计 join、可取消） |
+| `npm run verify:l2` | **R3 知识库扩展 + L2 增量**：5 种新 kind 与 2 种新 scope 可 round-trip 且落盘目录正确、3 个新检索维度（libraryKind/toolchain/resourceKind）跨库召回、★ 不相关类别不召回、人工队列 3 类新阻塞的问题具体到动作；L2 用**桩 LLM**覆盖四条路径（正常解决/转去问人/坏 scriptId 被拦/空 projectDir 归一化）、画像只含真实脚本、★ taskId 透传到每次 LLM 调用的 meta（预算闸门因此生效）、幂等不重复花 token |
+| `npm run verify:env-e2e` | **R4 端到端**：占位符替换（嵌套/数组递归、空变量值不替换）、标量输出解析（KEY=value→小驼峰，★ 不误吞日志里的 error=）、14 个脚本两侧齐备且契约合法、submodule_sync 无 .gitmodules 时成功跳过、★ 端到端真跑画像步骤（失败被归成具体类别而非 unknown、错误信息里不出现 {{repoDir}}、每步都有明细、二次执行命中缓存）、★ 未解析占位符拦在 spawn 之前并报出变量名 |
 | `npm run verify:api-extract` | 导出链解析、定义提取（TS 与打包 JS 两种形态）、JSDoc 与参数表、三类假覆盖防护 |
 | `npm run verify:coverage` | 矩阵状态判定规则表、风险标记、设备控件匹配、导出格式 |
 | `npm run verify:demo-scenarios` | Demo 场景抽取、demo 资产与真假覆盖分离、场景级覆盖度渲染 |
 | `npm run verify:case-plan` | 四类场景适用性、数量模型、优先级、★ 每接口 ≥1 正向、★ 报告↔计划一致、★ 抽样条数守恒 |
 | `npm run verify:testability` | A/B/C/D 判定、补丁生成与应用/回退、越界路径拒绝、原仓库不被改动 |
 | `npm run verify:oracle` | oracle 校验、含糊期望值拦截、★ 断言为空/恒真判为假通过、验证步骤跳过判弱通过 |
-| `npm run verify:automation` | 分流规则（auto/human 与 9 类阻塞）、时长阈值、每阶段单独提问、归属明确 |
+| `npm run verify:automation` | 分流规则（auto/human 与 12 类阻塞）、时长阈值、每阶段单独提问、归属明确 |
 | `npm run verify:binding` | 未映射步骤即失败、空断言脚本拒绝写入、用例升版→stale、人工改过→manual 且不覆盖 |
 | `npm run verify:task-lane` | 同库串行/跨库并行、抢占锁（重试与并发创建不跑两份）、排队中取消、★ 运行中取消与卸载 abort 贯穿 LLM 与子进程、终态不被迟到结果覆盖 |
 | `npm run verify:task-events` | seq 每任务独立递增、★ 20 条并发追加不丢不重、快照与事件流逐条一致、afterSeq 增量读、★ `LIMIT -1` 陷阱夹紧、快照可重建、终态后追加可见 |
