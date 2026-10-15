@@ -68,6 +68,15 @@ export default function LibraryWorkspace() {
   const [sel, setSel] = useState<number | null>(null);
   const [tab, setTab] = useState<Tab>('overview');
   const [subTab, setSubTab] = useState<SubTab>('env');
+  // 切换主 Tab 时把子 Tab 复位到该组的第一个。
+  // 不加这段会出静默空白：subTab 默认 'env'，切到「用例」组（子 Tab 是
+  // cases/scripts/api/coverage）时无匹配项，四个子 Tab 渲染出来但内容区全空、
+  // 且没有激活态——用户看到的就是"点过去什么都没发生"。
+  useEffect(() => {
+    if (tab === 'overview') return;
+    const first = SUB_TABS[tab]?.[0]?.key;
+    if (first) setSubTab(first);
+  }, [tab]);
   const [error, setError] = useState('');
   const [msg, setMsg] = useState('');
   const [busy, setBusy] = useState(false);
@@ -246,12 +255,6 @@ export default function LibraryWorkspace() {
                   <span className="ico">{t.icon}</span>{t.label}
                 </button>
               ))}
-              <div style={{ flex: 1 }} />
-              {/* 双轨期：深度操作仍回老页面，避免两套实现行为不一致 */}
-              <a className="link" style={{ fontSize: 11.5 }} href={`#libraries`}>库管理 ↗</a>
-              <a className="link" style={{ fontSize: 11.5, marginLeft: 10 }} href={`#env`}>环境准备 ↗</a>
-              <a className="link" style={{ fontSize: 11.5, marginLeft: 10 }} href={`#cases`}>测试用例 ↗</a>
-              <a className="link" style={{ fontSize: 11.5, marginLeft: 10 }} href={`#issues`}>问题归因 ↗</a>
             </div>
 
             {error && <div className="error">⚠️ {error}</div>}

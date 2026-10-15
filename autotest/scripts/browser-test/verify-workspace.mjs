@@ -89,11 +89,17 @@ try {
     await sleep(1500);
     const cs = JSON.parse(await evalJs(`JSON.stringify({
       active: document.querySelector('.ws-tab.active')?.textContent?.trim() ?? '',
-      rows: document.querySelectorAll('.ws-body table tbody tr').length,
-      bodyText: (document.querySelector('.ws-body')?.textContent ?? '').slice(0, 120),
+      rows: document.querySelectorAll('.ws-subbody table tbody tr').length,
+      subTabs: [...document.querySelectorAll('.ws-subtab')].map(t => t.textContent.trim()),
+      bodyText: (document.querySelector('.ws-subbody')?.textContent ?? '').slice(0, 120),
+      hasEmpty: !!document.querySelector('.ws-subbody .empty'),
     })`));
     check(cs.active?.includes('用例'), '切到「用例」Tab', String(cs.active));
-    check(cs.rows > 0 || cs.bodyText.includes('还没有用例'), '用例 Tab 有数据或空态', `rows=${cs.rows}`);
+    check(cs.subTabs.length === 4, '用例 Tab 有 4 个二级子 Tab', JSON.stringify(cs.subTabs));
+    // B2 后嵌入的是完整 CasesPage：有表格行、或它自己的空态、或有实际内容
+    // （该库无用例时 CasesPage 渲染自己的库选择侧栏，同样是有效内容）
+    check(cs.rows > 0 || cs.hasEmpty || cs.bodyText.length > 50,
+      '用例 Tab 有数据或空态', `rows=${cs.rows} textLen=${cs.bodyText.length}`);
 
     // 问题 Tab
     await evalJs(`[...document.querySelectorAll('.ws-tab')].find(t => t.textContent.includes('问题'))?.click()`);
@@ -107,19 +113,32 @@ try {
       '问题 Tab 内容正确', is.bodyText.slice(0, 60));
   }
 
-  // ---------- 5. 双轨期：深度操作回老页面的链接 ----------
-  console.log('\n— 双轨期跳转链接（老页面保留）—');
+  // ---------- 5. 二级子 Tab（B2 后深度功能已嵌入，不再跳老页面）----------
+  console.log('\n— 二级子 Tab（深度功能嵌入工作区）—');
   {
-    const links = JSON.parse(await evalJs(`JSON.stringify(
-      [...document.querySelectorAll('.ws-tabs a')].map(a => ({ text: a.textContent.trim(), href: a.getAttribute('href') }))
-    )`));
-    check(links.length >= 4, '有跳老页面的链接', JSON.stringify(links.map(l => l.href)));
-    check(links.every((l) => l.href?.startsWith('#')), '链接是 hash 深链接（不破路由）', JSON.stringify(links.map(l => l.href)));
-    // 点一个应真的跳到老页面
-    await evalJs(`[...document.querySelectorAll('.ws-tabs a')][0].click()`);
+    // 环境 Tab 应有 2 个子 Tab
+    await evalJs(`[...document.querySelectorAll('.ws-tab')].find(t => t.textContent.includes('环境'))?.click()`);
     await sleep(1200);
-    const hash = await evalJs(`location.hash`);
-    check(hash.length > 1, '★ 点击链接跳到老页面', hash);
+    const envSubs = JSON.parse(await evalJs(`JSON.stringify({
+      subs: [...document.querySelectorAll('.ws-subtab')].map(t => t.textContent.trim()),
+      activeSub: document.querySelector('.ws-subtab.active')?.textContent?.trim() ?? '',
+    })`));
+    check(envSubs.subs.length === 2, '★ 环境 Tab 有 2 个二级子 Tab', JSON.stringify(envSubs.subs));
+    check(envSubs.activeSub?.includes('环境画像'), '默认激活「环境画像」子 Tab', String(envSubs.activeSub));
+
+    // 点「全量采集」子 Tab 应切内容
+    await evalJs(`[...document.querySelectorAll('.ws-subtab')].find(t => t.textContent.includes('全量采集'))?.click()`);
+    await sleep(1800);
+    const survey = JSON.parse(await evalJs(`JSON.stringify({
+      activeSub: document.querySelector('.ws-subtab.active')?.textContent?.trim() ?? '',
+      bodyLen: (document.querySelector('.ws-subbody')?.textContent ?? '').length,
+    })`));
+    check(survey.activeSub?.includes('全量采集'), '★ 切到「全量采集」子 Tab', String(survey.activeSub));
+    check(survey.bodyLen > 100, '全量采集子 Tab 有内容', `${survey.bodyLen} 字符`);
+
+    // 顶部不应再有跳老页面的死链（B2 后已删除）
+    const staleLinks = await evalJs(`document.querySelectorAll('.ws-tabs a').length`);
+    check(staleLinks === 0, '★ 顶部无跳老页面死链（#cases 等已被 LEGACY_REDIRECT 弹回）', `links=${staleLinks}`);
   }
 
   // ---------- 6. 搜索过滤 ----------

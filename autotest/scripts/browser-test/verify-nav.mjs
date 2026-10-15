@@ -27,13 +27,20 @@ try {
   check(nav.length === 5, '★ 一级导航只剩 5 项（首页 + 4 区）', `n=${nav.length}`);
   check(nav.every((t) => /首页|库工作区|资产|执行|配置/.test(t)), '★ 只剩四个新区', JSON.stringify(nav));
 
-  // 深链接仍可用（老页面从导航移除，但 hash 路由必须保留）
-  const cases = [['#cases', '用例'], ['#env', '环境'], ['#libraries', '库管理'], ['#issues', '问题']];
+  // 老 hash 深链接：B2 后老页面已并入库工作区，这些 hash 经 LEGACY_REDIRECT
+  // 跳到 #workspace。验证点是"不留白屏、有实际内容"，而不是还留在老页面。
+  const cases = [['#cases', '用例'], ['#env', '环境'], ['#libraries', '库工作区'], ['#issues', '问题']];
   for (const [hash, kw] of cases) {
     await session.send('Page.navigate', { url: `${BASE}/${hash}` });
-    await sleep(2200);
-    const ok = await evalJs(`document.body.innerText.includes('${kw}')`);
-    check(ok, `★ 深链接 ${hash} 仍可访问（路由未破）`);
+    await sleep(2400);
+    const s = JSON.parse(await evalJs(`JSON.stringify({
+      hash: location.hash,
+      inWorkspace: !!document.querySelector('.ws'),
+      bodyLen: (document.body.innerText ?? '').length,
+      hasKw: (document.body.innerText ?? '').includes('${kw}'),
+    })`));
+    check(s.bodyLen > 300, `★ 旧链接 ${hash} 有实际内容（不留白屏）`, `hash=${s.hash} len=${s.bodyLen}`);
+    check(s.inWorkspace, `★ 旧链接 ${hash} 落到库工作区（功能已并入）`, `hash=${s.hash}`);
   }
 
   await session.close();
