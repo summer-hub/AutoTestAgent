@@ -370,3 +370,67 @@ export async function resolveQueueItem(itemId, resolution, resolvedBy = 'human')
         message: `${message}；已重跑分流（可自动化 ${summary.auto} / 人工 ${summary.human}）${knowledgeId ? `；结论已沉淀为知识条目 ${knowledgeId}（待人工确认后生效）` : ''}`,
     };
 }
+/**
+ * 跨库聚合人工队列。
+ *
+ * 聚合键 = (kind, stage)：kind 来自 library_facts（L0 画像的类别判定），
+ * stage 是阻塞原因。LEFT JOIN 取不到 kind 时归为 'unknown' 并如实标注——
+ * 静默丢掉会让"为什么少了几条"查不出来。
+ *
+ * 排序：count 降序 → libraryCount 降序 → latestAt 降序。
+ * 即"影响面最大的组排最前"，人最先处理收益最高。
+ */
+export async function queueSummary(opts = {}) {
+    const status = opts.status ?? 'open';
+    // 上限保护：全量下 open 条目可能上千，聚合本身不需要全量行，
+    // 但也不能截太少否则统计失真。2000 条足够覆盖真实规模。
+    const limit = Math.min(5000, Math.max(1, opts.limit ?? 2000));
+    const rows = await getDb().prepare(`SELECT q.id, q.library_id, q.stage, q.question, q.created_at, l.name AS library_name,
+            COALESCE(f.kind, 'unknown') AS kind
+     FROM human_queue q
+     LEFT JOIN libraries l ON l.id = q.library_id
+     LEFT JOIN library_facts f ON f.library_id = q.library_id
+     WHERE q.status = ?
+     ORDER BY q.id DESC LIMIT ?`).all(status, limit);
+    const byKey = new Map();
+    const byStage = {};
+    const byKind = {};
+    for (const r of rows) {
+        const kind = String(r.kind ?? 'unknown') || 'unknown';
+        const stage = String(r.stage ?? 'unknown');
+        const key = `${kind}::${stage}`;
+        let g = byKey.get(key);
+        if (!g) {
+            g = {
+                kind, stage,
+                stageLabel: BLOCKER_LABEL[stage] ?? stage,
+                count: 0, libraryCount: 0,
+                libraries: [], sampleQuestion: '', latestAt: '',
+                libIds: new Set(),
+            };
+            byKey.set(key, g);
+        }
+        g.count++;
+        const libId = Number(r.library_id);
+        // 第一次遇到即最新一条（SQL 已按 id DESC 排序）——取它当代表，
+        // 同时把该库记进清单（保序、去重、最多 8 个，避免一组几百个库刷屏）
+        if (!g.sampleQuestion) {
+            g.sampleQuestion = String(r.question ?? '').slice(0, 400);
+            g.latestAt = String(r.created_at ?? '');
+        }
+        if (!g.libIds.has(libId)) {
+            g.libIds.add(libId);
+            if (g.libraries.length < 8)
+                g.libraries.push({ id: libId, name: String(r.library_name ?? `#${libId}`) });
+        }
+        g.libraryCount = g.libIds.size;
+        byStage[stage] = (byStage[stage] ?? 0) + 1;
+        byKind[kind] = (byKind[kind] ?? 0) + 1;
+    }
+    // 剥离内部计数用的 Set，只保留可序列化的 QueueGroup
+    const groups = [...byKey.values()].map(({ libIds: _libIds, ...g }) => g);
+    groups.sort((a, b) => b.count - a.count || b.libraryCount - a.libraryCount
+        || (b.latestAt ?? '').localeCompare(a.latestAt ?? ''));
+    const libTotal = new Set(rows.map((r) => Number(r.library_id))).size;
+    return { groups, totals: { open: rows.length, groups: groups.length, libraries: libTotal }, byStage, byKind };
+}

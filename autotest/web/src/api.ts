@@ -328,6 +328,18 @@ export const api = {
   resolveQueueItem: (itemId: number, resolution: string) =>
     req<{ ok: boolean; requeued: boolean; appliedOracle: boolean; message: string }>(
       `${API_BASE}/human-queue/${itemId}/resolve`, { method: 'POST', body: JSON.stringify({ resolution }) }),
+  // G4：人工队列跨库聚合（按「库类别 × 阻塞原因」）——"一次解决一类"的可观测面
+  queueSummary: (status?: string) =>
+    req<{
+      groups: Array<{
+        kind: string; stage: string; stageLabel: string; count: number; libraryCount: number;
+        libraries: Array<{ id: number; name: string }>; sampleQuestion: string; latestAt: string;
+      }>;
+      totals: { open: number; groups: number; libraries: number };
+      byStage: Record<string, number>;
+      byKind: Record<string, number>;
+      kindLabels: Record<string, string>;
+    }>(`${API_BASE}/automation/queue-summary${status ? `?status=${status}` : ''}`),
   // P8 用例 ↔ 脚本映射与版本联动
   scriptBindings: (libId: number) => req<{
     libraryId: number; total: number; byStatus: Record<string, number>;

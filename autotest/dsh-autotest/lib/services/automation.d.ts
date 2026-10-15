@@ -87,3 +87,55 @@ export declare function resolveQueueItem(itemId: number, resolution: string, res
     knowledgeId: string;
     message: string;
 }>;
+export interface QueueGroupLibrary {
+    id: number;
+    name: string;
+}
+/**
+ * 一个「库类别 × 阻塞原因」聚合组。
+ *
+ * 为什么需要它：人工队列此前只能**按库逐条**看，而全量规模化的前提是
+ * 「一次解决一类」——348 个库里同一类库的阻塞原因高度同构（动画库都要决策
+ * .so 预编译还是现编、网络库都要配 CA），逐个库处理等于把同样的判断做 N 遍。
+ * 按 (kind, stage) 聚和后，人看一组就能解决一批。
+ */
+export interface QueueGroup {
+    /** 库类别（unknown = 该库没有 L0 画像，需先跑全量采集） */
+    kind: string;
+    stage: BlockerStage;
+    stageLabel: string;
+    /** 该组 open 条目数 */
+    count: number;
+    /** 涉及多少个库 */
+    libraryCount: number;
+    /** 涉及的库（最多列前 8 个，避免一组几百个库刷屏） */
+    libraries: QueueGroupLibrary[];
+    /** 代表性的「需要人做什么」（该组最近一条）——具体到动作，人看一眼就知道要干什么 */
+    sampleQuestion: string;
+    /** 该组最近一条的创建时间 */
+    latestAt: string;
+}
+export interface QueueSummary {
+    groups: QueueGroup[];
+    totals: {
+        open: number;
+        groups: number;
+        libraries: number;
+    };
+    byStage: Record<string, number>;
+    byKind: Record<string, number>;
+}
+/**
+ * 跨库聚合人工队列。
+ *
+ * 聚合键 = (kind, stage)：kind 来自 library_facts（L0 画像的类别判定），
+ * stage 是阻塞原因。LEFT JOIN 取不到 kind 时归为 'unknown' 并如实标注——
+ * 静默丢掉会让"为什么少了几条"查不出来。
+ *
+ * 排序：count 降序 → libraryCount 降序 → latestAt 降序。
+ * 即"影响面最大的组排最前"，人最先处理收益最高。
+ */
+export declare function queueSummary(opts?: {
+    status?: string;
+    limit?: number;
+}): Promise<QueueSummary>;

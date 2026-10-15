@@ -11,7 +11,7 @@ import ApprovalQueue from '../components/ApprovalQueue';
  * 队列就变成了垃圾场。所以每条都由规则生成一句可执行的动作（去批准补丁 / 补一条可校验断言 /
  * 连一台设备…），并且回填后会自动重跑分流 —— 结论要么解除阻塞，要么仍然是阻塞并重新入队。
  */
-type BlockerStage = 'demo_patch' | 'oracle_missing' | 'external_dep' | 'animation' | 'video' | 'flaky' | 'device_blocked' | 'long_running' | 'untestable';
+type BlockerStage = 'demo_patch' | 'oracle_missing' | 'external_dep' | 'animation' | 'video' | 'flaky' | 'device_blocked' | 'long_running' | 'untestable' | 'env_blocked' | 'resource_missing' | 'toolchain_missing';
 
 interface QueueItem {
   id: number; caseId: number | null; caseNo: string; caseName: string;
@@ -34,17 +34,26 @@ const STAGE_LABEL: Record<BlockerStage, string> = {
   device_blocked: '无可用设备',
   long_running: '预计超时',
   untestable: '判定为无法测',
+  // R3 新增三类环境/资源阻塞：不补这里的话，这些条目在前端会显示英文 key
+  env_blocked: '环境准备受阻',
+  resource_missing: '缺测试资源',
+  toolchain_missing: '工具链缺失',
 };
 
 const STAGE_COLOR: Record<BlockerStage, string> = {
   demo_patch: 'blue', oracle_missing: 'red', external_dep: 'amber', animation: 'purple',
   video: 'purple', flaky: 'amber', device_blocked: 'gray', long_running: 'gray', untestable: 'red',
+  // R3 新增：环境/资源类用琥珀色（需要人补东西），工具链用灰色（装个工具就好）
+  env_blocked: 'amber', resource_missing: 'amber', toolchain_missing: 'gray',
 };
 
 export default function HumanQueuePage() {
   const [libs, setLibs] = useState<Library[]>([]);
   const [libId, setLibId] = useState(0);
-  const [data, setData] = useState<{ total: number; open: number; byStage: Record<string, number>; items: QueueItem[] } | null>(null);  const [loading, setLoading] = useState(false);
+  const [data, setData] = useState<{ total: number; open: number; byStage: Record<string, number>; items: QueueItem[] } | null>(null);
+  const [loading, setLoading] = useState(false);
+  // G4：跨库聚合（按「库类别 × 阻塞原因」）——"一次解决一类"的可观测面
+  const [summary, setSummary] = useState<Awaited<ReturnType<typeof api.queueSummary>> | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
   const [msg, setMsg] = useState('');
@@ -59,6 +68,11 @@ export default function HumanQueuePage() {
     }).catch((e) => setError(String((e as Error).message)));
   }, []);
 
+  // G4：跨库聚合同步加载（与按库视图解耦——它不依赖选中的库，反映全平台待处理面）
+  const loadSummary = useCallback(() => {
+    api.queueSummary('open').then(setSummary).catch(() => { /* 老后端无此接口时静默降级 */ });
+  }, []);
+
   const load = useCallback((id: number, open = onlyOpen) => {
     if (!id) return;
     setLoading(true); setError('');
@@ -68,6 +82,7 @@ export default function HumanQueuePage() {
       .finally(() => setLoading(false));
   }, [onlyOpen]);
 
+  useEffect(() => { loadSummary(); }, [loadSummary]);
   useEffect(() => { load(libId, onlyOpen); }, [libId, onlyOpen, load]);
 
   const triage = async () => {
@@ -78,6 +93,7 @@ export default function HumanQueuePage() {
       const blockers = Object.entries(r.byBlocker).map(([k, v]) => `${STAGE_LABEL[k as BlockerStage] ?? k} ${v}`).join(' · ');
       setMsg(`分流完成：${r.total} 条用例 → 可自动化 ${r.auto} · 人工 ${r.human}${blockers ? `（${blockers}）` : ''} · 新增队列条目 ${r.queued}`);
       load(libId, onlyOpen);
+      loadSummary();
     } catch (e) { setError(String((e as Error).message)); }
     finally { setBusy(false); }
   };
@@ -91,6 +107,7 @@ export default function HumanQueuePage() {
       setMsg(`${r.message}${r.requeued ? '（该阻塞仍存在，已重新入队）' : ''}`);
       setFill((f) => ({ ...f, [item.id]: '' }));
       load(libId, onlyOpen);
+      loadSummary();
     } catch (e) { setError(String((e as Error).message)); }
     finally { setBusy(false); }
   };
@@ -100,6 +117,55 @@ export default function HumanQueuePage() {
   return (
     <>
       <ApprovalQueue />
+
+      {/* G4：跨库聚合视图（按「库类别 × 阻塞原因」）——"一次解决一类"的可观测面。
+          按库逐条看时，同一类库的同类阻塞要重复处理 N 遍（动画库都要决策 .so
+          预编译还是现编、网络库都要配 CA）；聚合并按影响面排序后，人看一组
+          就能解决一批。这是全量规模化的前提。 */}
+      {summary && summary.totals.open > 0 && (
+        <div className="card" style={{ marginTop: 12, borderColor: 'var(--accent-dim)' }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+            <b>跨库聚合</b>
+            <span className="muted" style={{ fontSize: 12 }}>
+              待处理 {summary.totals.open} 条 · {summary.totals.groups} 组 · 涉及 {summary.totals.libraries} 个库
+            </span>
+            <div style={{ flex: 1 }} />
+            <span className="link" style={{ fontSize: 12 }} onClick={loadSummary}>刷新</span>
+          </div>
+          <div className="muted" style={{ fontSize: 11.8, marginTop: 4 }}>
+            按「库类别 × 阻塞原因」聚合，影响面大的组排前面——处理一组等于解决一批同类库。
+            类别为「未识别」的组说明这些库还没跑 L0 画像采集，先到「全量分析」页采集再处理。
+          </div>
+          <div style={{ marginTop: 8 }}>
+            {(summary.groups ?? []).slice(0, 12).map((g) => (
+              <div key={`${g.kind}::${g.stage}`} style={{
+                display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap',
+                fontSize: 12, padding: '5px 0', borderBottom: '1px solid var(--border, #222)',
+              }}>
+                <span className="tag blue">{summary.kindLabels?.[g.kind] ?? g.kind}</span>
+                <span className={`tag ${STAGE_COLOR[g.stage as BlockerStage] ?? 'gray'}`}>{g.stageLabel}</span>
+                <b>{g.count}</b>
+                <span className="muted">条 / {g.libraryCount} 个库</span>
+                <span className="muted" style={{ fontSize: 11, maxWidth: 420, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}
+                  title={g.sampleQuestion}>
+                  {g.sampleQuestion || '—'}
+                </span>
+                <div style={{ flex: 1 }} />
+                <span className="muted" style={{ fontSize: 10.5 }}>
+                  {(g.libraries ?? []).slice(0, 4).map((l) => l.name).join('、')}
+                  {g.libraryCount > 4 ? ` 等 ${g.libraryCount} 个` : ''}
+                </span>
+              </div>
+            ))}
+            {(summary.groups ?? []).length > 12 && (
+              <div className="muted" style={{ fontSize: 11, marginTop: 4 }}>
+                …等共 {summary.groups.length} 组（按影响面排序，此处显示前 12 组）
+              </div>
+            )}
+          </div>
+        </div>
+      )}
+
       <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
         <div>
           <div className="page-title" style={{ marginBottom: 0 }}>人工接管队列</div>

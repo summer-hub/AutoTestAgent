@@ -43,7 +43,7 @@ import { linkCasesForLibrary, listLinks, setManualLink } from '../services/caseL
 import { planLibraryCases, samplePlan } from '../services/casePlan.js';
 import { applyCasePatch, revertCasePatch, runTestability } from '../services/testability.js';
 import { evaluateQuality, validateOracles } from '../services/oracle.js';
-import { loadHumanQueue, resolveQueueItem, runTriage } from '../services/automation.js';
+import { loadHumanQueue, resolveQueueItem, runTriage, queueSummary } from '../services/automation.js';
 import { bindCaseScript, confirmBinding, listBindings, refreshBindingStatuses, unbindCaseScript } from '../services/scriptBinding.js';
 import { canConfirm, loadEntriesFromDisk, rebuildIndex, renderInjection, retrieve, saveEntry, wikiRoot, } from '../services/knowledge.js';
 import { bindingTraceLine, deleteBinding, externalCmdAvailable, JSONRPC, listResolvedBindings, mcpInitializeResult, mcpTools, rpcError, rpcResult, STAGES, upsertBinding, } from '../services/agentBinding.js';
@@ -1091,6 +1091,22 @@ function defineRoutes(llm) {
             byStage[i.stage] = (byStage[i.stage] ?? 0) + 1;
         return { libraryId: id, total: items.length, open: items.filter((i) => i.status === 'open').length, byStage, items };
     });
+    // ---- G4：人工队列跨库聚合（按「库类别 × 阻塞原因」）----
+    //
+    // 为什么单独一组路由：人工队列此前只能按库逐条看，而全量规模化的前提是
+    // 「一次解决一类」——348 个库里同一类库的阻塞原因高度同构（动画库都要决策
+    // .so 预编译还是现编、网络库都要配 CA），逐个库处理等于把同样的判断做 N 遍。
+    // 按 (kind, stage) 聚合并按影响面排序，人看一组就能解决一批。
+    route('GET', '/automation/queue-summary', async ({ query }) => {
+        const status = query.get('status') ?? undefined;
+        const limit = Number(query.get('limit')) || undefined;
+        const s = await queueSummary({ status, limit });
+        return {
+            ...s,
+            // 前端展示用：类别中文名（unknown 也要有说法，不能显示英文 key）
+            kindLabels: Object.fromEntries(Object.keys(s.byKind).map((k) => [k, k === 'unknown' ? '未识别（需先跑全量采集）' : k])),
+        };
+    }, { role: 'viewer' });
     route('POST', '/human-queue/:id/resolve', async ({ params, body }) => {
         const id = Number(params.id);
         const b = (body ?? {});
