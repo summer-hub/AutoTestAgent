@@ -180,6 +180,10 @@ CREATE TABLE IF NOT EXISTS cases (
   testability_reason VARCHAR(500) NOT NULL DEFAULT '',
   demo_patch_json MEDIUMTEXT NOT NULL,
   oracle_json MEDIUMTEXT NOT NULL,
+  -- R5：问题现象（人维护的疑问描述，如"点击播放后进度条不动"）。
+  -- 与 oracle_json/demo_patch_json 的边界：那些是 Agent 维护的事实，这一列是人写的观察，
+  -- 同步/导入绝不覆盖它（同 librarySheet 对 package_name 的边界）。
+  symptom MEDIUMTEXT NOT NULL,
   created_at VARCHAR(32) NOT NULL,
   updated_at VARCHAR(32) NOT NULL,
   UNIQUE KEY uk_cases_lib_no (library_id, case_no)
@@ -188,6 +192,33 @@ CREATE INDEX idx_cases_library ON cases(library_id);
 CREATE INDEX idx_cases_source ON cases(source);
 CREATE INDEX idx_cases_status ON cases(status);
 CREATE INDEX idx_cases_name ON cases(name);
+
+-- R5：问题归因工单。一次「人对用例有疑问」= 一张工单。
+-- 与 cases.symptom 的分工：symptom 是**当前**疑问（人维护，可改）；
+-- 工单是**历史档案**（每次提交一条，含 AI 根因、证据、人工结论），可追溯、可沉淀知识。
+CREATE TABLE IF NOT EXISTS issue_tickets (
+  id BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+  ticket_no VARCHAR(64) NOT NULL,
+  case_id BIGINT UNSIGNED NOT NULL,
+  library_id BIGINT UNSIGNED NOT NULL,
+  symptom MEDIUMTEXT NOT NULL,
+  status VARCHAR(24) NOT NULL DEFAULT 'pending',
+  root_cause_json MEDIUMTEXT NOT NULL,
+  evidence_json MEDIUMTEXT NOT NULL,
+  verification_json MEDIUMTEXT NOT NULL,
+  verdict MEDIUMTEXT NOT NULL,
+  verdict_reason VARCHAR(1000) NOT NULL DEFAULT '',
+  verdict_by VARCHAR(64) NOT NULL DEFAULT '',
+  verdict_at VARCHAR(32) NULL,
+  knowledge_id VARCHAR(64) NOT NULL DEFAULT '',
+  task_id BIGINT UNSIGNED NULL,
+  error VARCHAR(1000) NOT NULL DEFAULT '',
+  created_at VARCHAR(32) NOT NULL,
+  updated_at VARCHAR(32) NOT NULL,
+  UNIQUE KEY uk_issue_tickets_no (ticket_no)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+CREATE INDEX idx_issue_tickets_case ON issue_tickets(case_id, status);
+CREATE INDEX idx_issue_tickets_lib ON issue_tickets(library_id, status);
 
 -- 用例 ↔ 接口符号的关联（P11）：一条用例可能覆盖多个接口，一个接口也需要多条用例
 -- （正向/空值/边界/大数据），单列 cases.api_symbol_id 表达不了这种多对多。

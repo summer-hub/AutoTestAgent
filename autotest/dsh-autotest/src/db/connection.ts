@@ -451,6 +451,7 @@ export async function ensureReady(): Promise<void> {
         ['tasks', 'trace_id'], ['executions', 'trace_id'], ['executions_archive', 'trace_id'],
         ['executions', 'env_run_id'], ['executions', 'resource_set_id'],
         ['executions_archive', 'env_run_id'], ['executions_archive', 'resource_set_id'],
+        ['cases', 'symptom'],
       ] as Array<[string, string]>) {
         try {
           const cols = await query(`PRAGMA table_info(${table})`, []) as Array<{ name: string }>;
@@ -477,6 +478,7 @@ export async function ensureReady(): Promise<void> {
               'executions:resource_set_id': 'ALTER TABLE executions ADD COLUMN resource_set_id INTEGER NULL',
               'executions_archive:env_run_id': 'ALTER TABLE executions_archive ADD COLUMN env_run_id INTEGER NULL',
               'executions_archive:resource_set_id': 'ALTER TABLE executions_archive ADD COLUMN resource_set_id INTEGER NULL',
+              'cases:symptom': "ALTER TABLE cases ADD COLUMN symptom TEXT NOT NULL DEFAULT ''",
               'executions_archive:trace_id': "ALTER TABLE executions_archive ADD COLUMN trace_id TEXT NOT NULL DEFAULT ''",
             };
             await query(ddl[`${table}:${col}`], []);

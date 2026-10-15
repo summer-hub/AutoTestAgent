@@ -179,6 +179,9 @@ CREATE TABLE IF NOT EXISTS cases (
   demo_patch_json TEXT NOT NULL DEFAULT '',
   -- P6 oracle：机器可校验判据（断言覆盖率硬门槛 100% —— 没有它就不允许入库）
   oracle_json TEXT NOT NULL DEFAULT '[]',
+  -- R5：问题现象（人维护的疑问描述）。与 Agent 字段的边界：这一列是人写的观察，
+  -- 同步/导入绝不覆盖它（同 librarySheet 对 package_name 的边界）。
+  symptom TEXT NOT NULL DEFAULT '',
   created_at TEXT NOT NULL,
   updated_at TEXT NOT NULL,
   UNIQUE (library_id, case_no)
@@ -187,6 +190,40 @@ CREATE INDEX IF NOT EXISTS idx_cases_library ON cases(library_id);
 CREATE INDEX IF NOT EXISTS idx_cases_source ON cases(source);
 CREATE INDEX IF NOT EXISTS idx_cases_status ON cases(status);
 CREATE INDEX IF NOT EXISTS idx_cases_name ON cases(name);
+
+-- R5：问题归因工单。一次「人对用例有疑问」= 一张工单。
+-- 与 cases.symptom 的分工：symptom 是**当前**疑问（人维护，可改）；
+-- 工单是**历史档案**（每次提交一条，含 AI 根因、证据、人工结论），可追溯、可沉淀知识。
+CREATE TABLE IF NOT EXISTS issue_tickets (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  ticket_no TEXT NOT NULL,
+  case_id INTEGER NOT NULL,
+  library_id INTEGER NOT NULL,
+  -- 人填的问题现象（提交时快照，之后不改 —— 改了就分不清 AI 当初分析的是哪个问题）
+  symptom TEXT NOT NULL,
+  -- 状态机：pending → analyzing → root_caused → verifying → accepted / rejected / failed
+  status TEXT NOT NULL DEFAULT 'pending',
+  -- AI 根因结论（结构化 JSON：根因陈述/证据 file:line/置信度/修复建议/是否需改 demo）
+  root_cause_json TEXT NOT NULL DEFAULT '{}',
+  -- 证据清单（AI 引用的文件、行号、源码片段、遍历控件、执行日志）
+  evidence_json TEXT NOT NULL DEFAULT '[]',
+  -- 自测试验证结果（补丁是否应用到副本、真机是否跑通、无真机时的明确原因）
+  verification_json TEXT NOT NULL DEFAULT '{}',
+  -- 人工验收结论（接受/驳回的理由；接受才沉淀知识条目）
+  verdict TEXT NOT NULL DEFAULT '',
+  verdict_reason TEXT NOT NULL DEFAULT '',
+  verdict_by TEXT NOT NULL DEFAULT '',
+  verdict_at TEXT NULL,
+  -- 沉淀出的知识条目 id（接受时回填，供前端跳转与反查）
+  knowledge_id TEXT NOT NULL DEFAULT '',
+  task_id INTEGER NULL,
+  error TEXT NOT NULL DEFAULT '',
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  UNIQUE (ticket_no)
+);
+CREATE INDEX IF NOT EXISTS idx_issue_tickets_case ON issue_tickets(case_id, status);
+CREATE INDEX IF NOT EXISTS idx_issue_tickets_lib ON issue_tickets(library_id, status);
 
 -- 用例 ↔ 接口符号的关联（P11）：一条用例可能覆盖多个接口，一个接口也需要多条用例
 -- （正向/空值/边界/大数据），单列 cases.api_symbol_id 表达不了这种多对多。
