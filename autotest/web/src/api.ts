@@ -5,6 +5,38 @@ import type { Analysis, CaseVersion, DetectBundleResult, Device, Execution, Expl
 // 独立版默认 /api（Vite 代理到 3280）。
 const API_BASE: string = (import.meta.env.VITE_API_BASE as string | undefined) ?? '/api';
 
+/** R5：问题归因工单（现象 → AI 根因 → 自测试 → 人工验收）。 */
+export interface IssueTicket {
+  id: number;
+  ticketNo: string;
+  caseId: number;
+  libraryId: number;
+  /** 人填的问题现象（提交时快照，之后不改） */
+  symptom: string;
+  /** pending → analyzing → root_caused → verifying → accepted / rejected / failed */
+  status: string;
+  rootCause: {
+    rootCause: string;
+    confidence: number;
+    evidence: Array<{ kind: string; ref: string; line: number; excerpt: string; supports: string }>;
+    fixSuggestions: string[];
+    needsDemoPatch: boolean;
+    uncertainties: string[];
+    analysisBy: 'llm' | 'rule';
+  } | null;
+  evidence: Array<{ kind: string; ref: string; line: number; excerpt: string; supports: string }>;
+  verification: Record<string, unknown>;
+  verdict: string;
+  verdictReason: string;
+  verdictBy: string;
+  verdictAt: string | null;
+  knowledgeId: string;
+  taskId: number | null;
+  error: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
 /** P3 覆盖矩阵的返回结构（构建与查询共用）。 */
 export interface CoveragePayload {
   libraryId: number;
@@ -340,6 +372,28 @@ export const api = {
       byKind: Record<string, number>;
       kindLabels: Record<string, string>;
     }>(`${API_BASE}/automation/queue-summary${status ? `?status=${status}` : ''}`),
+
+  // ---- R5：问题归因工单（现象 → AI 根因 → 自测试 → 人工验收）----
+  issues: (opts: { libraryId?: number; caseId?: number; status?: string; limit?: number } = {}) => {
+    const q = new URLSearchParams();
+    if (opts.libraryId) q.set('libraryId', String(opts.libraryId));
+    if (opts.caseId) q.set('caseId', String(opts.caseId));
+    if (opts.status) q.set('status', opts.status);
+    if (opts.limit) q.set('limit', String(opts.limit));
+    const qs = q.toString();
+    return req<{ items: IssueTicket[]; total: number }>(`${API_BASE}/issues${qs ? `?${qs}` : ''}`);
+  },
+  issue: (id: number) => req<IssueTicket>(`${API_BASE}/issues/${id}`),
+  issueCreate: (b: { caseId: number; symptom: string }) =>
+    req<IssueTicket>(`${API_BASE}/issues`, { method: 'POST', body: JSON.stringify(b) }),
+  issueAnalyze: (id: number) =>
+    req<{ ok: boolean; taskId: number }>(`${API_BASE}/issues/${id}/analyze`, { method: 'POST', body: JSON.stringify({}) }),
+  issueAccept: (id: number, reason: string, by = 'human') =>
+    req<IssueTicket & { knowledgeId: string }>(`${API_BASE}/issues/${id}/accept`, {
+      method: 'POST', body: JSON.stringify({ reason, by }),
+    }),
+  issueReject: (id: number, reason: string, by = 'human') =>
+    req<IssueTicket>(`${API_BASE}/issues/${id}/reject`, { method: 'POST', body: JSON.stringify({ reason, by }) }),
   // P8 用例 ↔ 脚本映射与版本联动
   scriptBindings: (libId: number) => req<{
     libraryId: number; total: number; byStatus: Record<string, number>;

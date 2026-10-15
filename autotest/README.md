@@ -211,6 +211,7 @@ Redis 缓存与连接池已落地；分表路由层存在但未启用（当前 S
 - ✅ **R3 智能增量与知识沉淀**：知识库新增 5 种 kind（env_recipe / resource_recipe / dep_fix / cert_recipe / build_fix）与 2 种 scope（toolchain / resource_kind）+ 3 个检索维度（**libraryKind 让"lottie 的动画经验"可被另一个动画库复用**）+ `injectForStage` 新增 env_prep / resource_build；L2 LLM 增量采集只跑差异库（校验闸门：scriptId 必须真实存在、参数必须过契约；不确定项入队而非把猜测当结论）；人工队列新增 env_blocked / resource_missing / toolchain_missing 三类
 - ✅ **R4 构建安装闭环与端到端**：脚本资产扩至 14 个（+submodule_sync / binary_dep_fetch / smoke_check / gen_ca / mock_server_up / mock_server_stop / xts_scaffold / xts_run / xts_report）；**占位符替换与步骤输出串联**（`{{repoDir}}` 运行期替换、`build_hap` 打 `HAP_PATH` → `hdc_install` 引用）让「克隆→依赖→构建→装包→冒烟」串成一条链；R2/R3 新路由补 RBAC 角色标注
 - ✅ **R0–R4 收口（G1–G4）**：L2 透传 taskId 使 token 预算闸门生效；前端接入 L2 触发与待处理清单；人工队列按「库类别 × 阻塞原因」聚合；文档补齐
+- ✅ **R5 问题归因闭环**：`cases.symptom`（人维护的问题现象，Agent 字段不被其覆盖）+ `issue_tickets` 工单表；`services/issueRoot.ts`（上下文组装 / LLM 根因 / 规则降级 / 工单状态流转）；executor `analyze_issue` 任务（走任务 lane·取消·轨迹）；`/issues*` 6 条路由；web「问题归因」页；agent-tools `issues.*` 6 条规格。核心纪律：**无真机/无 oracle/无步骤一律失败并写明原因，绝不回退模拟**；证据为空时置信度强制 ≤40；中文症状按二元组分词（整句切分永远匹配不上源码）；验收通过才沉淀知识条目
 
 ## 核心业务语义
 

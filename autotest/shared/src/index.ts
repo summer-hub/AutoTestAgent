@@ -134,6 +134,9 @@ export interface TestCase {
   scenarioKind?: string;
   priority?: string;
   dtsUrl: string;              // 问题单（DTS）链接，空 = 无关联问题单
+  /** R5：问题现象（人维护的"当前疑问"，如"点击播放后进度条不动"）。
+   *  与 Agent 字段的边界：这一列是人写的观察，同步/导入绝不覆盖它。 */
+  symptom?: string;
   /** 当前版本号：每次更新自动 +1，无上限（单条用例粒度） */
   currentVersion: number;
   createdAt: string;

@@ -44,8 +44,9 @@ import { planLibraryCases, samplePlan } from '../services/casePlan.js';
 import { applyCasePatch, revertCasePatch, runTestability } from '../services/testability.js';
 import { evaluateQuality, validateOracles } from '../services/oracle.js';
 import { loadHumanQueue, resolveQueueItem, runTriage, queueSummary } from '../services/automation.js';
+import { createTicket, listTickets, loadTicket, decideTicket, } from '../services/issueRoot.js';
 import { bindCaseScript, confirmBinding, listBindings, refreshBindingStatuses, unbindCaseScript } from '../services/scriptBinding.js';
-import { canConfirm, loadEntriesFromDisk, rebuildIndex, renderInjection, retrieve, saveEntry, wikiRoot, } from '../services/knowledge.js';
+import { canConfirm, loadEntriesFromDisk, rebuildIndex, renderInjection, retrieve, saveEntry, wikiRoot, sediteFromQueue, } from '../services/knowledge.js';
 import { bindingTraceLine, deleteBinding, externalCmdAvailable, JSONRPC, listResolvedBindings, mcpInitializeResult, mcpTools, rpcError, rpcResult, STAGES, upsertBinding, } from '../services/agentBinding.js';
 import { detectPython, runHypiumModule, probePythons, describePythonProbe } from '../services/hypiumRunner.js';
 const routes = [];
@@ -1107,6 +1108,97 @@ function defineRoutes(llm) {
             kindLabels: Object.fromEntries(Object.keys(s.byKind).map((k) => [k, k === 'unknown' ? '未识别（需先跑全量采集）' : k])),
         };
     }, { role: 'viewer' });
+    // ---- R5：问题归因工单（现象 → AI 根因 → 自测试 → 人工验收）----
+    //
+    // 与 human_queue 的分工：human_queue 是"自动化跑不了"的阻塞条目；
+    // 工单是"人对用例有疑问"的一次完整归因流程（含 AI 根因、证据、自测试、人工结论）。
+    route('POST', '/issues', async ({ body }) => {
+        const b = (body ?? {});
+        const caseId = Number(b.caseId);
+        if (!Number.isFinite(caseId) || caseId <= 0)
+            throw Object.assign(new Error('caseId 必填'), { statusCode: 400 });
+        const r = await createTicket({ caseId, symptom: String(b.symptom ?? '') });
+        console.log(`[autotest] 问题工单创建：${r.ticketNo}（用例 #${r.caseId}）`);
+        invalidateCaseCaches();
+        return r;
+    }, { role: 'operator' });
+    route('GET', '/issues', async ({ query }) => {
+        const libraryId = Number(query.get('libraryId')) || undefined;
+        const caseId = Number(query.get('caseId')) || undefined;
+        const status = query.get('status') ?? undefined;
+        const limit = Number(query.get('limit')) || undefined;
+        const items = await listTickets({ libraryId, caseId, status, limit });
+        return { items, total: items.length };
+    }, { role: 'viewer' });
+    route('GET', '/issues/:id', async ({ params }) => {
+        const row = await loadTicket(Number(params.id));
+        if (!row)
+            throw Object.assign(new Error('工单不存在'), { statusCode: 404 });
+        return row;
+    }, { role: 'viewer' });
+    // 触发 AI 分析（建 analyze_issue 任务入 lane；自测试失败会让任务失败并写明原因）
+    route('POST', '/issues/:id/analyze', async ({ params }) => {
+        const id = Number(params.id);
+        const row = await loadTicket(id);
+        if (!row)
+            throw Object.assign(new Error('工单不存在'), { statusCode: 404 });
+        if (!row.symptom.trim())
+            throw Object.assign(new Error('该工单没有问题现象，无法分析'), { statusCode: 400 });
+        const t = now();
+        const ins = await getDb().prepare(`INSERT INTO tasks (task_no, type, title, library_id, input, trace, trace_id, status, progress, created_at, updated_at)
+      VALUES (?, 'analyze_issue', ?, ?, ?, '[]', ?, 'pending', 0, ?, ?)`)
+            .run(`TK-${Date.now()}-${Math.floor(Math.random() * 10000)}`, '问题根因定位与自测试', row.libraryId, String(id), `tr-${Date.now()}`, t, t);
+        const taskId = Number(ins.lastInsertRowid);
+        await getDb().prepare('UPDATE issue_tickets SET task_id = ?, updated_at = ? WHERE id = ?').run(taskId, t, id);
+        enqueueTask(taskId, row.libraryId, llm);
+        console.log(`[autotest] 工单 ${row.ticketNo} 触发分析任务 #${taskId}`);
+        return { ok: true, taskId };
+    }, { role: 'operator', llm: true });
+    // 人工验收：接受 → 结论沉淀为知识条目（复用 P9 机制）
+    route('POST', '/issues/:id/accept', async ({ params, body }) => {
+        const id = Number(params.id);
+        const b = (body ?? {});
+        const reason = String(b.reason ?? '').trim();
+        if (!reason)
+            throw Object.assign(new Error('验收结论不能为空（空结论等于没处理）'), { statusCode: 400 });
+        const before = await loadTicket(id);
+        if (!before)
+            throw Object.assign(new Error('工单不存在'), { statusCode: 404 });
+        if (!before.rootCause)
+            throw Object.assign(new Error('该工单还没有根因结论，先跑分析再验收'), { statusCode: 400 });
+        const row = await decideTicket({ ticketId: id, accept: true, reason, by: String(b.by ?? 'human') });
+        // 沉淀知识条目：把"人确认过的根因"变成下次可复用的经验
+        let knowledgeId = '';
+        try {
+            const lib = await getDb().prepare('SELECT name FROM libraries WHERE id = ?').get(row.libraryId);
+            const entry = await sediteFromQueue({
+                libraryId: row.libraryId, libraryName: lib?.name ?? `#${row.libraryId}`,
+                caseNo: String(before.caseId), stage: 'issue_root_cause',
+                reason: `问题现象：${row.symptom}`, question: '请人工确认根因是否成立',
+                resolution: `根因：${before.rootCause?.rootCause ?? ''}\n人工验收：${reason}`,
+                payload: { ticketId: row.id, ticketNo: row.ticketNo, confidence: before.rootCause?.confidence ?? 0, evidence: before.evidence.length },
+            });
+            knowledgeId = entry.id;
+            await getDb().prepare('UPDATE issue_tickets SET knowledge_id = ?, updated_at = ? WHERE id = ?').run(knowledgeId, now(), id);
+        }
+        catch (e) {
+            console.warn(`[autotest] 工单验收知识沉淀失败（不影响验收本身）：${e.message}`);
+        }
+        invalidateCaseCaches();
+        console.log(`[autotest] 工单 ${row.ticketNo} 验收通过${knowledgeId ? `，已沉淀知识 ${knowledgeId}` : ''}`);
+        return { ...row, knowledgeId };
+    }, { role: 'operator' });
+    route('POST', '/issues/:id/reject', async ({ params, body }) => {
+        const id = Number(params.id);
+        const b = (body ?? {});
+        const reason = String(b.reason ?? '').trim();
+        if (!reason)
+            throw Object.assign(new Error('驳回理由不能为空（理由供反查"为什么这条结论不成立"）'), { statusCode: 400 });
+        const row = await decideTicket({ ticketId: id, accept: false, reason, by: String(b.by ?? 'human') });
+        invalidateCaseCaches();
+        console.log(`[autotest] 工单 ${row.ticketNo} 验收驳回：${reason.slice(0, 60)}`);
+        return row;
+    }, { role: 'operator' });
     route('POST', '/human-queue/:id/resolve', async ({ params, body }) => {
         const id = Number(params.id);
         const b = (body ?? {});

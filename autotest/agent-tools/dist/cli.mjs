@@ -645,6 +645,81 @@ var COMMANDS = [
       { name: "exitCode", type: "number", description: "\u9000\u51FA\u7801", default: 1 },
       { name: "taxonomy", type: "string-array", description: "\u5951\u7EA6\u58F0\u660E\u7684\u5931\u8D25\u5206\u7C7B\uFF08\u9017\u53F7\u5206\u9694\uFF09" }
     ]
+  },
+  // ---------- issues（R5：问题归因工单）----------
+  {
+    name: "issues.create",
+    group: "issues",
+    action: "create",
+    summary: "\u521B\u5EFA\u95EE\u9898\u5F52\u56E0\u5DE5\u5355\uFF08\u4EBA\u5BF9\u7528\u4F8B\u7684\u7591\u95EE \u2192 symptom \u5FC5\u586B\uFF09",
+    method: "POST",
+    path: "/issues",
+    role: "operator",
+    params: [
+      { name: "caseId", type: "number", description: "\u76EE\u6807\u7528\u4F8B id", required: true },
+      { name: "symptom", type: "string", description: "\u95EE\u9898\u73B0\u8C61\uFF08\u4EBA\u89C2\u5BDF\u5230\u7684\u5177\u4F53\u73B0\u8C61\uFF0CAI \u7684\u5206\u6790\u5BF9\u8C61\uFF09", required: true }
+    ]
+  },
+  {
+    name: "issues.list",
+    group: "issues",
+    action: "list",
+    summary: "\u95EE\u9898\u5DE5\u5355\u5217\u8868\uFF08\u53EF\u6309\u5E93/\u7528\u4F8B/\u72B6\u6001\u8FC7\u6EE4\uFF09",
+    method: "GET",
+    path: "/issues",
+    role: "viewer",
+    params: [
+      { name: "libraryId", type: "number", description: "\u6309\u4E09\u65B9\u5E93\u8FC7\u6EE4" },
+      { name: "caseId", type: "number", description: "\u6309\u7528\u4F8B\u8FC7\u6EE4" },
+      { name: "status", type: "string", description: "pending/analyzing/root_caused/verifying/accepted/rejected/failed" },
+      { name: "limit", type: "number", description: "\u8FD4\u56DE\u6761\u6570\uFF0C\u9ED8\u8BA4 50", default: 50 }
+    ]
+  },
+  {
+    name: "issues.get",
+    group: "issues",
+    action: "get",
+    summary: "\u5DE5\u5355\u8BE6\u60C5\uFF08AI \u6839\u56E0 + \u8BC1\u636E + \u81EA\u6D4B\u8BD5\u7ED3\u679C + \u4EBA\u5DE5\u7ED3\u8BBA\uFF09",
+    method: "GET",
+    path: "/issues/:id",
+    role: "viewer",
+    params: []
+  },
+  {
+    name: "issues.analyze",
+    group: "issues",
+    action: "analyze",
+    summary: "\u53D1\u8D77 AI \u6839\u56E0\u5206\u6790\uFF08\u514B\u9686\u5DE5\u7A0B \u2192 \u5B9A\u4F4D\u6839\u56E0 \u2192 \u81EA\u6D4B\u8BD5\uFF1B\u65E0\u771F\u673A\u5219\u4EFB\u52A1\u5931\u8D25\u5E76\u5199\u660E\u539F\u56E0\uFF09",
+    method: "POST",
+    path: "/issues/:id/analyze",
+    role: "operator",
+    params: []
+  },
+  {
+    name: "issues.accept",
+    group: "issues",
+    action: "accept",
+    summary: "\u4EBA\u5DE5\u9A8C\u6536\u901A\u8FC7\uFF08\u7ED3\u8BBA\u6C89\u6DC0\u4E3A\u77E5\u8BC6\u6761\u76EE\uFF0C\u4E0B\u6B21\u540C\u7C7B\u95EE\u9898\u53EF\u53EC\u56DE\uFF09",
+    method: "POST",
+    path: "/issues/:id/accept",
+    role: "operator",
+    params: [
+      { name: "reason", type: "string", description: "\u9A8C\u6536\u7ED3\u8BBA\uFF08\u5FC5\u586B\uFF1B\u4F1A\u6C89\u6DC0\u8FDB\u77E5\u8BC6\u5E93\uFF09", required: true },
+      { name: "by", type: "string", description: "\u9A8C\u6536\u4EBA", default: "human" }
+    ]
+  },
+  {
+    name: "issues.reject",
+    group: "issues",
+    action: "reject",
+    summary: '\u4EBA\u5DE5\u9A73\u56DE\uFF08\u7406\u7531\u7559\u5B58\uFF0C\u4F9B\u53CD\u67E5"\u4E3A\u4EC0\u4E48\u8FD9\u6761\u7ED3\u8BBA\u4E0D\u6210\u7ACB"\uFF09',
+    method: "POST",
+    path: "/issues/:id/reject",
+    role: "operator",
+    params: [
+      { name: "reason", type: "string", description: "\u9A73\u56DE\u7406\u7531\uFF08\u5FC5\u586B\uFF09", required: true },
+      { name: "by", type: "string", description: "\u64CD\u4F5C\u4EBA", default: "human" }
+    ]
   }
 ];
 

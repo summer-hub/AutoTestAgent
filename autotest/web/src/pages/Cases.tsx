@@ -94,6 +94,35 @@ export default function CasesPage() {
     } catch (e) { setPatchMsg(String((e as Error).message)); }
   };
 
+  /**
+   * 对用例发起「问题归因」：填问题现象 → 建工单 → AI 定位根因 → 自测试 → 人工验收。
+   *
+   * 为什么在这里弹窗而不是跳页面：人的疑问是在看用例时产生的，
+   * 让他先离开上下文去另一个页面填表单会打断思路。
+   * symptom 是**一次性快照**（提交后不改），所以这里让用户确认要问的是什么。
+   */
+  const fileIssue = async (c: TestCase): Promise<void> => {
+    const text = window.prompt(
+      `对用例「${c.caseNo} ${c.name}」有什么疑问？\n\n` +
+      `请描述你观察到的现象（越具体越好，例如"点击播放后进度条不动"而不是"有问题"）。\n` +
+      `提交后 AI 会克隆工程、定位根因并自测试，最后由你人工验收。`,
+      c.symptom ?? '',
+    );
+    if (text === null) return;                       // 用户取消
+    const symptom = text.trim();
+    if (!symptom) { window.alert('问题现象不能为空（它是 AI 的分析对象）'); return; }
+    setRowBusy({ id: c.id, kind: 'issue' });
+    try {
+      const tk = await api.issueCreate({ caseId: c.id, symptom });
+      setPatchMsg(`已创建问题工单 ${tk.ticketNo}。到「问题归因」页点「发起 AI 分析」开始定位根因。`);
+      loadCases(curLib ?? 0, 1);
+    } catch (e) {
+      window.alert(`创建工单失败：${(e as Error).message}`);
+    } finally {
+      setRowBusy(null);
+    }
+  };
+
   const applyPatch = async () => {
     if (!patchView) return;
     const edits = patchView.patch?.edits ?? [];
@@ -151,7 +180,7 @@ export default function CasesPage() {
   };
 
   // 行内操作：转脚本 / AI优化（按用例 id 标记 busy）
-  const [rowBusy, setRowBusy] = useState<{ id: number; kind: 'script' | 'optimize' } | null>(null);
+  const [rowBusy, setRowBusy] = useState<{ id: number; kind: 'script' | 'optimize' | 'issue' } | null>(null);
 
   const caseToScript = async (c: TestCase): Promise<void> => {
     if (curLib === null) return;
@@ -470,7 +499,7 @@ export default function CasesPage() {
                   <th style={{ width: 34 }}>
                     <input type="checkbox" checked={allPageSelected} onChange={toggleAllPage} title="全选本页" style={{ accentColor: 'var(--accent)', cursor: 'pointer' }} />
                   </th>
-                  <th>用例 ID</th><th>用例名称</th><th>来源</th><th>版本</th><th>状态</th><th>可测性</th><th>补丁</th><th>脚本</th><th>问题单</th><th>操作</th>
+                  <th>用例 ID</th><th>用例名称</th><th>来源</th><th>版本</th><th>状态</th><th>可测性</th><th>补丁</th><th>脚本</th><th>问题现象</th><th>问题单</th><th>操作</th>
                 </tr>
                 {cases.items.map((c) => (
                   <tr key={c.id}>
@@ -534,6 +563,20 @@ export default function CasesPage() {
                           </>
                         );
                       })()}
+                    </td>
+                    <td>
+                      {c.symptom
+                        ? <span
+                            className="link"
+                            title={`问题现象：${c.symptom}\n\n点击发起「问题归因」工单：AI 克隆工程定位根因 → 自测试 → 人工验收`}
+                            onClick={() => void fileIssue(c)}
+                          >🩺 {c.symptom.slice(0, 16)}{c.symptom.length > 16 ? '…' : ''}</span>
+                        : <span
+                            className="link"
+                            style={{ color: 'var(--text3)' }}
+                            title="对该用例有疑问？填写问题现象，AI 会克隆工程定位根因并自测试，最后人工验收"
+                            onClick={() => void fileIssue(c)}
+                          >＋ 提问</span>}
                     </td>
                     <td>
                       {c.dtsUrl

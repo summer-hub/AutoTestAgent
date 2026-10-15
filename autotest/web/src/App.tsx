@@ -19,12 +19,13 @@ import KnowledgePage from './pages/Knowledge';
 import AgentBindingsPage from './pages/AgentBindings';
 import EnvPage from './pages/Env';
 import SurveyPage from './pages/Survey';
+import IssuesPage from './pages/Issues';
 import SettingsModal from './components/SettingsModal';
 import LoginScreen from './components/LoginScreen';
 import { ErrorBoundary } from './components/ErrorBoundary';
 import { ROLE_LABEL, setRole } from './authState';
 
-export type PageKey = 'home' | 'tasks' | 'libraries' | 'api' | 'coverage' | 'human' | 'knowledge' | 'cases' | 'scripts' | 'plans' | 'analysis' | 'attribution' | 'debug' | 'devices' | 'prompts' | 'agents' | 'env' | 'survey' | 'settings';
+export type PageKey = 'home' | 'tasks' | 'libraries' | 'api' | 'coverage' | 'human' | 'knowledge' | 'cases' | 'scripts' | 'plans' | 'analysis' | 'attribution' | 'debug' | 'devices' | 'prompts' | 'agents' | 'env' | 'survey' | 'issues' | 'settings';
 
 const NAV: Array<{ group: string; items: Array<{ key: PageKey; icon: string; label: string; badge?: string }> }> = [
   {
@@ -46,6 +47,7 @@ const NAV: Array<{ group: string; items: Array<{ key: PageKey; icon: string; lab
       { key: 'scripts', icon: '🤖', label: '自动化脚本' },
       { key: 'env', icon: '🧰', label: '环境准备' },
       { key: 'survey', icon: '🔬', label: '全量分析' },
+      { key: 'issues', icon: '🩺', label: '问题归因' },
     ],
   },
   {
@@ -70,7 +72,7 @@ const NAV: Array<{ group: string; items: Array<{ key: PageKey; icon: string; lab
 
 const TITLES: Record<PageKey, string> = {
   home: '首页', tasks: '任务管理', libraries: '库管理', api: '接口清单', coverage: '覆盖矩阵', human: '人工队列', knowledge: '知识库', cases: '测试用例', scripts: '自动化脚本', plans: '执行计划', analysis: '数据分析',
-  attribution: '归因分析', debug: '调试会话', devices: '设备管理', prompts: 'Prompt 管理', agents: 'Agent 绑定', env: '环境准备', survey: '全量分析', settings: '系统配置',
+  attribution: '归因分析', debug: '调试会话', devices: '设备管理', prompts: 'Prompt 管理', agents: 'Agent 绑定', env: '环境准备', survey: '全量分析', issues: '问题归因', settings: '系统配置',
 };
 
 /** 页面 → 所属分组（面包屑第一段，如「智能分析 / 执行计划」）。 */
@@ -174,6 +176,7 @@ export default function App() {
       {page === 'agents' && <AgentBindingsPage />}
       {page === 'env' && <EnvPage />}
       {page === 'survey' && <SurveyPage />}
+      {page === 'issues' && <IssuesPage />}
       {page === 'settings' && <SettingsPage />}
     </ErrorBoundary>
   );
