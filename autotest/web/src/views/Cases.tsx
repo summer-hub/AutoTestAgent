@@ -23,10 +23,12 @@ function renderChangeNote(note: string | null): React.ReactNode {
   return n;
 }
 
-export default function CasesPage() {
+export default function CasesPage({ fixedLibraryId }: { fixedLibraryId?: number } = {}) {
   const [libs, setLibs] = useState<Page<Library> | null>(null);
   const [libQ, setLibQ] = useState('');
-  const [curLib, setCurLib] = useState<number | null>(null);
+  const [curLib, setCurLib] = useState<number | null>(fixedLibraryId ?? null);
+  // 嵌入模式：跟随外部（库工作区）选中的库
+  useEffect(() => { if (fixedLibraryId) setCurLib(fixedLibraryId); }, [fixedLibraryId]);
   const [cases, setCases] = useState<Page<TestCase> | null>(null);
   const [source, setSource] = useState('');
   const [caseQ, setCaseQ] = useState('');

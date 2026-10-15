@@ -1,6 +1,15 @@
 import { useCallback, useEffect, useState } from 'react';
 import type { Library, Page, TestCase } from 'shared';
 import { api } from '../api';
+import EnvPage from '../views/Env';
+import SurveyPage from '../views/Survey';
+import CasesPage from '../views/Cases';
+import ScriptsPage from '../views/Scripts';
+import ApiPage from '../views/Api';
+import CoveragePage from '../views/Coverage';
+import IssuePage from '../views/Issues';
+import HumanQueuePage from '../views/HumanQueue';
+import AttributionPage from '../views/Attribution';
 
 /**
  * 库工作区（Phase 1 · 双轨期）—— R8 信息架构重构的新主轴入口。
@@ -15,6 +24,27 @@ import { api } from '../api';
  */
 
 type Tab = 'overview' | 'env' | 'cases' | 'issues';
+
+/** 二级子 Tab：每个主 Tab 下挂多个完整功能视图（原独立页面）。 */
+type SubTab = 'env' | 'survey' | 'cases' | 'scripts' | 'api' | 'coverage' | 'issues' | 'human' | 'attribution';
+
+const SUB_TABS: Record<Exclude<Tab, 'overview'>, Array<{ key: SubTab; label: string; icon: string }>> = {
+  env: [
+    { key: 'env', label: '环境画像', icon: '🧰' },
+    { key: 'survey', label: '全量采集', icon: '🔬' },
+  ],
+  cases: [
+    { key: 'cases', label: '用例', icon: '🧪' },
+    { key: 'scripts', label: '脚本', icon: '🤖' },
+    { key: 'api', label: '接口面', icon: '🔌' },
+    { key: 'coverage', label: '覆盖矩阵', icon: '🧭' },
+  ],
+  issues: [
+    { key: 'issues', label: '问题归因', icon: '🩺' },
+    { key: 'human', label: '人工队列', icon: '🙋' },
+    { key: 'attribution', label: '执行归因', icon: '🔍' },
+  ],
+};
 
 const TABS: Array<{ key: Tab; label: string; icon: string }> = [
   { key: 'overview', label: '概览', icon: '📊' },
@@ -37,6 +67,7 @@ export default function LibraryWorkspace() {
   const [q, setQ] = useState('');
   const [sel, setSel] = useState<number | null>(null);
   const [tab, setTab] = useState<Tab>('overview');
+  const [subTab, setSubTab] = useState<SubTab>('env');
   const [error, setError] = useState('');
   const [msg, setMsg] = useState('');
   const [busy, setBusy] = useState(false);
@@ -256,134 +287,75 @@ export default function LibraryWorkspace() {
                 </div>
               )}
 
-              {/* ---- 环境 ---- */}
+              {/* ---- 环境（二级 Tab：环境画像 / 全量采集）---- */}
               {tab === 'env' && (
                 <>
-                  <div className="muted" style={{ fontSize: 12, marginBottom: 8 }}>
-                    环境画像 = 这个库在什么工具链 / 依赖 / 步骤序列下才测得动。运行记录是"从克隆到装包"的真实执行。
+                  <div className="ws-subtabs">
+                    {SUB_TABS.env.map((s) => (
+                      <button
+                        key={s.key}
+                        type="button"
+                        className={`ws-subtab ${subTab === s.key ? 'active' : ''}`}
+                        onClick={() => setSubTab(s.key)}
+                      >
+                        <span className="ico">{s.icon}</span>{s.label}
+                      </button>
+                    ))}
                   </div>
-                  {profiles.length === 0 && (
-                    <div className="empty">
-                      <div className="empty-ic">🧰</div>
-                      <div className="empty-t">还没有环境画像</div>
-                      <div className="empty-d">到「全量分析」页跑一次采集，或按预设类别生成画像。</div>
-                    </div>
-                  )}
-                  {profiles.map((p) => (
-                    <div key={p.id} className="card" style={{ marginBottom: 8 }}>
-                      <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
-                        <b>{p.name}</b>
-                        {p.presetKind && <span className="tag blue">{p.presetKind}</span>}
-                        <span className="tag gray">来源 {p.source}</span>
-                        <span className="tag gray">{p.stepCount} 步</span>
-                        <span className="tag gray">置信度 {p.confidence}</span>
-                        {p.lastRunStatus && (
-                          <span className={`tag ${p.lastRunStatus === 'passed' ? 'green' : p.lastRunStatus === 'failed' ? 'red' : 'gray'}`}>
-                            {p.lastRunStatus}
-                          </span>
-                        )}
-                        <div style={{ flex: 1 }} />
-                        <button className="btn sm primary" disabled={busy} onClick={() => void runEnv(p.id)}>
-                          {busy ? '执行中…' : '发起环境准备'}
-                        </button>
-                      </div>
-                    </div>
-                  ))}
-                  {runs.length > 0 && (
-                    <>
-                      <div style={{ fontSize: 13, fontWeight: 600, margin: '14px 0 6px' }}>最近运行</div>
-                      <table>
-                        <thead><tr><th>运行号</th><th>状态</th><th>触发</th><th>耗时</th><th>说明</th></tr></thead>
-                        <tbody>
-                          {runs.map((r) => (
-                            <tr key={r.id}>
-                              <td className="mono">{r.runNo}</td>
-                              <td>
-                                <span className={`tag ${r.status === 'passed' ? 'green' : r.status === 'cached' ? 'blue' : r.status === 'failed' ? 'red' : 'gray'}`}>
-                                  {r.status}
-                                </span>
-                              </td>
-                              <td>{r.trigger}</td>
-                              <td className="muted">{(r.durationMs / 1000).toFixed(1)}s</td>
-                              <td className="muted">{r.error || '—'}</td>
-                            </tr>
-                          ))}
-                        </tbody>
-                      </table>
-                    </>
-                  )}
+                  <div className="ws-subbody">
+                    {subTab === 'env' && <EnvPage fixedLibraryId={sel ?? undefined} />}
+                    {subTab === 'survey' && <SurveyPage />}
+                  </div>
                 </>
               )}
 
-              {/* ---- 用例 ---- */}
+              {/* ---- 用例（二级 Tab：用例 / 脚本 / 接口面 / 覆盖矩阵）---- */}
               {tab === 'cases' && (
                 <>
-                  <div className="muted" style={{ fontSize: 12, marginBottom: 8 }}>
-                    该库的用例与脚本绑定状态。完整编辑 / 版本历史 / 补丁评审请到「测试用例」页。
+                  <div className="ws-subtabs">
+                    {SUB_TABS.cases.map((s) => (
+                      <button
+                        key={s.key}
+                        type="button"
+                        className={`ws-subtab ${subTab === s.key ? 'active' : ''}`}
+                        onClick={() => setSubTab(s.key)}
+                      >
+                        <span className="ico">{s.icon}</span>{s.label}
+                      </button>
+                    ))}
                   </div>
-                  {casePage && casePage.items.length > 0 ? (
-                    <table>
-                      <thead><tr><th>编号</th><th>名称</th><th>状态</th><th>脚本</th><th>可测性</th></tr></thead>
-                      <tbody>
-                        {casePage.items.map((c) => (
-                          <tr key={c.id}>
-                            <td className="mono">{c.caseNo}</td>
-                            <td>{c.name}</td>
-                            <td><span className="tag gray">{c.status}</span></td>
-                            <td>
-                              <span className={`tag ${c.scriptStatus === '已绑定' ? 'green' : 'gray'}`}>{c.scriptStatus}</span>
-                            </td>
-                            <td className="muted">{c.testability || '—'}</td>
-                          </tr>
-                        ))}
-                      </tbody>
-                    </table>
-                  ) : (
-                    <div className="empty">
-                      <div className="empty-ic">🧪</div>
-                      <div className="empty-t">还没有用例</div>
-                      <div className="empty-d">到「任务管理」用 AI 生成，或从 Excel 导入。</div>
-                    </div>
-                  )}
+                  <div className="ws-subbody">
+                    {subTab === 'cases' && <CasesPage fixedLibraryId={sel ?? undefined} />}
+                    {subTab === 'scripts' && <ScriptsPage fixedLibraryId={sel ?? undefined} />}
+                    {subTab === 'api' && <ApiPage fixedLibraryId={sel ?? undefined} />}
+                    {subTab === 'coverage' && <CoveragePage fixedLibraryId={sel ?? undefined} />}
+                  </div>
                 </>
               )}
 
-              {/* ---- 问题 ---- */}
+              {/* ---- 问题（二级 Tab：问题归因 / 人工队列 / 执行归因）---- */}
               {tab === 'issues' && (
                 <>
-                  <div className="muted" style={{ fontSize: 12, marginBottom: 8 }}>
-                    人对用例的疑问 → AI 定位根因 → 自测试 → 人工验收。以及自动化跑不了进人工队列的条目。
+                  <div className="ws-subtabs">
+                    {SUB_TABS.issues.map((s) => (
+                      <button
+                        key={s.key}
+                        type="button"
+                        className={`ws-subtab ${subTab === s.key ? 'active' : ''}`}
+                        onClick={() => setSubTab(s.key)}
+                      >
+                        <span className="ico">{s.icon}</span>{s.label}
+                      </button>
+                    ))}
                   </div>
-                  {tickets.length === 0 && (queue?.open ?? 0) === 0 && (
-                    <div className="empty">
-                      <div className="empty-ic">🩺</div>
-                      <div className="empty-t">没有待处理问题</div>
-                    </div>
-                  )}
-                  {tickets.map((t) => (
-                    <div key={t.id} className="card" style={{ marginBottom: 8 }}>
-                      <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
-                        <b className="mono" style={{ fontSize: 12 }}>{t.ticketNo}</b>
-                        <span className={`tag ${t.status === 'accepted' ? 'green' : t.status === 'rejected' ? 'red' : 'amber'}`}>
-                          {t.status}
-                        </span>
-                        {t.rootCause && <span className="tag gray">置信度 {t.rootCause.confidence}</span>}
-                      </div>
-                      <div style={{ fontSize: 12.5, marginTop: 4 }}>{t.symptom}</div>
-                    </div>
-                  ))}
-                  {(queue?.open ?? 0) > 0 && (
-                    <div className="card" style={{ marginTop: 8 }}>
-                      <b>人工队列</b>
-                      <div className="muted" style={{ fontSize: 12, marginTop: 4 }}>
-                        {queue?.open} 条阻塞待处理：
-                        {Object.entries(queue?.byStage ?? {}).map(([k, v]) => `${k} ${v}`).join(' · ')}
-                      </div>
-                      <a className="link" style={{ fontSize: 12 }} href="#human">去处理 ↗</a>
-                    </div>
-                  )}
+                  <div className="ws-subbody">
+                    {subTab === 'issues' && <IssuePage fixedLibraryId={sel ?? undefined} />}
+                    {subTab === 'human' && <HumanQueuePage fixedLibraryId={sel ?? undefined} />}
+                    {subTab === 'attribution' && <AttributionPage />}
+                  </div>
                 </>
               )}
+
             </div>
           </>
         )}

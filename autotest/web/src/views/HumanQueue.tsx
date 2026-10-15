@@ -47,9 +47,11 @@ const STAGE_COLOR: Record<BlockerStage, string> = {
   env_blocked: 'amber', resource_missing: 'amber', toolchain_missing: 'gray',
 };
 
-export default function HumanQueuePage() {
+export default function HumanQueuePage({ fixedLibraryId }: { fixedLibraryId?: number } = {}) {
   const [libs, setLibs] = useState<Library[]>([]);
-  const [libId, setLibId] = useState(0);
+  const [libId, setLibId] = useState(fixedLibraryId ?? 0);
+  // 嵌入模式：跟随外部（库工作区）选中的库
+  useEffect(() => { if (fixedLibraryId) setLibId(fixedLibraryId); }, [fixedLibraryId]);
   const [data, setData] = useState<{ total: number; open: number; byStage: Record<string, number>; items: QueueItem[] } | null>(null);
   const [loading, setLoading] = useState(false);
   // G4：跨库聚合（按「库类别 × 阻塞原因」）——"一次解决一类"的可观测面

@@ -429,3 +429,16 @@ tr:hover td { background: var(--panel2); }
   .ws-list { width: 190px; min-width: 190px; }
   .ws-item-meta { display: none; }
 }
+
+/* ============================================================
+   库工作区二级子 Tab（R8 B2）—— 主 Tab 下挂多个完整功能视图
+   ============================================================ */
+.ws-subtabs { display: flex; align-items: center; gap: 2px; padding: 0 0 8px; border-bottom: 1px solid var(--border); margin-bottom: 12px; flex-wrap: wrap; }
+.ws-subtab { display: inline-flex; align-items: center; gap: 5px; padding: 5px 11px; border: none; background: transparent; color: var(--text3); cursor: pointer; font-size: 12px; font-family: var(--sans); border-radius: 7px; }
+.ws-subtab:hover { background: var(--panel2); color: var(--text); }
+.ws-subtab.active { background: var(--accent-dim); color: var(--accent2); font-weight: 600; }
+.ws-subtab .ico { font-size: 12.5px; }
+.ws-subbody { min-height: 200px; }
+/* 嵌入视图时隐藏其自带的页面标题/描述（工作区已有头部，重复显得累赘） */
+.ws-subbody > .page-title,
+.ws-subbody > .page-desc { display: none; }

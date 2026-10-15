@@ -53,9 +53,11 @@ function fmtSize(n: number): string {
   return n + ' B';
 }
 
-export default function ScriptsPage() {
+export default function ScriptsPage({ fixedLibraryId }: { fixedLibraryId?: number } = {}) {
   const [libs, setLibs] = useState<ScriptLib[]>([]);
-  const [curLib, setCurLib] = useState<number | null>(null);
+  const [curLib, setCurLib] = useState<number | null>(fixedLibraryId ?? null);
+  // 嵌入模式：跟随外部（库工作区）选中的库
+  useEffect(() => { if (fixedLibraryId) setCurLib(fixedLibraryId); }, [fixedLibraryId]);
   const [scripts, setScripts] = useState<RepoFileEntry[] | null>(null);
   const [q, setQ] = useState('');
   const [error, setError] = useState('');

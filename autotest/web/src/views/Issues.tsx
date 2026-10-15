@@ -23,7 +23,7 @@ const STATUS_LABEL: Record<string, string> = {
   verifying: '自测试中', accepted: '已验收通过', rejected: '已驳回', failed: '验证失败',
 };
 
-export default function IssuePage() {
+export default function IssuePage({ fixedLibraryId }: { fixedLibraryId?: number } = {}) {
   const [tickets, setTickets] = useState<IssueTicket[] | null>(null);
   const [selected, setSelected] = useState<IssueTicket | null>(null);
   const [filter, setFilter] = useState<'all' | 'open' | 'accepted'>('all');
@@ -35,7 +35,7 @@ export default function IssuePage() {
   const load = useCallback(() => {
     setError('');
     const status = filter === 'open' ? undefined : filter === 'accepted' ? 'accepted' : undefined;
-    api.issues({ status, limit: 100 })
+    api.issues({ libraryId: fixedLibraryId ?? undefined, status, limit: 100 })
       .then((r) => setTickets(r.items))
       .catch((e) => setError(String((e as Error).message)));
   }, [filter]);

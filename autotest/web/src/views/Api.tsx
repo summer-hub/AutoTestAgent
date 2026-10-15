@@ -39,9 +39,11 @@ const ASSET_TAG: Record<string, string> = {
   page: 'gray', control: 'gray', param: 'gray', call: 'green', test_call: 'blue',
 };
 
-export default function ApiPage() {
+export default function ApiPage({ fixedLibraryId }: { fixedLibraryId?: number } = {}) {
   const [libs, setLibs] = useState<Library[]>([]);
-  const [libId, setLibId] = useState<number>(0);
+  const [libId, setLibId] = useState<number>(fixedLibraryId ?? 0);
+  // 嵌入模式：跟随外部（库工作区）选中的库
+  useEffect(() => { if (fixedLibraryId) setLibId(fixedLibraryId); }, [fixedLibraryId]);
   const [data, setData] = useState<ApiPayload | null>(null);
   const [loading, setLoading] = useState(false);
   const [busy, setBusy] = useState(false);

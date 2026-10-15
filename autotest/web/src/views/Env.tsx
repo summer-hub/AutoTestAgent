@@ -12,7 +12,7 @@ import { api } from '../api';
  * 为什么单独一页而不是塞进库管理：环境准备是"从克隆到装包"的独立生命周期，
  * 与用例/执行不同轴；混在一起会让"这个库到底准备好了没有"这件事看不见。
  */
-export default function EnvPage() {
+export default function EnvPage({ fixedLibraryId }: { fixedLibraryId?: number } = {}) {
   const [scripts, setScripts] = useState<Awaited<ReturnType<typeof api.envScripts>> | null>(null);
   const [profiles, setProfiles] = useState<Awaited<ReturnType<typeof api.envProfiles>> | null>(null);
   const [runs, setRuns] = useState<Awaited<ReturnType<typeof api.envRuns>> | null>(null);
@@ -26,7 +26,7 @@ export default function EnvPage() {
   const load = useCallback(() => {
     setError('');
     api.envScripts().then(setScripts).catch((e) => setError(String((e as Error).message)));
-    api.envProfiles().then(setProfiles).catch((e) => setError(String((e as Error).message)));
+    api.envProfiles(fixedLibraryId ?? 0).then(setProfiles).catch((e) => setError(String((e as Error).message)));
     api.envRuns().then(setRuns).catch((e) => setError(String((e as Error).message)));
   }, []);
 

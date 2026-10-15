@@ -72,9 +72,11 @@ const BASIS_LABEL: Record<string, string> = {
   manual: '人工确认',
 };
 
-export default function CoveragePage() {
+export default function CoveragePage({ fixedLibraryId }: { fixedLibraryId?: number } = {}) {
   const [libs, setLibs] = useState<Library[]>([]);
-  const [libId, setLibId] = useState(0);
+  const [libId, setLibId] = useState(fixedLibraryId ?? 0);
+  // 嵌入模式：跟随外部（库工作区）选中的库
+  useEffect(() => { if (fixedLibraryId) setLibId(fixedLibraryId); }, [fixedLibraryId]);
   const [data, setData] = useState<MatrixPayload | null>(null);
   const [loading, setLoading] = useState(false);
   const [busy, setBusy] = useState(false);

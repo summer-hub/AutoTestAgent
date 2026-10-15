@@ -1,25 +1,15 @@
 import { useEffect, useState } from 'react';
 import { api } from './api';
 import HomePage from './views/Home';
-import CasesPage from './views/Cases';
 import TasksPage from './views/Tasks';
 import PlansPage from './views/Plans';
 import AnalysisPage from './views/Analysis';
-import AttributionPage from './views/Attribution';
 import DebugPage from './views/Debug';
 import DevicesPage from './views/Devices';
 import PromptsPage from './views/Prompts';
 import SettingsPage from './views/Settings';
-import ScriptsPage from './views/Scripts';
-import LibrariesPage from './views/Libraries';
-import ApiPage from './views/Api';
-import CoveragePage from './views/Coverage';
-import HumanQueuePage from './views/HumanQueue';
 import KnowledgePage from './views/Knowledge';
 import AgentBindingsPage from './views/AgentBindings';
-import EnvPage from './views/Env';
-import SurveyPage from './views/Survey';
-import IssuesPage from './views/Issues';
 import LibraryWorkspace from './pages/LibraryWorkspace';
 import AssetsPage from './pages/Assets';
 import ExecutionPage from './pages/Execution';
@@ -65,8 +55,24 @@ const EMBED = import.meta.env.VITE_EMBED === '1';
 // 兼容 '#cases' 与 '#/cases' 两种 hash 写法（深链接 / DSH iframe 内嵌）
 // 必须用 Object.hasOwn：`h in TITLES` 会命中 Object.prototype 的继承键，
 // '#constructor' / '#toString' 之类会被当成合法页面 → page 变成非法值 → 内容区全白。
+/** R8：老页面 hash 已并入库工作区，旧链接友好跳转（不留白屏）。 */
+const LEGACY_REDIRECT: Record<string, PageKey> = {
+  "cases": "workspace",
+  "scripts": "workspace",
+  "api": "workspace",
+  "coverage": "workspace",
+  "human": "workspace",
+  "env": "workspace",
+  "survey": "workspace",
+  "issues": "workspace",
+  "attribution": "workspace",
+  "libraries": "workspace"
+};
+
 const parseHash = (): PageKey => {
   const h = location.hash.replace(/^#\/?/, '');
+  // 老页面并入工作区：跳到工作区，而不是留一个空内容区
+  if (h && Object.hasOwn(LEGACY_REDIRECT, h)) return LEGACY_REDIRECT[h];
   return Object.hasOwn(TITLES, h) ? (h as PageKey) : 'home';
 };
 
@@ -98,6 +104,14 @@ export default function App() {
   useEffect(() => {
     const onHash = () => {
       const h = location.hash.replace(/^#\/?/, '');
+      // R8：老页面已并入库工作区，旧链接跳转到工作区（不留白屏）。
+      // 这里必须自己判断而不能只依赖 parseHash——parseHash 只在初始挂载时用一次，
+      // 后续 hashchange 全走 onHash；漏了这段就会"首次进去正常、点旧链接白屏"。
+      if (h && Object.hasOwn(LEGACY_REDIRECT, h)) {
+        setPage(LEGACY_REDIRECT[h]);
+        try { location.hash = LEGACY_REDIRECT[h]; } catch { /* noop */ }
+        return;
+      }
       // `#settings` 就是「系统配置」页面本身。原先这里额外把设置弹窗也打开，
       // 导致点侧栏「系统配置」时 SettingsPage 与 SettingsModal 叠加成两套界面；
       // 弹窗现在只由侧栏底部「设置」按钮显式打开（不写 hash）。
@@ -139,23 +153,13 @@ export default function App() {
     <ErrorBoundary resetKey={page} key={`${page}:${contentKey}`}>
       {page === 'home' && <HomePage />}
       {page === 'tasks' && <TasksPage />}
-      {page === 'libraries' && <LibrariesPage />}
-      {page === 'api' && <ApiPage />}
-      {page === 'coverage' && <CoveragePage />}
-      {page === 'human' && <HumanQueuePage />}
       {page === 'knowledge' && <KnowledgePage />}
-      {page === 'cases' && <CasesPage />}
-      {page === 'scripts' && <ScriptsPage />}
       {page === 'plans' && <PlansPage />}
       {page === 'analysis' && <AnalysisPage />}
-      {page === 'attribution' && <AttributionPage />}
       {page === 'debug' && <DebugPage />}
       {page === 'devices' && <DevicesPage />}
       {page === 'prompts' && <PromptsPage />}
       {page === 'agents' && <AgentBindingsPage />}
-      {page === 'env' && <EnvPage />}
-      {page === 'survey' && <SurveyPage />}
-      {page === 'issues' && <IssuesPage />}
       {page === 'workspace' && <LibraryWorkspace />}
       {page === 'assets' && <AssetsPage />}
       {page === 'execution' && <ExecutionPage />}
