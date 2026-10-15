@@ -36,6 +36,14 @@ export interface L2Options {
   limit?: number;
   signal?: AbortSignal;
   requestedBy?: string;
+  /**
+   * 归属的任务 id（可选）。
+   * **必须透传**：token 记账与 agent.maxTokensPerTask 预算闸门都按 taskId 归集
+   * （闸门在 llmDirect/llmHarness 里按 input.meta.taskId 执行）。
+   * 不传则 L2 花的 token 不归属任何任务，预算闸门对它完全无效——
+   * 而 L2 恰是整个平台唯一花 token 的环节，一个库失控就能烧穿配额。
+   */
+  taskId?: number;
 }
 
 export interface L2Detail {
@@ -120,7 +128,7 @@ export async function runL2Increment(llm: LlmCall, opts: L2Options = {}): Promis
   for (const lib of libs) {
     if (opts.signal?.aborted) { result.skipped++; result.details.push(detailOf(lib, { status: 'skipped', queued: 0, reason: '批次已取消' })); continue; }
     try {
-      const d = await processOne(llm, lib, opts.requestedBy ?? '');
+      const d = await processOne(llm, lib, opts.requestedBy ?? '', opts.taskId);
       result.processed++;
       if (d.status === 'resolved') result.resolved++;
       else if (d.status === 'queued') result.queued++;
@@ -136,7 +144,7 @@ export async function runL2Increment(llm: LlmCall, opts: L2Options = {}): Promis
 }
 
 /** 处理单个库：组 prompt → LLM → 校验 → 落画像/入队。 */
-async function processOne(llm: LlmCall, lib: { id: number; name: string }, requestedBy: string): Promise<L2Detail> {
+async function processOne(llm: LlmCall, lib: { id: number; name: string }, requestedBy: string, taskId?: number): Promise<L2Detail> {
   const db = getDb();
 
   // 取 L0 事实（没有事实就不该进 L2——那是流程错误，不是 LLM 问题）
@@ -195,7 +203,7 @@ async function processOne(llm: LlmCall, lib: { id: number; name: string }, reque
 
   const r = await llmJson<L2Verdict>(llm, {
     system: L2_SYSTEM, user, temperature: 0.2, maxTokens: 2000,
-    signal: undefined, meta: { kind: 'survey.l2' },
+    signal: undefined, meta: { taskId, kind: 'survey.l2' },
   });
 
   // ---- 校验：不臆造的最后一道闸 ----

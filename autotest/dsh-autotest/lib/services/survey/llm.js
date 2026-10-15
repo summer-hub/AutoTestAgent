@@ -83,7 +83,7 @@ export async function runL2Increment(llm, opts = {}) {
             continue;
         }
         try {
-            const d = await processOne(llm, lib, opts.requestedBy ?? '');
+            const d = await processOne(llm, lib, opts.requestedBy ?? '', opts.taskId);
             result.processed++;
             if (d.status === 'resolved')
                 result.resolved++;
@@ -103,7 +103,7 @@ export async function runL2Increment(llm, opts = {}) {
     return result;
 }
 /** 处理单个库：组 prompt → LLM → 校验 → 落画像/入队。 */
-async function processOne(llm, lib, requestedBy) {
+async function processOne(llm, lib, requestedBy, taskId) {
     const db = getDb();
     // 取 L0 事实（没有事实就不该进 L2——那是流程错误，不是 LLM 问题）
     const f = await db.prepare('SELECT * FROM library_facts WHERE library_id = ?').get(lib.id);
@@ -165,7 +165,7 @@ async function processOne(llm, lib, requestedBy) {
     ].join('\n');
     const r = await llmJson(llm, {
         system: L2_SYSTEM, user, temperature: 0.2, maxTokens: 2000,
-        signal: undefined, meta: { kind: 'survey.l2' },
+        signal: undefined, meta: { taskId, kind: 'survey.l2' },
     });
     // ---- 校验：不臆造的最后一道闸 ----
     const problems = [];

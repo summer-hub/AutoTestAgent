@@ -850,9 +850,14 @@ function defineRoutes(llm: LlmCall): void {
   // 为什么单独一组路由：L2 花 token，必须可控——能指定库、能限条数、
   // 结果要能看出"哪些库解决了、哪些只是转去问人"。批量跑则由前端按需触发。
   route('POST', '/survey/l2', async ({ body }) => {
-    const b = (body ?? {}) as { ids?: number[]; limit?: number };
+    const b = (body ?? {}) as { ids?: number[]; limit?: number; taskId?: number };
     const ids = Array.isArray(b.ids) ? b.ids.map(Number).filter((n) => Number.isFinite(n) && n > 0) : undefined;
-    const r = await runL2Increment(llm, { ids, limit: b.limit ? Number(b.limit) : undefined });
+    const r = await runL2Increment(llm, {
+      ids, limit: b.limit ? Number(b.limit) : undefined,
+      // taskId 透传：token 记账与 agent.maxTokensPerTask 预算闸门都按它归集。
+      // 不传则 L2 花的 token 不归属任何任务、预算闸门失效（L2 是唯一花 token 的环节）。
+      taskId: b.taskId && Number.isFinite(Number(b.taskId)) ? Number(b.taskId) : undefined,
+    });
     console.log(`[autotest] L2 增量采集：处理 ${r.processed} · 解决 ${r.resolved} · 待确认 ${r.queued} · 失败 ${r.failed} · 跳过 ${r.skipped}`);
     return r;
   }, { role: 'operator' });

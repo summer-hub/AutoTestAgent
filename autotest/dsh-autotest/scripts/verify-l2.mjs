@@ -183,7 +183,11 @@ await ensureReady();
   }
 
   // 桩 LLM：按库名返回不同 verdict，覆盖四条路径
+  const seenTaskIds = [];
   const stubLlm = async (input) => {
+    // G1：taskId 必须透传到 meta，否则 token 记账不归属任务、
+    // agent.maxTokensPerTask 预算闸门对 L2 失效（L2 是唯一花 token 的环节）
+    seenTaskIds.push(input.meta?.taskId ?? null);
     const name = /## 库\s*\n\s*(\S+)/.exec(input.user)?.[1] ?? '';
     let verdict;
     if (name === 'l2-ok') {
@@ -226,11 +230,16 @@ await ensureReady();
     return { text: JSON.stringify(verdict), provider: 'stub', model: 'stub', latencyMs: 1, attempts: 1 };
   };
 
-  const r = await L.runL2Increment(stubLlm, { ids: Object.values(ids), limit: 10 });
+  const r = await L.runL2Increment(stubLlm, { ids: Object.values(ids), limit: 10, taskId: 4242 });
   check(r.processed === 4, '四个库都走了 L2', `processed=${r.processed}`);
   check(r.resolved === 2, '两个正常解决（含空 projectDir 被归一化的）', `resolved=${r.resolved}`);
   check(r.queued === 1, '一个转去问人', `queued=${r.queued}`);
   check(r.failed === 1, '一个被校验拦下（scriptId 不存在）', `failed=${r.failed}`);
+  // G1：taskId 必须透传到每次 LLM 调用的 meta，否则 token 记账不归属任务、
+  // agent.maxTokensPerTask 预算闸门对 L2 失效（L2 是唯一花 token 的环节）
+  check(seenTaskIds.length === 4 && seenTaskIds.every((t) => t === 4242),
+    'taskId 透传到每次 LLM 调用的 meta（预算闸门因此生效）',
+    JSON.stringify(seenTaskIds));
 
   // A：画像落库且步骤可用
   const profA = await db.prepare("SELECT id, source, status, preset_kind FROM env_profiles WHERE library_id = ?").get(ids['l2-ok']);

@@ -6,6 +6,14 @@ export interface L2Options {
     limit?: number;
     signal?: AbortSignal;
     requestedBy?: string;
+    /**
+     * 归属的任务 id（可选）。
+     * **必须透传**：token 记账与 agent.maxTokensPerTask 预算闸门都按 taskId 归集
+     * （闸门在 llmDirect/llmHarness 里按 input.meta.taskId 执行）。
+     * 不传则 L2 花的 token 不归属任何任务，预算闸门对它完全无效——
+     * 而 L2 恰是整个平台唯一花 token 的环节，一个库失控就能烧穿配额。
+     */
+    taskId?: number;
 }
 export interface L2Detail {
     libraryId: number;
