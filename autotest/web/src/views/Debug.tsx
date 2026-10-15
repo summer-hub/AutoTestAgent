@@ -62,8 +62,10 @@ export default function DebugPage() {
     if (!q || !selected || asking) return;
     setAsking(true);
     api.askExecution(selected.id, q)
-      .then((r) => setAnswers((prev) => [...prev, { q, a: r.answer }]))
-      .catch((e) => setAnswers((prev) => [...prev, { q, a: `追问失败：${(e as Error).message}` }]))
+      .then((r) => { setError(''); setAnswers((prev) => [...prev, { q, a: r.answer }]); })
+      // LLM 不可用时后端直接报错（不再降级为规则回答）→ 走红色告警条，
+      // 不塞进回答气泡：那会让一段"追问失败"的提示看起来像 AI 的正常回复。
+      .catch((e) => setError(`追问失败：${(e as Error).message}`))
       .finally(() => { setAsking(false); setAsk(''); });
   };
 

@@ -13,6 +13,7 @@ import { executePlan } from '../services/planExecutor.js';
 import { registerScheduledPlan, unregisterScheduledPlan } from '../services/scheduler.js';
 import {
   analyzeAttribution, analyzeCaseUpdates, analyzePrChanges, fetchPr, fetchPrs, fetchPrsFromGit, parseRepoPath,
+  llmUnavailableError,
   type GitCodePr, type LibraryRow,
 } from '../services/analyzer.js';
 import { getAllSettings, getSetting, maskSettingValue, SECRET_SETTING_KEYS, setSetting, type SettingValue } from '../services/settings.js';
@@ -32,6 +33,10 @@ import { cacheDel, cacheGet, cacheSet } from '../services/cache.js';
 // LLM 限流单独一个模块：Redis 可用时多节点共享计数，模块级数组在多节点下形同虚设
 import { checkLlmRate } from '../services/llmLimit.js';
 import { readDshDefaultModel } from '../services/llmCore.js';
+import {
+  listDirectModels, normalizeProtocol, readLlmEnvOverride,
+  type LlmProtocol, type ModelSource,
+} from '../services/llmDirect.js';
 import { autoScanDevices } from '../services/deviceScanner.js';
 import { guessBundleFor, hdcAvailable, listTargets } from '../services/hdc.js';
 import { spawn } from 'node:child_process';
@@ -1933,16 +1938,42 @@ function defineRoutes(llm: LlmCall): void {
     return { configured: getSetting('agent.defaultModel', '') as string, dshDefault: readDshDefaultModel() };
   });
 
+  // 当前生效的模型配置（含来源标注）：env 覆盖命中时 source='env'，否则跟随 DB 候选首位。
+  // 对应 publishhar 的 Env.sources 思路——排查"为什么用了这个模型"时先看来源。
+  route('GET', '/models/effective', async () => {
+    const env = readLlmEnvOverride();
+    if (env) {
+      return {
+        source: 'env' as ModelSource,
+        name: env.name, provider: env.provider, protocol: env.protocol,
+        baseUrl: env.base_url, modelId: env.model_id, hasApiKey: env.api_key !== '',
+      };
+    }
+    const rows = await listDirectModels();
+    if (rows.length === 0) {
+      return { source: 'none' as const, name: '', provider: '', protocol: 'openai' as LlmProtocol, baseUrl: '', modelId: '', hasApiKey: false };
+    }
+    const preferredName = String(getSetting('agent.defaultModel', '') || '').trim();
+    const head = rows.find((m) => m.model_id === preferredName || m.name === preferredName)
+      ?? rows.find((m) => m.is_default === 1) ?? rows[0];
+    return {
+      source: 'db' as ModelSource,
+      id: head.id, name: head.name, provider: head.provider, protocol: head.protocol,
+      baseUrl: head.base_url, modelId: head.model_id, hasApiKey: head.api_key !== '',
+      candidates: rows.length,
+    };
+  });
+
   route('POST', '/models', async ({ body }) => {
-    const b = body as { name?: string; provider?: string; baseUrl?: string; modelId?: string; apiKey?: string };
+    const b = body as { name?: string; provider?: string; baseUrl?: string; modelId?: string; apiKey?: string; protocol?: string };
     if (!b.name || !b.baseUrl || !b.modelId) throw Object.assign(new Error('name / baseUrl / modelId 必填'), { statusCode: 400 });
     const db = getDb();
     const t = now();
     // 新建时不存在"原值"，掩码视为空凭据（掩码只应出现在回显里）
     const apiKey = isMaskedSecret(b.apiKey) ? '' : encryptSecret(String(b.apiKey ?? ''));
     const baseUrl = assertSafeModelBaseUrl(b.baseUrl);
-    const res = await db.prepare(`INSERT INTO models (name, provider, base_url, model_id, api_key, is_default, created_at, updated_at)
-      VALUES (?, ?, ?, ?, ?, 0, ?, ?)`).run(b.name, b.provider ?? 'custom', baseUrl, b.modelId, apiKey, t, t);
+    const res = await db.prepare(`INSERT INTO models (name, provider, base_url, model_id, api_key, protocol, is_default, created_at, updated_at)
+      VALUES (?, ?, ?, ?, ?, ?, 0, ?, ?)`).run(b.name, b.provider ?? 'custom', baseUrl, b.modelId, apiKey, normalizeProtocol(b.protocol), t, t);
     return mapModel(await db.prepare('SELECT * FROM models WHERE id = ?').get<Record<string, unknown>>(Number(res.lastInsertRowid)) as Record<string, unknown>);
   }, { role: 'admin' });
 
@@ -1955,9 +1986,10 @@ function defineRoutes(llm: LlmCall): void {
     // 密钥字段：掩码回显 → 保持原值（库里的密文原样写回，不二次加密）；显式空串 → 清空；其它 → 加密新值
     const apiKey = sealSecretInput(resolveSecretInput(b.apiKey, String(row.api_key ?? '')), String(row.api_key ?? ''));
     const baseUrl = b.baseUrl === undefined ? String(row.base_url) : assertSafeModelBaseUrl(b.baseUrl);
-    await db.prepare(`UPDATE models SET name=?, provider=?, base_url=?, model_id=?, api_key=?, is_default=?, updated_at=? WHERE id=?`).run(
+    await db.prepare(`UPDATE models SET name=?, provider=?, base_url=?, model_id=?, api_key=?, protocol=?, is_default=?, updated_at=? WHERE id=?`).run(
       (b.name as string) ?? row.name, (b.provider as string) ?? row.provider, baseUrl,
       (b.modelId as string) ?? row.model_id, apiKey,
+      b.protocol === undefined ? normalizeProtocol(row.protocol) : normalizeProtocol(b.protocol),
       b.isDefault === undefined ? row.is_default : (b.isDefault ? 1 : 0), t, id,
     );
     if (b.isDefault) await db.prepare(`UPDATE models SET is_default = CASE WHEN id = ? THEN 1 ELSE 0 END`).run(id);
@@ -1976,24 +2008,39 @@ function defineRoutes(llm: LlmCall): void {
   // 连通性测试会真实发起一次模型调用并携带凭据 → 计入 LLM 限流，且对存量 baseUrl 再做一次安全校验
   route('POST', '/models/:id/test', async ({ params }) => {
     const row = await getModelOr404(getDb(), Number(params.id));
-    const cfg = { baseUrl: row.base_url, modelId: row.model_id, apiKey: decryptSecret(row.api_key) };
+    const cfg = {
+      baseUrl: row.base_url, modelId: row.model_id,
+      apiKey: decryptSecret(String(row.api_key ?? '')),
+      protocol: normalizeProtocol(row.protocol),
+    };
     if (!cfg.apiKey) return { ok: false, latencyMs: null, message: '未配置 API Key：请在设置中填写后重试' };
     const baseUrl = assertSafeModelBaseUrl(cfg.baseUrl);
     const started = Date.now();
     try {
-      const url = baseUrl.replace(/\/+$/, '') + '/chat/completions';
+      // 协议分发：openai 走 /chat/completions（Bearer），anthropic 走 /v1/messages（x-api-key）
+      const isAnthropic = cfg.protocol === 'anthropic';
+      const url = isAnthropic
+        ? (baseUrl.replace(/\/+$/, '').endsWith('/v1') ? `${baseUrl.replace(/\/+$/, '')}/messages` : `${baseUrl.replace(/\/+$/, '')}/v1/messages`)
+        : baseUrl.replace(/\/+$/, '') + '/chat/completions';
       const res = await fetch(url, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${cfg.apiKey}` },
-        body: JSON.stringify({ model: cfg.modelId, messages: [{ role: 'user', content: '你是连通性测试。请只回复：OK' }], max_tokens: 16 }),
+        headers: isAnthropic
+          ? { 'Content-Type': 'application/json', 'x-api-key': cfg.apiKey, 'anthropic-version': '2023-06-01' }
+          : { 'Content-Type': 'application/json', Authorization: `Bearer ${cfg.apiKey}` },
+        body: JSON.stringify(isAnthropic
+          ? { model: cfg.modelId, system: '你是连通性测试。', messages: [{ role: 'user', content: '请只回复：OK' }], max_tokens: 16 }
+          : { model: cfg.modelId, messages: [{ role: 'user', content: '你是连通性测试。请只回复：OK' }], max_tokens: 16 }),
         signal: AbortSignal.timeout(30_000),
       });
       if (!res.ok) {
         const text = await res.text().catch(() => '');
         return { ok: false, latencyMs: Date.now() - started, message: `LLM ${res.status} ${res.statusText}: ${text.slice(0, 160)}` };
       }
-      const data = (await res.json()) as { choices?: Array<{ message?: { content?: string } }> };
-      return { ok: true, latencyMs: Date.now() - started, message: `HTTP 200 · 延迟 ${Date.now() - started}ms`, responsePreview: data.choices?.[0]?.message?.content?.slice(0, 120) };
+      const data = (await res.json()) as { choices?: Array<{ message?: { content?: string } }>; content?: Array<{ type?: string; text?: string }> };
+      const preview = isAnthropic
+        ? (data.content ?? []).filter((b) => b.type === 'text').map((b) => b.text ?? '').join('').slice(0, 120)
+        : data.choices?.[0]?.message?.content?.slice(0, 120);
+      return { ok: true, latencyMs: Date.now() - started, message: `HTTP 200 · 延迟 ${Date.now() - started}ms · ${cfg.protocol}`, responsePreview: preview };
     } catch (e) {
       return { ok: false, latencyMs: Date.now() - started, message: (e as Error).message };
     }
@@ -2354,7 +2401,9 @@ function defineRoutes(llm: LlmCall): void {
     return mapExecution(row);
   });
 
-  // 调试会话追问：基于执行轨迹/思考/日志调用真实 LLM（DSH 模型配置），LLM 不可用时降级规则回答
+  // 调试会话追问：基于执行轨迹/思考/日志调用真实 LLM（DSH 模型配置）。
+  // LLM 不可用时**直接报错**（红色告警），不再降级为规则回答——旧实装会现编一个
+  // "置信度 92% 的回归缺陷结论"，那比没有回答更糟：人会照着这个假根因去改代码。
   route('POST', '/executions/:id/ask', async ({ params, body }) => {
     const id = Number(params.id);
     const question = String((body as { question?: string })?.question ?? '').trim();
@@ -2382,17 +2431,15 @@ ${row.thinking ?? '（无）'}
 ${(row.logs ?? '').slice(0, 4000) || '（无）'}
 
 用户的追问：${question}`;
+    let answer: string;
     try {
-      const answer = (await llm({ system, user, temperature: 0.3, maxTokens: 800 })).text.trim();
-      return { answer };
-    } catch {
-      // LLM 不可用时降级为规则回答（与归因分析一致）
-      const firstFail = steps.find((s) => s.status === 'failed');
-      const answer = row.status === 'failed'
-        ? `依据第 ${firstFail?.seq ?? '?'} 步的执行日志——未收到预期事件，且该库近期 PR 变更与失败时序吻合，判定为三方库回归缺陷（置信度 92%）。建议上报问题单并更新脚本适配参数。（LLM 暂不可用，以下为规则推断）`
-        : '该步骤按用例前置条件执行，日志无异常，界面状态与预期一致，因此判定通过。（LLM 暂不可用，以下为规则推断）';
-      return { answer };
+      answer = (await llm({ system, user, temperature: 0.3, maxTokens: 800 })).text.trim();
+    } catch (e) {
+      throw llmUnavailableError('调试会话追问', e);
     }
+    // 空返回同样按"不可用"处理：空回答会让人以为模型说"没什么问题"
+    if (!answer) throw llmUnavailableError('调试会话追问', new Error('LLM 返回为空'));
+    return { answer };
   }, { llm: true });
 
   // ---- devices ----
@@ -3017,6 +3064,9 @@ function mapModel(row: Record<string, unknown>) {
     id: row.id, name: row.name, provider: row.provider, baseUrl: row.base_url, modelId: row.model_id,
     // 只回传掩码，绝不回传明文凭据（无鉴权 API：明文等于泄漏）；hasApiKey 供前端显示"已配置/缺失"
     apiKey: maskSecret(rawKey), hasApiKey: rawKey !== '',
+    protocol: normalizeProtocol(row.protocol),
+    // 配置来源：env = AUTOTEST_LLM_* 环境变量覆盖（优先），db = models 表（系统配置页维护）
+    source: (row.source ?? 'db') as ModelSource,
     isDefault: row.is_default === 1, createdAt: row.created_at, updatedAt: row.updated_at,
   };
 }

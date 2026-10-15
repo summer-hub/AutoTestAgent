@@ -410,6 +410,7 @@ CREATE TABLE IF NOT EXISTS models (
   base_url VARCHAR(512) NOT NULL DEFAULT '',
   model_id VARCHAR(128) NOT NULL DEFAULT '',
   api_key VARCHAR(512) NOT NULL DEFAULT '',
+  protocol VARCHAR(16) NOT NULL DEFAULT 'openai',
   is_default TINYINT NOT NULL DEFAULT 0,
   created_at VARCHAR(32) NOT NULL,
   updated_at VARCHAR(32) NOT NULL,

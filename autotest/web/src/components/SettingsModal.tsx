@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from 'react';
-import type { ModelConfig, ModelTestResult } from 'shared';
+import type { EffectiveModelConfig, ModelConfig, ModelTestResult } from 'shared';
 import { api } from '../api';
 
 const PROVIDERS = [
@@ -7,6 +7,13 @@ const PROVIDERS = [
   { v: 'openai', l: 'OpenAI' },
   { v: 'ollama', l: 'Ollama 本地' },
   { v: 'custom', l: '自定义 OpenAI 兼容端点' },
+];
+
+// 调用协议（参考 publishhar-tool 的 [llm] protocol）：openai = POST {base_url}/chat/completions，
+// anthropic = POST {base_url}/v1/messages（x-api-key）。选错协议的报错通常是 404/401，很难自查。
+const PROTOCOLS = [
+  { v: 'openai', l: 'OpenAI 兼容（/chat/completions）' },
+  { v: 'anthropic', l: 'Anthropic 兼容（/v1/messages）' },
 ];
 
 const CFG_SECTIONS: Record<string, Array<{ key: string; label: string; type: 'text' | 'number' | 'bool' | 'json'; hint?: string }>> = {
@@ -33,12 +40,13 @@ const CFG_SECTIONS: Record<string, Array<{ key: string; label: string; type: 'te
   ],
 };
 
-interface FormState { name: string; provider: string; baseUrl: string; modelId: string; apiKey: string; }
-const EMPTY: FormState = { name: '', provider: 'custom', baseUrl: '', modelId: '', apiKey: '' };
+interface FormState { name: string; provider: string; baseUrl: string; modelId: string; apiKey: string; protocol: string; }
+const EMPTY: FormState = { name: '', provider: 'custom', baseUrl: '', modelId: '', apiKey: '', protocol: 'openai' };
 
 export default function SettingsModal({ open, onClose }: { open: boolean; onClose: () => void }) {
   const [sec, setSec] = useState('models');
   const [models, setModels] = useState<ModelConfig[]>([]);
+  const [effective, setEffective] = useState<EffectiveModelConfig | null>(null);
   const [form, setForm] = useState<FormState>(EMPTY);
   const [testing, setTesting] = useState<number | null>(null);
   const [testResults, setTestResults] = useState<Record<number, ModelTestResult>>({});
@@ -47,6 +55,7 @@ export default function SettingsModal({ open, onClose }: { open: boolean; onClos
 
   const load = useCallback(() => {
     api.models().then(setModels).catch((e) => setMsg(String((e as Error).message)));
+    api.effectiveModel().then(setEffective).catch(() => setEffective(null));
     api.settings()
       .then((rows) => {
         const m: Record<string, string | number | boolean> = {};
@@ -75,7 +84,7 @@ export default function SettingsModal({ open, onClose }: { open: boolean; onClos
   const submitModel = async () => {
     if (!form.name || !form.baseUrl || !form.modelId) { setMsg('名称 / Base URL / 模型 ID 必填'); return; }
     try {
-      await api.addModel({ ...form, provider: form.provider as ModelConfig['provider'] });
+      await api.addModel({ ...form, provider: form.provider as ModelConfig['provider'], protocol: form.protocol as ModelConfig['protocol'] });
       setForm(EMPTY);
       setMsg('模型已添加');
       load();
@@ -146,8 +155,19 @@ export default function SettingsModal({ open, onClose }: { open: boolean; onClos
             {sec === 'models' && (
               <div className="s-section">
                 <div className="s-title">模型</div>
-                <p className="s-intro">配置大模型服务。凭据状态点：绿 = 已配置可用，红 = 缺失。可自由添加自定义 OpenAI 兼容端点。</p>
+                <p className="s-intro">配置大模型服务。凭据状态点：绿 = 已配置可用，红 = 缺失。可自由添加自定义端点，支持 OpenAI 兼容与 Anthropic 兼容两种协议。</p>
                 {msg && <p className="s-notice">{msg}</p>}
+                {effective && effective.source === 'env' && (
+                  <p className="s-notice" style={{ color: 'var(--amber)' }}>
+                    ⚠️ 环境变量覆盖生效中：AUTOTEST_LLM_BASE_URL / AUTOTEST_LLM_MODEL 命中，当前首选为 {effective.modelId}（{effective.protocol}）。
+                    下面列表仅作备用候选，改这里不会改变首选；取消环境变量后恢复按列表顺序选择。
+                  </p>
+                )}
+                {effective && effective.source === 'none' && (
+                  <p className="s-notice" style={{ color: 'var(--red)' }}>
+                    ⚠️ 尚未配置任何可用模型：数据分析/归因在 LLM 不可用时会直接红色告警（不再降级为规则分析），请先在下面添加模型，或设置 AUTOTEST_LLM_BASE_URL / AUTOTEST_LLM_MODEL 环境变量。
+                  </p>
+                )}
                 <div className="s-rows">
                   {models.map((m) => (
                     <div key={m.id} className="s-rowCard">
@@ -156,6 +176,7 @@ export default function SettingsModal({ open, onClose }: { open: boolean; onClos
                         <span className={`s-cred ${(m.hasApiKey ?? Boolean(m.apiKey)) ? 'ok' : 'miss'}`} />
                         <span className="s-rowName">{m.name}</span>
                         <span className="s-rowTag">{m.provider}</span>
+                        <span className="s-rowTag">{m.protocol ?? 'openai'}</span>
                         {m.isDefault && <span className="s-rowTag" style={{ borderColor: 'var(--green)', color: 'var(--green)' }}>默认</span>}
                         <span className="s-rowActions">
                           <button className="s-btn link" onClick={() => testModel(m)}>
@@ -166,7 +187,8 @@ export default function SettingsModal({ open, onClose }: { open: boolean; onClos
                         </span>
                       </div>
                       <p className="s-rowDesc">
-                        {m.baseUrl} · 模型 {m.modelId}
+                        {m.baseUrl} · 模型 {m.modelId} · {m.protocol ?? 'openai'}
+                        {m.source === 'env' && <span style={{ marginLeft: 6, color: 'var(--amber)' }}>（环境变量覆盖，优先）</span>}
                         {testResults[m.id] && (
                           <span style={{ marginLeft: 8, color: testResults[m.id].ok ? 'var(--green)' : 'var(--red)' }}>
                             {testResults[m.id].ok ? '✓' : '✗'} {testResults[m.id].message}
@@ -200,6 +222,13 @@ export default function SettingsModal({ open, onClose }: { open: boolean; onClos
                     <div className="fl"><div className="ft">模型 ID</div></div>
                     <input className="input mono" style={{ flex: 1 }} placeholder="deepseek-chat / glm-4-flash" value={form.modelId}
                       onChange={(e) => setForm({ ...form, modelId: e.target.value })} />
+                  </div>
+                  <div className="s-field">
+                    <div className="fl"><div className="ft">调用协议</div></div>
+                    <select className="select" style={{ width: 260 }} value={form.protocol}
+                      onChange={(e) => setForm({ ...form, protocol: e.target.value })}>
+                      {PROTOCOLS.map((p) => <option key={p.v} value={p.v}>{p.l}</option>)}
+                    </select>
                   </div>
                   <div className="s-field">
                     <div className="fl"><div className="ft">API Key</div></div>

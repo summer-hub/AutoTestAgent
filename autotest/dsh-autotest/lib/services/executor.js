@@ -22,7 +22,7 @@ import { bindCaseScript, markBindingStaleOnCaseBump } from './scriptBinding.js';
 import { injectForStage } from './knowledge.js';
 import { bindingTraceLine, resolveBinding } from './agentBinding.js';
 import { appendTrace } from './taskEvents.js';
-import { buildIssueContext, analyzeWithLlm, analyzeByRule, loadTicket, setTicketStatus, saveTicketRootCause, saveTicketVerification, } from './issueRoot.js';
+import { buildIssueContext, analyzeWithLlm, loadTicket, setTicketStatus, saveTicketRootCause, saveTicketVerification, } from './issueRoot.js';
 // ---------- 定向用例设计（write_cases）辅助 ----------
 const normKey = (s) => s.toLowerCase().replace(/[\s_\-./\\()（）]/g, '');
 /** 从任务输入提取关键词（中英文词元）。 */
@@ -181,7 +181,7 @@ async function repoTask(task, lib, signal) {
  * 最后人类进行验收"）：
  *   ① 取工单 → 确保仓库已 clone（buildIssueContext 内部处理，非 git 目录不阻断）
  *   → 组装上下文（用例/oracle/页面源码/遍历 dump/符号/执行日志）
- *   ② LLM 根因分析（失败降级规则分析，不崩）
+ *   ② LLM 根因分析（LLM 不可用直接失败并写明原因，不降级为规则分析）
  *   ③ 自测试验证：有真机则跑 hypium 验证，**无真机则置失败并写明原因，不回退模拟**
  *      （既有纪律：假通过比失败更糟）
  *   ④ 写回工单（root_caused → verifying），等人类验收
@@ -210,16 +210,21 @@ async function analyzeIssue(task, llm, signal) {
     if (ctx.repoNote)
         await traceTask(task.id, '仓库状态', ctx.repoNote);
     await traceTask(task.id, '上下文组装', `目标页：${ctx.targetScope} · 源码 ${ctx.targetCode.length} 字符 · 遍历 ${ctx.exploreCtx ? '有' : '无'} · 相关符号 ${ctx.relatedSymbols.length} · 执行日志 ${ctx.lastExecutionLog ? '有' : '无'}`);
+    // ② LLM 根因分析：LLM 不可用（未配模型 / 连续失败 / 输出不合法）直接失败，
+    //    不降级为规则分析。规则兜底只会罗列上下文里已有的线索，看着像结论其实没有任何推断，
+    //    却和真正的根因存在同一张工单列表里，人分不出哪条是猜的（见 issueRoot.ts 纪律 2）。
+    //    工单必须先落到 failed 再抛错——否则它会永远停在 analyzing，人不知道该重试还是该配模型。
     let verdict;
     try {
         verdict = await analyzeWithLlm(ctx, llm);
-        await traceTask(task.id, '根因分析完成', `LLM · 置信度 ${verdict.confidence} · 证据 ${verdict.evidence.length} 条`);
     }
     catch (e) {
-        // LLM 失败降级：规则分析只列可回查线索，绝不由规则猜根因
-        verdict = analyzeByRule(ctx);
-        await traceTask(task.id, '根因分析降级', `LLM 不可用（${e.message.slice(0, 100)}），改用规则分析`);
+        const msg = e.message;
+        await setTicketStatus(ticketId, 'failed', `根因分析失败：${msg}`);
+        await traceTask(task.id, '根因分析失败', msg.slice(0, 200));
+        throw e;
     }
+    await traceTask(task.id, '根因分析完成', `LLM · 置信度 ${verdict.confidence} · 证据 ${verdict.evidence.length} 条`);
     await saveTicketRootCause(ticketId, verdict);
     await traceTask(task.id, '根因结论', verdict.rootCause.slice(0, 200));
     // ③ 自测试验证
@@ -234,7 +239,8 @@ async function analyzeIssue(task, llm, signal) {
     if (!verification.ok) {
         throw new Error(`自测试未通过：${verification.summary}${verification.error ? `（${verification.error}）` : ''}`);
     }
-    return `工单 ${ticket.ticketNo}：${verdict.rootCause.slice(0, 160)}\n根因置信度 ${verdict.confidence}（${verdict.analysisBy === 'llm' ? 'LLM' : '规则降级'}）· 证据 ${verdict.evidence.length} 条\n自测试：${verification.summary}\n状态：待人工验收`;
+    // analysisBy 恒为 'llm'（LLM 不可用时本函数已在上面抛错，不会走到这里）
+    return `工单 ${ticket.ticketNo}：${verdict.rootCause.slice(0, 160)}\n根因置信度 ${verdict.confidence}（LLM）· 证据 ${verdict.evidence.length} 条\n自测试：${verification.summary}\n状态：待人工验收`;
 }
 /**
  * 自测试验证：在真机上复现问题现象，用 hypium 跑该用例并核对判据。

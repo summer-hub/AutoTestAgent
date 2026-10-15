@@ -92,10 +92,10 @@ export async function seed() {
         const vars = (content.match(/\{(\w+)\}/g) || []).map((v) => v.slice(1, -1));
         await insPrompt.run(name, role, content, skill, JSON.stringify(vars), builtin, t1);
     }
-    await db.prepare(`INSERT IGNORE INTO models (name, provider, base_url, model_id, api_key, is_default, created_at, updated_at) VALUES
-   ('deepseek-chat', 'deepseek', 'https://api.deepseek.com/v1', 'deepseek-chat', '', 1, @t, @t),
-   ('deepseek-reasoner', 'deepseek', 'https://api.deepseek.com/v1', 'deepseek-reasoner', '', 0, @t, @t),
-   ('ollama 本地', 'ollama', 'http://localhost:11434/v1', 'qwen2.5:7b', '', 0, @t, @t)`).run({ t: t1 });
+    await db.prepare(`INSERT IGNORE INTO models (name, provider, base_url, model_id, api_key, protocol, is_default, created_at, updated_at) VALUES
+   ('deepseek-chat', 'deepseek', 'https://api.deepseek.com/v1', 'deepseek-chat', '', 'openai', 1, @t, @t),
+   ('deepseek-reasoner', 'deepseek', 'https://api.deepseek.com/v1', 'deepseek-reasoner', '', 'openai', 0, @t, @t),
+   ('ollama 本地', 'ollama', 'http://localhost:11434/v1', 'qwen2.5:7b', '', 'openai', 0, @t, @t)`).run({ t: t1 });
     // 注意：这里**不能**写 app.workspace。
     // 历史上种子把它硬编码成开发机路径（D:\autotest\workspace），后果有两层：
     //   1) 换机器/换系统后工作区指向一个无效目录；

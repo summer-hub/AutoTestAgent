@@ -1,7 +1,9 @@
 // 数据分析 / 归因分析服务：
 //  - 从 GitCode 拉取三方库真实 PR（Gitee v5 兼容 API），
 //  - 用 ctx.llm 生成「更新点 / 影响范围 / 建议用例更新」与失败归因结论，
-//  - LLM 不可用时降级为规则分析（保证无模型也能产出结果），
+//  - LLM 不可用**不再降级为规则分析**：直接抛错，由上层（进度 error / HTTP error）
+//    把「LLM 不可用」以红色告警呈现。规则分析只会照抄 PR 标题、拼凑套话，
+//    却和 AI 结论混在同一个列表里，肉眼分不出哪条是推测——那比没有结论更坏。
 //  - 全部结果写入 analyses 表（kind：pr_analysis / case_update_analysis / attribution）。
 import { getDb, now } from '../db/connection.js';
 import { normalizeRepoUrl } from './gitRepo.js';
@@ -173,7 +175,7 @@ function prContext(prs) {
 变更文件：\n${files || '  （未获取）'}`;
     }).join('\n\n');
 }
-/** LLM 调用带重试：偶发空返回/瞬时错误时重试，仍失败再抛错交给调用方降级。 */
+/** LLM 调用带重试：偶发空返回/瞬时错误时重试，仍失败再抛错交给调用方告警。 */
 async function llmWithRetry(llm, input, tries = 5) {
     let lastErr;
     for (let i = 0; i < tries; i++) {
@@ -191,37 +193,18 @@ async function llmWithRetry(llm, input, tries = 5) {
     }
     throw lastErr instanceof Error ? lastErr : new Error(String(lastErr));
 }
-function riskOf(pr) {
-    const changed = pr.added_lines + pr.removed_lines;
-    const cpp = pr.files.some((f) => /\.(cpp|h|hpp|c)$/.test(f.filename));
-    if (changed > 200 || (cpp && changed > 80))
-        return 'high';
-    if (changed > 60)
-        return 'medium';
-    return 'low';
-}
-/** 规则兜底：从 PR 标题/文件推导更新点与影响（无 LLM 时使用）。 */
-function ruleBasedPrAnalysis(prs) {
-    const strip = (s) => s.replace(/^(fix|feat|docs|refactor|chore|perf|test)(\([^)]*\))?[:\s]*/i, '');
-    return prs.map((pr) => {
-        const updatePoints = [strip(pr.title) || `更新 ${pr.number}`];
-        const files = pr.files.map((f) => f.filename);
-        const impacted = files.slice(0, 6);
-        const cppCore = files.some((f) => /lottie_(controller|render|parser)|lottiemodel|\.cpp$/.test(f));
-        return {
-            prNumber: pr.number,
-            title: pr.title,
-            updatePoints,
-            impact: `变更 ${files.length} 个文件（+${pr.added_lines}/-${pr.removed_lines}）${cppCore ? '，涉及核心渲染/控制逻辑，需回归动画渲染与播放控制相关用例' : ''}。`,
-            affectedFeatures: impacted,
-            suggestedCaseUpdates: cppCore
-                ? ['补充/更新动画播放控制边界用例', '回归关键帧与效果渲染用例']
-                : ['按 PR 变更点人工确认后更新对应用例'],
-            risk: riskOf(pr),
-            state: pr.state,
-            webUrl: pr.web_url,
-        };
-    });
+/**
+ * LLM 不可用：转成一条能直接指路的告警错误（上层以红色呈现，不再落任何分析结果）。
+ *
+ * 不降级的原因：规则兜底只会照抄 PR 标题、按文件名猜影响，产出的结论和 AI 结论
+ * 长得一模一样、存在同一张列表里，使用者分不出哪条是推测——误把套话当根因，
+ * 比干脆没有结论更危险。所以这里只报错，并把排查动作写进消息里。
+ */
+export function llmUnavailableError(scope, e) {
+    const reason = e instanceof Error ? e.message : String(e);
+    return new Error(`${scope}：LLM 不可用，${reason}。`
+        + '请到「系统配置 → 模型」检查模型的 baseUrl / modelId / API Key 与协议（openai / anthropic），'
+        + '并确认网络或代理可达，修复后重新发起分析（数据分析不再降级为规则分析，避免把推测当结论）。');
 }
 /** PR 数据分析：每个 PR 产出「更新点 / 影响 / 建议用例更新 / 风险」。 */
 export async function analyzePrChanges(llm, library, prs, onStage, round = '') {
@@ -258,15 +241,7 @@ ${prContext(prs)}`;
         return { analyzed: items.length, prs: prs.length, source: 'llm', message: `AI 分析完成：${items.length}/${prs.length} 条 PR` };
     }
     catch (e) {
-        onStage?.('LLM 不可用，规则分析降级中…');
-        const items = ruleBasedPrAnalysis(prs);
-        for (const item of items) {
-            await saveAnalysis({
-                kind: 'pr_analysis', granularity: 'single', libraryId: library.id, caseId: null, round,
-                title: `PR #${item.prNumber} · 数据分析（规则降级）`, content: item,
-            });
-        }
-        return { analyzed: items.length, prs: prs.length, source: 'fallback', message: `LLM 不可用，已用规则分析降级：${e.message}` };
+        throw llmUnavailableError('PR 数据分析', e);
     }
 }
 /** 用例更新分析：结合 PR 变更与现有用例，产出需要更新的用例及理由。 */
@@ -306,20 +281,7 @@ ${samples.map((c) => `- ${c.case_no} ${c.name}：${(c.expected || '').slice(0, 1
         return { analyzed: items.length, prs: prs.length, source: 'llm', message: `AI 分析完成：${items.length} 条用例更新建议` };
     }
     catch (e) {
-        onStage?.('LLM 不可用，规则分析降级中…');
-        const items = prs.slice(0, 6).map((pr) => ({
-            caseNo: null,
-            reason: `PR #${pr.number}：${pr.title}（规则降级分析）`,
-            suggestedAction: '人工确认 PR 变更点后，更新/新增受影响模块的用例（保存时版本自动递增）',
-            newExpected: '',
-        }));
-        for (const item of items) {
-            await saveAnalysis({
-                kind: 'case_update_analysis', granularity: 'single', libraryId: library.id, caseId: null, round,
-                title: `用例更新建议 · PR #${prs[items.indexOf(item)].number}（规则降级）`, content: item,
-            });
-        }
-        return { analyzed: items.length, prs: prs.length, source: 'fallback', message: `LLM 不可用，已用规则分析降级：${e.message}` };
+        throw llmUnavailableError('用例更新分析', e);
     }
 }
 /** 归因分析：按勾选范围（任意用例多选 / 库级 / 全部）对失败执行做 AI 归因。 */
@@ -381,31 +343,6 @@ ${rows.map((r) => `- [${r.started_at ?? ''}] ${r.library_name ?? '?'}/${r.case_n
         return { analyzed: 1, prs: rows.length, source: 'llm', message: `AI 归因完成（基于 ${rows.length} 条失败执行 · ${scopeLabel}）` };
     }
     catch (e) {
-        const conclusions = rows.map((r) => {
-            const t = r.thinking ?? '';
-            const causes = [];
-            if (/超时|timeout/i.test(t))
-                causes.push('执行超时（等待预期事件未返回）');
-            if (/未收到预期事件|异常日志/i.test(t))
-                causes.push('界面/事件响应与预期不符');
-            if (/回归缺陷|代码变更/i.test(t))
-                causes.push('三方库近期代码变更引入回归');
-            if (/未找到|控件不存在/i.test(t))
-                causes.push('界面控件未找到（脚本引用与实际 UI 不一致）');
-            if (causes.length === 0)
-                causes.push('执行环境或用例步骤与设备状态不匹配');
-            return { caseNo: r.case_no, library: r.library_name, causes, thinking: t.slice(0, 200) };
-        });
-        await saveAnalysis({
-            kind: 'attribution', granularity: opts.caseIds?.length ? 'single' : 'custom', libraryId: opts.libraryIds?.[0] ?? null,
-            caseId: opts.caseIds?.[0] ?? null, round: '', title: `${title}（规则降级）`,
-            content: {
-                conclusion: `基于 ${rows.length} 条失败执行记录（${scopeLabel}）：失败集中在 ${[...new Set(conclusions.flatMap((c) => c.causes))].join('、')}。`,
-                rootCauses: [...new Set(conclusions.flatMap((c) => c.causes))],
-                evidence: conclusions.slice(0, 10).map((c) => `${c.library ?? '?'}/${c.caseNo}：${c.causes.join('、')}`),
-                suggestions: ['核对近期合并 PR 是否影响相关模块', '用调试会话逐步骤复核失败用例', '更新用例脚本参数并重新执行'],
-            },
-        });
-        return { analyzed: 1, prs: rows.length, source: 'fallback', message: `LLM 不可用，已用规则归因降级：${e.message}` };
+        throw llmUnavailableError('失败归因分析', e);
     }
 }

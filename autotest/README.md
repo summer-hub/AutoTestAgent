@@ -33,7 +33,7 @@
 │  node dsh-autotest/lib/standalone.js                          │
 │   ├─ /api/autotest/*  同一套业务 API（自带 node:http）         │
 │   ├─ /                独立版前端 SPA（dist/web，.gz 预压缩）   │
-│   ├─ llmDirect         LLM 直连 models 表（OpenAI 兼容）       │
+│   ├─ llmDirect         LLM 直连 models 表（OpenAI/Anthropic 双协议）│
 │   └─ MySQL/SQLite + Redis 可选；AUTOTEST_WORKERS 多进程集群   │
 └────────────────────────────────────────────────────────────────┘
 
@@ -211,7 +211,7 @@ Redis 缓存与连接池已落地；分表路由层存在但未启用（当前 S
 - ✅ **R3 智能增量与知识沉淀**：知识库新增 5 种 kind（env_recipe / resource_recipe / dep_fix / cert_recipe / build_fix）与 2 种 scope（toolchain / resource_kind）+ 3 个检索维度（**libraryKind 让"lottie 的动画经验"可被另一个动画库复用**）+ `injectForStage` 新增 env_prep / resource_build；L2 LLM 增量采集只跑差异库（校验闸门：scriptId 必须真实存在、参数必须过契约；不确定项入队而非把猜测当结论）；人工队列新增 env_blocked / resource_missing / toolchain_missing 三类
 - ✅ **R4 构建安装闭环与端到端**：脚本资产扩至 14 个（+submodule_sync / binary_dep_fetch / smoke_check / gen_ca / mock_server_up / mock_server_stop / xts_scaffold / xts_run / xts_report）；**占位符替换与步骤输出串联**（`{{repoDir}}` 运行期替换、`build_hap` 打 `HAP_PATH` → `hdc_install` 引用）让「克隆→依赖→构建→装包→冒烟」串成一条链；R2/R3 新路由补 RBAC 角色标注
 - ✅ **R0–R4 收口（G1–G4）**：L2 透传 taskId 使 token 预算闸门生效；前端接入 L2 触发与待处理清单；人工队列按「库类别 × 阻塞原因」聚合；文档补齐
-- ✅ **R5 问题归因闭环**：`cases.symptom`（人维护的问题现象，Agent 字段不被其覆盖）+ `issue_tickets` 工单表；`services/issueRoot.ts`（上下文组装 / LLM 根因 / 规则降级 / 工单状态流转）；executor `analyze_issue` 任务（走任务 lane·取消·轨迹）；`/issues*` 6 条路由；web「问题归因」页；agent-tools `issues.*` 6 条规格。核心纪律：**无真机/无 oracle/无步骤一律失败并写明原因，绝不回退模拟**；证据为空时置信度强制 ≤40；中文症状按二元组分词（整句切分永远匹配不上源码）；验收通过才沉淀知识条目
+- ✅ **R5 问题归因闭环**：`cases.symptom`（人维护的问题现象，Agent 字段不被其覆盖）+ `issue_tickets` 工单表；`services/issueRoot.ts`（上下文组装 / LLM 根因 / 工单状态流转）；executor `analyze_issue` 任务（走任务 lane·取消·轨迹）；`/issues*` 6 条路由；web「问题归因」页；agent-tools `issues.*` 6 条规格。核心纪律：**无真机/无 oracle/无步骤一律失败并写明原因，绝不回退模拟**；**LLM 不可用一律失败并写明原因，绝不降级为规则分析**；证据为空时置信度强制 ≤40；中文症状按二元组分词（整句切分永远匹配不上源码）；验收通过才沉淀知识条目
 
 ## 核心业务语义
 
@@ -220,13 +220,15 @@ Redis 缓存与连接池已落地；分表路由层存在但未启用（当前 S
 - **来源分类**：新需求引入 / 老库存量 / 问题单跟踪 / AI 生成（由生成任务与 Excel 导入决定，不再预设比例）。
 - **目录引导（R0）**：`三方库测试表.xlsx` 随包分发（构建后 `lib/assets/`），首次启动自动导入业务库；**SQLite/MySQL 业务库是唯一事实源**，xlsx 只是初始种子与人工增量入口，不被回写。导入幂等（sha256 判定）、只增不删、只写「库名/仓库地址/子目录」三列（包名等 Agent 字段绝不覆盖），表读不出只告警不阻断启动。
 - **大模型可自定义**：设置 → 模型 支持添加任意 OpenAI 兼容端点（DeepSeek/OpenAI/Ollama/自定义），连通性测试真实调用；任务执行自动走默认模型（未配 Key 时失败并提示，配置后一键重试）。
+- **模型配置语义（参考 publishhar-tool）**：`models` 表每个模型带 `protocol`（`openai` = POST `{base_url}/chat/completions`，Bearer；`anthropic` = POST `{base_url}/v1/messages`，`x-api-key` + `anthropic-version`），覆盖 DeepSeek/通义/智谱/Ollama 与 Kimi Code/Anthropic 两类端点。候选顺序为 **环境变量覆盖 → `agent.defaultModel` 命中 → `is_default` → 表中第一个**；`AUTOTEST_LLM_BASE_URL` / `AUTOTEST_LLM_MODEL` / `AUTOTEST_LLM_API_KEY` / `AUTOTEST_LLM_PROTOCOL` 命中即置顶为一个 `env` 来源候选（DB 一条都没配时也能立刻跑，且密钥不必落库/不上页面）。每个候选带 `source`（env/db）标注，`GET /models/effective` 返回当前生效模型与来源——排查"为什么用了这个模型"先看来源。
 - **执行计划**：五种类型（立即/定时/单独/批量/全量），定时用 node-cron 注册（删除计划会同步注销定时任务）；同一计划**同一时刻只会执行一份**（原子占位 + 重入保护），执行体异常也必定落到终态，不会永久停在 running；失败用例可进入调试会话查看与追问；无在线真机时直接失败并写明原因（**没有模拟回退**）。
 - **仓库同步**：`pull_repo` / `update_repo` 走真实 git CLI（工作区 `app.workspace/repos/<lib>`，记录 `last_commit` 做变更文件解析，版本取 `git describe --tags`）；脚本落盘到 `app.workspace/hypium/<lib>/testcases/<lib>/<caseNo>.py`（Python/Hypium），UI 可浏览/预览/编辑。
 - **脚本执行与失败策略**：执行计划按用例绑定的 Hypium 模块真机执行（`<装了 hypium 的 python> main.py <module>` → 解析 `reports/latest/result/<module>.xml`；本机应使用 `py -3.10`，见上文注意事项）；计划失败策略 `fail_policy`：`continue`（默认）/ `retry_twice`（失败自动重试 2 次）/ `abort_library`（整库失败中止，后续用例跳过）。
 - **Excel 导入导出**：Cases 页「⬇ 导出 Excel / ⬆ 导入 Excel」；导出生成 xlsx（用例编号/名称/来源/前置/步骤/预期/状态/版本），导入解析后批量入库并生成 V1 版本快照（支持中文表头与英文键、步骤换行/JSON/分号分隔）。
 - **数据分析**：Analysis 页「拉取并分析 PR / 用例更新分析」——从 GitCode API 拉取仓库真实 PR（含变更文件），AI 产出更新点/影响范围/建议用例更新/风险，写入 analyses 表；示例库 `lottie_turbo`（CPF-ApplicationTPC/lottie_turbo）已内置真实仓库地址，可直接体验。
 - **归因分析**：Attribution 页自由勾选失败执行（支持跨库，整库失败会整库纳入）——基于失败执行记录与 AI 思考过程，AI 产出结论/根因/证据/建议。
-- **LLM 稳健性**：`ctx.llm` 选定模型后最多重试 3 次，**失败会跨模型切换**（首选打头 → 其余候选顺次 → 不足 3 个绕回首选），不再 3 次全打在同一个模型上；任务取消信号触发时立即收手不重试；输出 JSON 做围栏剥离/换行/尾逗号容错，解析失败会把错误回灌模型修复一次；驱动分片生成的解析错误保存在**调用局部变量**里（并发分片之间不会互相污染）；LLM 不可用时降级为规则分析（source=fallback）。
+- **LLM 稳健性**：`ctx.llm` 选定模型后最多重试 3 次，**失败会跨模型切换**（首选打头 → 其余候选顺次 → 不足 3 个绕回首选），不再 3 次全打在同一个模型上；任务取消信号触发时立即收手不重试；输出 JSON 做围栏剥离/换行/尾逗号容错，解析失败会把错误回灌模型修复一次；驱动分片生成的解析错误保存在**调用局部变量**里（并发分片之间不会互相污染）。
+- **LLM 不可用 = 红色告警，不降级**：数据分析（PR 分析 / 用例更新分析）、归因分析、问题归因（`issueRoot` / `analyze_issue` 任务）与调试会话追问，在 LLM 不可用时**一律直接失败并写明原因**（`services/analyzer.ts` 的 `llmUnavailableError`；`issueRoot.analyzeWithLlm` 抛错后由 executor 把工单落 `failed` 再上抛，任务同样落 `failed`），由进度/接口的 error 通道在前端以红色呈现，并写明"去系统配置 → 模型检查 baseUrl / modelId / API Key / 协议与网络"。不再写入规则降级结果——规则兜底要么照抄 PR 标题、按文件名猜影响，要么把上下文里的线索罗列一遍（调试会话旧实现甚至会现编一个"置信度 92% 的回归缺陷"），看着都像结论，却和真正的结论混在同一个列表里，使用者分不出哪条是推测，误把套话当根因比没有结论更危险。工单/任务因此不会永远停在 `analyzing`/`running`。
 - **成本与限流**：每次 LLM 调用按 `meta.taskId` 记账到 `agent_events`（成功/失败都带 tokens），单任务累计超过 `agent.maxTokensPerTask`（默认 300000，0=不限制）即中止后续模型调用；每分钟调用上限 `exec.llmRatePerMin` 在 Redis 可用时用 INCR 做**跨节点共享**的固定窗口计数（未配 Redis 退回进程内滑动窗口），计数只挂在 API 入口，任务内部的连环调用由 token 预算管。
 - **系统配置**：Settings 页读写 settings 表的配置键（工作区/单任务用例上限/LLM 温度与超时/计划抽样/Redis 与缓存 TTL/遍历参数/MySQL 连接串），保存立即生效。**敏感键（MySQL/Redis 连接串）出参只回传打码值**，且掩码原样回传会被识别为"不改动"，不会覆盖真实凭据。
 - **缓存与连接池**：内存 LRU（配置 `data.redisUrl` + `data.redisCache` 后自动切 Redis），写路径在**写库成功之后**按前缀失效（含单条用例键）；MySQL 连接池；`repository.ts` 的 `library_id % 16` 分表路由层**已预留但未启用**（`caseTableFor()` 恒返回 `cases`），压测脚本 `node scripts/stress.mjs` 用于冷/热缓存对比。

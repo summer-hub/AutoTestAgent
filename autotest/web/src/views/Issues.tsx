@@ -23,6 +23,16 @@ const STATUS_LABEL: Record<string, string> = {
   verifying: '自测试中', accepted: '已验收通过', rejected: '已驳回', failed: '验证失败',
 };
 
+/**
+ * 历史「规则降级」工单（analysisBy === 'rule'）——改造前的遗留数据。
+ *
+ * 那时 LLM 不可用会把上下文里的线索罗列一遍当作根因落库，实际没有任何推断。
+ * 现在降级入口已删除，新工单不可能再产生这个值，但库里可能还有老行。
+ * 它和一个真正的 LLM 结论长得完全一样（同样的卡片、同样的证据列表），
+ * 所以必须醒目标成"不可信"并引导重新分析，否则人会照着这份假结论去改代码。
+ */
+const isLegacyRuleCause = (t: IssueTicket): boolean => t.rootCause?.analysisBy === 'rule';
+
 export default function IssuePage({ fixedLibraryId }: { fixedLibraryId?: number } = {}) {
   const [tickets, setTickets] = useState<IssueTicket[] | null>(null);
   const [selected, setSelected] = useState<IssueTicket | null>(null);
@@ -129,9 +139,17 @@ export default function IssuePage({ fixedLibraryId }: { fixedLibraryId?: number 
               </div>
               <div style={{ fontSize: 12, marginTop: 4 }}>{t.symptom.slice(0, 80)}{t.symptom.length > 80 ? '…' : ''}</div>
               {t.rootCause && (
-                <div className="muted" style={{ fontSize: 10.5, marginTop: 3 }}>
-                  置信度 {t.rootCause.confidence} · 证据 {t.rootCause.evidence.length} 条 · {t.rootCause.analysisBy === 'llm' ? 'LLM' : '规则降级'}
-                </div>
+                isLegacyRuleCause(t) ? (
+                  // 遗留降级产物：不能和一个正常 LLM 结论共用同一套中性文案
+                  <div style={{ fontSize: 10.5, marginTop: 3, color: 'var(--red, #e5534b)' }}
+                    title="改造前的降级产物：只罗列了线索，没有做根因推断，请重新分析">
+                    ⚠️ 历史降级结论 · 非根因 · 建议重新分析
+                  </div>
+                ) : (
+                  <div className="muted" style={{ fontSize: 10.5, marginTop: 3 }}>
+                    置信度 {t.rootCause.confidence} · 证据 {t.rootCause.evidence.length} 条 · LLM
+                  </div>
+                )
               )}
             </div>
           ))}
@@ -148,9 +166,10 @@ export default function IssuePage({ fixedLibraryId }: { fixedLibraryId?: number 
                   <span className={`tag ${STATUS_TAG[selected.status] ?? 'gray'}`}>{STATUS_LABEL[selected.status] ?? selected.status}</span>
                   <span className="muted" style={{ fontSize: 11.5 }}>用例 #{selected.caseId} · 创建于 {selected.createdAt}</span>
                   <div style={{ flex: 1 }} />
-                  {(selected.status === 'pending' || selected.status === 'failed') && (
+                  {/* 历史降级工单也要能重跑：后端 /analyze 无状态守卫，root_caused 可直接重新分析 */}
+                  {(selected.status === 'pending' || selected.status === 'failed' || isLegacyRuleCause(selected)) && (
                     <button className="btn sm primary" disabled={busy} onClick={() => void analyze(selected.id)}>
-                      {busy ? '发起中…' : '发起 AI 分析'}
+                      {busy ? '发起中…' : isLegacyRuleCause(selected) ? '重新分析' : '发起 AI 分析'}
                     </button>
                   )}
                 </div>
@@ -181,14 +200,25 @@ export default function IssuePage({ fixedLibraryId }: { fixedLibraryId?: number 
               {/* 根因卡片 */}
               {selected.rootCause && (
                 <div className="card" style={{ marginTop: 10 }}>
-                  <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
                     <b>根因结论</b>
-                    <span className="tag gray">{selected.rootCause.analysisBy === 'llm' ? 'LLM 分析' : '规则降级'}</span>
-                    <span className={`tag ${selected.rootCause.confidence >= 70 ? 'green' : selected.rootCause.confidence >= 40 ? 'amber' : 'red'}`}>
-                      置信度 {selected.rootCause.confidence}
+                    <span className={isLegacyRuleCause(selected) ? 'tag red' : 'tag gray'}>
+                      {isLegacyRuleCause(selected) ? '⚠️ 历史降级 · 非根因' : 'LLM 分析'}
                     </span>
+                    {!isLegacyRuleCause(selected) && (
+                      <span className={`tag ${selected.rootCause.confidence >= 70 ? 'green' : selected.rootCause.confidence >= 40 ? 'amber' : 'red'}`}>
+                        置信度 {selected.rootCause.confidence}
+                      </span>
+                    )}
                     {selected.rootCause.needsDemoPatch && <span className="tag amber">需改 demo 验证</span>}
                   </div>
+                  {isLegacyRuleCause(selected) && (
+                    <div style={{ marginTop: 8, padding: '8px 10px', borderRadius: 6, background: 'var(--red-dim)', color: 'var(--red, #e5534b)', fontSize: 12, lineHeight: 1.7 }}>
+                      ⚠️ 这是<b>改造前的降级产物</b>：当时 LLM 不可用，系统只把上下文里的线索罗列了一遍，
+                      <b>没有做任何根因推断</b>——下面这段文字不是结论，下面的证据列表也只是线索清单，
+                      照着它改代码等于照着猜的东西改。请点右上角「重新分析」用真实模型重跑。
+                    </div>
+                  )}
                   <div style={{ fontSize: 13, marginTop: 6 }}>{selected.rootCause.rootCause}</div>
 
                   {selected.rootCause.fixSuggestions.length > 0 && (

@@ -26,8 +26,8 @@ export interface RootCauseVerdict {
     needsDemoPatch: boolean;
     /** 需要人确认什么（空 = 不需要；非空则应入人工队列） */
     uncertainties: string[];
-    /** 分析依据来源：llm / rule（降级） */
-    analysisBy: 'llm' | 'rule';
+    /** 分析依据来源：llm（唯一来源——LLM 不可用时直接抛错，不产出规则结论） */
+    analysisBy: 'llm';
 }
 /** 组装后的上下文（有界、可日志化）。 */
 export interface IssueContext {
@@ -75,16 +75,13 @@ export interface IssueContext {
  */
 export declare function buildIssueContext(ticketId: number): Promise<IssueContext>;
 /**
- * 用 LLM 做根因分析。失败不抛（由调用方降级）——但在返回里如实标注 analysisBy。
+ * 用 LLM 做根因分析。
+ *
+ * LLM 不可用（未配模型 / 连续失败 / 输出不是合法 JSON）时**直接抛错**，
+ * 由上层转成红色告警——不再降级为规则分析。原因见文件头纪律 2：
+ * 规则兜底罗列线索看着像结论，却和真正的根因混在同一张工单列表里。
  */
 export declare function analyzeWithLlm(ctx: IssueContext, llm: LlmCall): Promise<RootCauseVerdict>;
-/**
- * 规则降级分析（LLM 不可用时）。
- *
- * 不给根因（没有模型就不该猜根因），但给"该看什么"——把上下文里**真实存在**的
- * 线索列出来，让人能自己接着查。这比返回一个空结论有用得多。
- */
-export declare function analyzeByRule(ctx: IssueContext): RootCauseVerdict;
 /** 工单状态流转（集中一处，避免散落的状态字符串写错）。 */
 export declare const TICKET_STATUS: {
     readonly pending: "pending";

@@ -404,6 +404,7 @@ CREATE TABLE IF NOT EXISTS models (
   base_url TEXT NOT NULL DEFAULT '',
   model_id TEXT NOT NULL DEFAULT '',
   api_key TEXT NOT NULL DEFAULT '',
+  protocol TEXT NOT NULL DEFAULT 'openai',
   is_default INTEGER NOT NULL DEFAULT 0,
   created_at TEXT NOT NULL,
   updated_at TEXT NOT NULL,

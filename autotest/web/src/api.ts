@@ -1,5 +1,5 @@
 // API 客户端 — 统一走 /api（Vite 代理到后端 3280）
-import type { Analysis, CaseVersion, DetectBundleResult, Device, Execution, ExploreReportMeta, ExploreResult, Library, LibraryCatalogStatus, LibraryImpact, LibrarySheetSyncResult, ModelConfig, ModelTestResult, Paged, Page, Plan, Prompt, RepoFile, RepoFileEntry, RepoInfo, Task, TestCase } from 'shared';
+import type { Analysis, CaseVersion, DetectBundleResult, Device, EffectiveModelConfig, Execution, ExploreReportMeta, ExploreResult, Library, LibraryCatalogStatus, LibraryImpact, LibrarySheetSyncResult, ModelConfig, ModelTestResult, Paged, Page, Plan, Prompt, RepoFile, RepoFileEntry, RepoInfo, Task, TestCase } from 'shared';
 
 // 嵌入 DSH 时由构建注入 VITE_API_BASE=/api/autotest（同源直连插件路由）；
 // 独立版默认 /api（Vite 代理到 3280）。
@@ -22,6 +22,7 @@ export interface IssueTicket {
     fixSuggestions: string[];
     needsDemoPatch: boolean;
     uncertainties: string[];
+    /** llm = 真实模型结论；rule = 改造前的遗留降级产物（只罗列线索、无推断，不可信，见 Issues.tsx 的 isLegacyRuleCause） */
     analysisBy: 'llm' | 'rule';
   } | null;
   evidence: Array<{ kind: string; ref: string; line: number; excerpt: string; supports: string }>;
@@ -500,6 +501,7 @@ export const api = {
 
   // 大模型配置（设置中自定义添加）
   models: () => req<ModelConfig[]>(`${API_BASE}/models`),
+  effectiveModel: () => req<EffectiveModelConfig>(`${API_BASE}/models/effective`),
   dshDefaultModel: () => req<{ configured: string; dshDefault: { provider: string; model: string } | null }>(`${API_BASE}/models/dsh-default`),
   addModel: (b: Partial<ModelConfig>) => req<ModelConfig>(`${API_BASE}/models`, { method: 'POST', body: JSON.stringify(b) }),
   updateModel: (id: number, b: Partial<ModelConfig>) => req<ModelConfig>(`${API_BASE}/models/${id}`, { method: 'PUT', body: JSON.stringify(b) }),

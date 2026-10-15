@@ -3,7 +3,8 @@
 // 覆盖三块：
 //   ① buildIssueContext：上下文组装（目标页命中、遍历 dump、相关符号、执行日志、
 //      缺数据时如实留空而非填假数据、有界截断）；
-//   ② analyzeByRule：LLM 不可用时的降级分析（只列可回查线索、绝不猜根因）；
+//   ② LLM 不可用时 analyzeWithLlm 直接抛错（不降级为规则分析——罗列线索看着像结论，
+//      却和真正的根因混在同一张工单列表里，人分不出哪条是猜的）；
 //   ③ analyzeWithLlm 的规格收紧：证据为空时置信度不得高、非法字段被归一、
 //      长度截断（用桩 LLM，不花真 token）。
 //
@@ -130,28 +131,33 @@ console.log('\n— 真机遍历 dump 注入（有数据时用，无数据时不�
   check(ctx.exploreCtx.includes('控件文本必须逐字来自这里'), 'dump 带纪律提示（防臆造控件）');
 }
 
-// ---------- 3. 规则降级（LLM 不可用）----------
-console.log('\n— 规则降级（不猜根因，只列可回查线索）—');
+// ---------- 3. LLM 不可用：直接抛错，不降级 ----------
+console.log('\n— LLM 不可用直接抛错（不再降级为规则分析）—');
 {
-  const { libId, repoDir } = await mkLibWithRepo('issue-rule');
+  const { libId, repoDir } = await mkLibWithRepo('issue-nollm');
   const caseId = await mkCase(libId, 'C-IR-1', '播放进度', { symptom: '进度条不动' });
   const ticketId = await mkTicket(caseId, libId, '进度条不动');
   const ctx = await IR.buildIssueContext(ticketId);
   void repoDir;
-  const v = IR.analyzeByRule(ctx);
 
-  check(v.analysisBy === 'rule', '标注为规则降级（不冒充模型结论）', v.analysisBy);
-  check(v.confidence === 0, '降级不给置信度（没有模型就不该有可信度）', `confidence=${v.confidence}`);
-  check(v.rootCause.includes('规则降级'), '根因栏明说未做推断（不把线索当结论）', v.rootCause.slice(0, 40));
-  check(v.evidence.length > 0, '列出了可回查线索', `${v.evidence.length} 条`);
-  check(v.evidence.every((e) => e.ref && e.ref.length > 0), '每条证据都有 ref（可回查）');
-  check(v.fixSuggestions.length > 0, '给出下一步动作', `${v.fixSuggestions.length} 条`);
-  check(v.uncertainties.some((u) => u.includes('模型')), '说明缺模型（人知道该配什么）');
+  // ① 模型调用本身失败（超时 / 未配置 / fetch failed）→ 必须抛出，不能吞掉
+  const failingLlm = async () => { throw new Error('模型 deepseek-chat(deepseek-chat) 连续失败：fetch failed'); };
+  let err1 = null;
+  await IR.analyzeWithLlm(ctx, failingLlm).catch((e) => { err1 = e; });
+  check(!!err1, '★ LLM 调用失败时 analyzeWithLlm 抛错（不再降级）', err1?.message?.slice(0, 60));
+  check(err1 && err1.message.includes('连续失败'), '错误透出真实原因（人知道该修什么）', err1?.message?.slice(0, 60));
 
-  // 完全无线索时也要如实说，而不是编一个
-  const empty = IR.analyzeByRule({ ...ctx, targetCode: '', targetScope: '未命中', exploreCtx: '', relatedSymbols: [], lastExecutionLog: '', readmeExcerpt: '' });
-  check(empty.evidence.length === 0 && empty.rootCause.includes('没有可回查线索'),
-    '无线索时明说（不编造）', empty.rootCause.slice(0, 40));
+  // ② 模型返回的不是合法 JSON → llmJson 回灌修复后仍失败，同样抛错（不拿废话当结论）
+  const junkLlm = async () => ({
+    text: '这不是 JSON，只是一段客套话',
+    provider: 'stub', model: 'stub', latencyMs: 1, attempts: 1,
+  });
+  let err2 = null;
+  await IR.analyzeWithLlm(ctx, junkLlm).catch((e) => { err2 = e; });
+  check(!!err2 && /JSON/.test(err2.message), '输出不合法时也抛错（不把废话当根因）', err2?.message?.slice(0, 60));
+
+  // ③ 模块上不应再暴露规则降级入口（防回归：有人又把降级加回来）
+  check(typeof IR.analyzeByRule !== 'function', '★ analyzeByRule 已移除（不存在降级入口）', typeof IR.analyzeByRule);
 }
 
 // ---------- 4. LLM 路径的规格收紧（桩 LLM）----------

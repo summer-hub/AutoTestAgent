@@ -269,14 +269,29 @@ export interface Setting {
 export interface ModelConfig {
   id: number;
   name: string;                // 显示名，如 deepseek-v4
-  provider: 'deepseek' | 'openai' | 'ollama' | 'custom';
+  provider: 'deepseek' | 'openai' | 'ollama' | 'custom' | string;
   baseUrl: string;             // https://api.deepseek.com/v1
   modelId: string;             // deepseek-chat
   apiKey: string;              // 只回传掩码（••••1234）；真实密钥永不下发，掩码原样回传视为"不改动"
   hasApiKey: boolean;          // 是否已配置凭据 —— 状态点用它判断，不要用 apiKey 的真假
+  protocol: 'openai' | 'anthropic';  // 调用协议：chat/completions 或 /v1/messages
+  source: 'env' | 'db';        // 配置来源：env = AUTOTEST_LLM_* 覆盖，db = models 表
   isDefault: boolean;
   createdAt: string;
   updatedAt: string;
+}
+
+/** 当前生效的模型配置（含来源，用于「为什么用了这个模型」的排查） */
+export interface EffectiveModelConfig {
+  source: 'env' | 'db' | 'none';
+  name: string;
+  provider: string;
+  protocol: 'openai' | 'anthropic';
+  baseUrl: string;
+  modelId: string;
+  hasApiKey: boolean;
+  id?: number;
+  candidates?: number;         // db 来源时的候选总数
 }
 
 /** 模型连通性测试结果 */

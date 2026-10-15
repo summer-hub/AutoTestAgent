@@ -12,8 +12,9 @@
 // 三条纪律（都是踩过坑才这么定的）：
 //   1. **绝不编造 file:line**：拿不到证据就写"未获取"。编造一个看起来精确的行号，
 //      比没有证据更糟——人会照着去改一个不存在问题的位置。
-//   2. **LLM 不可用要能降级**：规则分析至少给出"该看哪些文件/哪些接口"，
-//      而不是整条链路崩掉（与 analyzer.ts 的降级策略一致）。
+//   2. **LLM 不可用不降级**：直接抛错，由上层以红色告警呈现（与 analyzer.ts 一致）。
+//      规则兜底只会把上下文里的线索罗列一遍，看着像结论其实没有任何推断，
+//      却和真正的根因存在同一张工单列表里，人分不出哪条是猜的。
 //   3. **上下文有界**：源码/遍历 dump/执行日志都设上限，否则一个巨型仓库
 //      会把 prompt 撑爆或把延迟拉到不可接受。
 import fs from 'node:fs';
@@ -52,8 +53,8 @@ export interface RootCauseVerdict {
   needsDemoPatch: boolean;
   /** 需要人确认什么（空 = 不需要；非空则应入人工队列） */
   uncertainties: string[];
-  /** 分析依据来源：llm / rule（降级） */
-  analysisBy: 'llm' | 'rule';
+  /** 分析依据来源：llm（唯一来源——LLM 不可用时直接抛错，不产出规则结论） */
+  analysisBy: 'llm';
 }
 
 /** 组装后的上下文（有界、可日志化）。 */
@@ -292,7 +293,11 @@ const ROOT_CAUSE_SYSTEM = [
 ].join('\n');
 
 /**
- * 用 LLM 做根因分析。失败不抛（由调用方降级）——但在返回里如实标注 analysisBy。
+ * 用 LLM 做根因分析。
+ *
+ * LLM 不可用（未配模型 / 连续失败 / 输出不是合法 JSON）时**直接抛错**，
+ * 由上层转成红色告警——不再降级为规则分析。原因见文件头纪律 2：
+ * 规则兜底罗列线索看着像结论，却和真正的根因混在同一张工单列表里。
  */
 export async function analyzeWithLlm(ctx: IssueContext, llm: LlmCall): Promise<RootCauseVerdict> {
   const user = [
@@ -339,50 +344,6 @@ export async function analyzeWithLlm(ctx: IssueContext, llm: LlmCall): Promise<R
     needsDemoPatch: v.needsDemoPatch === true,
     uncertainties: (Array.isArray(v.uncertainties) ? v.uncertainties : []).map((s) => String(s).slice(0, 300)).slice(0, 6),
     analysisBy: 'llm',
-  };
-}
-
-/**
- * 规则降级分析（LLM 不可用时）。
- *
- * 不给根因（没有模型就不该猜根因），但给"该看什么"——把上下文里**真实存在**的
- * 线索列出来，让人能自己接着查。这比返回一个空结论有用得多。
- */
-export function analyzeByRule(ctx: IssueContext): RootCauseVerdict {
-  const evidence: RootCauseEvidence[] = [];
-  const fix: string[] = [];
-
-  if (ctx.targetCode) {
-    evidence.push({ kind: 'source', ref: ctx.targetScope, line: 0, excerpt: ctx.targetCode.slice(0, 300), supports: '症状关键词命中的页面源码' });
-    fix.push(`先读 ${ctx.targetScope}，对照用例步骤逐行检查交互逻辑`);
-  }
-  for (const s of ctx.relatedSymbols.slice(0, 5)) {
-    evidence.push({ kind: 'symbol', ref: `${s.name}${s.sourceFile ? ` @ ${s.sourceFile}:${s.sourceLine || '?'}` : ''}`, line: s.sourceLine, excerpt: s.signature, supports: '接口名/签名与症状相关' });
-    fix.push(`核对 ${s.name} 的调用参数与返回值是否符合预期（${s.signature}）`);
-  }
-  if (ctx.exploreCtx) {
-    evidence.push({ kind: 'explore', ref: '真机遍历 dump', line: 0, excerpt: ctx.exploreCtx.slice(0, 300), supports: '真机上真实存在的控件清单' });
-    fix.push('用真机遍历 dump 核对步骤引用的控件文本是否逐字存在');
-  }
-  if (ctx.lastExecutionLog) {
-    evidence.push({ kind: 'execution', ref: '最近一次执行日志', line: 0, excerpt: ctx.lastExecutionLog.slice(0, 300), supports: '现象发生时的运行时输出' });
-    fix.push('从最近一次执行日志里找错误码/异常堆栈');
-  }
-  if (ctx.readmeExcerpt) {
-    evidence.push({ kind: 'readme', ref: 'README', line: 0, excerpt: ctx.readmeExcerpt.slice(0, 300), supports: '依赖/前置条件/已知问题' });
-    fix.push('核对 README 的前置条件与已知问题是否与现象匹配');
-  }
-
-  return {
-    rootCause: evidence.length > 0
-      ? '（规则降级：未调用模型，不做根因推断）已列出上述可回查线索，请人工或配置模型后继续'
-      : '（规则降级：未调用模型，且上下文中没有可回查线索——请先拉取仓库并采集接口面）',
-    confidence: 0,
-    evidence,
-    fixSuggestions: fix.slice(0, 8),
-    needsDemoPatch: false,
-    uncertainties: ['未配置可用模型，无法做根因推断'],
-    analysisBy: 'rule',
   };
 }
 

@@ -38,6 +38,14 @@ export interface LibraryRow {
     current_version: string;
     description: string;
 }
+/**
+ * LLM 不可用：转成一条能直接指路的告警错误（上层以红色呈现，不再落任何分析结果）。
+ *
+ * 不降级的原因：规则兜底只会照抄 PR 标题、按文件名猜影响，产出的结论和 AI 结论
+ * 长得一模一样、存在同一张列表里，使用者分不出哪条是推测——误把套话当根因，
+ * 比干脆没有结论更危险。所以这里只报错，并把排查动作写进消息里。
+ */
+export declare function llmUnavailableError(scope: string, e: unknown): Error;
 export interface AnalyzeResult {
     analyzed: number;
     prs: number;

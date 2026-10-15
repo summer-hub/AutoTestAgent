@@ -452,6 +452,7 @@ export async function ensureReady(): Promise<void> {
         ['executions', 'env_run_id'], ['executions', 'resource_set_id'],
         ['executions_archive', 'env_run_id'], ['executions_archive', 'resource_set_id'],
         ['cases', 'symptom'],
+        ['models', 'protocol'],
       ] as Array<[string, string]>) {
         try {
           const cols = await query(`PRAGMA table_info(${table})`, []) as Array<{ name: string }>;
@@ -480,6 +481,7 @@ export async function ensureReady(): Promise<void> {
               'executions_archive:resource_set_id': 'ALTER TABLE executions_archive ADD COLUMN resource_set_id INTEGER NULL',
               'cases:symptom': "ALTER TABLE cases ADD COLUMN symptom TEXT NOT NULL DEFAULT ''",
               'executions_archive:trace_id': "ALTER TABLE executions_archive ADD COLUMN trace_id TEXT NOT NULL DEFAULT ''",
+              'models:protocol': "ALTER TABLE models ADD COLUMN protocol TEXT NOT NULL DEFAULT 'openai'",
             };
             await query(ddl[`${table}:${col}`], []);
           }
@@ -546,6 +548,7 @@ export async function ensureReady(): Promise<void> {
         ['executions', 'resource_set_id', 'ALTER TABLE executions ADD COLUMN resource_set_id BIGINT UNSIGNED NULL'],
         ['executions_archive', 'env_run_id', 'ALTER TABLE executions_archive ADD COLUMN env_run_id BIGINT UNSIGNED NULL'],
         ['executions_archive', 'resource_set_id', 'ALTER TABLE executions_archive ADD COLUMN resource_set_id BIGINT UNSIGNED NULL'],
+        ['models', 'protocol', "ALTER TABLE models ADD COLUMN protocol VARCHAR(16) NOT NULL DEFAULT 'openai'"],
       ] as Array<[string, string, string]>) {
         try {
           await mysqlPool().query(ddl);

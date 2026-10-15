@@ -64,7 +64,7 @@ export default function AttributionPage() {
         libraryIds: fullLibs.length > 0 && caseIdsForPartial.length === 0 ? fullLibs : undefined,
         allLibraries: false,
       });
-      setMsg(`${r.message}${r.source === 'fallback' ? '（规则降级，配置 DSH 模型后自动升级为 AI 归因）' : ''}`);
+      setMsg(r.message);
       api.analyses({ kind: 'attribution' }).then((r) => setRows(r.items)).catch(() => {});
     } catch (e) {
       setError(String((e as Error).message));

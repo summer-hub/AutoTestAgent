@@ -6,12 +6,12 @@
 //   ② analyze_issue 编排的**纪律**（这是本阶段最容易被破坏的）：
 //      - 无真机时自测试必须置失败并写明原因，**绝不回退模拟**；
 //      - 无 oracle 时不得判定"通过"（跑完也不知道对错）；
-//      - LLM 失败必须降级到规则分析而不是崩掉整条任务；
+//      - LLM 失败必须让任务与工单都落到 failed 并写明原因，绝不降级为规则分析；
 //   ③ createTicket 的边界：symptom 为空必须拒绝（没有问题现象就没有分析对象）。
 //
 // 为什么值得单独一套：这一层的失败模式是**危险的**——
 // 把"无真机"回退成模拟执行，会产出看似通过、实则毫无证据的结论；
-// 把 LLM 失败吞掉返回空结论，会让工单停在 root_caused 却没有根因。
+// 把 LLM 失败降级成规则分析，会产出看着像结论、其实没有任何推断的根因。
 // 两类问题都不报错，只会让根因定位变成一场表演。
 //
 // 用法：npm run build && npm run verify:issue-task
@@ -231,8 +231,8 @@ console.log('\n— ★ 无机器判据（oracle）时不得判定通过 —');
   check(row?.status !== 'accepted', '无 oracle 绝不被验收通过（还没到验收环节）', row?.status);
 }
 
-// ---------- 5. LLM 失败必须降级而非崩溃 ----------
-console.log('\n— LLM 失败降级到规则分析（不崩、不留空结论）—');
+// ---------- 5. LLM 失败必须落 failed，不降级 ----------
+console.log('\n— LLM 失败：任务与工单都落 failed（不降级为规则分析）—');
 {
   const { libId } = await mkLibWithRepo('task-llmfail');
   const caseId = await mkCase(libId, 'C-LF-1', '播放进度', { symptom: '进度条不动' });
@@ -242,18 +242,21 @@ console.log('\n— LLM 失败降级到规则分析（不崩、不留空结论）
   // 桩 LLM：直接抛错（模拟模型超时/不可用）
   const failingLlm = async () => { throw new Error('模型连接超时'); };
 
+  // runTask 自己吞异常并置任务 failed（不往上层抛）——断言它确实这么收尾
   let threw = false;
   try { await EX.runTask(taskId, failingLlm); } catch { threw = true; }
-  check(!threw, 'LLM 失败时 runTask 不抛（降级处理）');
+  check(!threw, 'runTask 不往上层抛（由它自己落终态）');
+
+  const task = await db.prepare('SELECT status, error FROM tasks WHERE id = ?').get(taskId);
+  check(task?.status === 'failed', '★ 任务落 failed（不变成 done 假装顺利）', task?.status);
+  check(!!task?.error && task.error.includes('模型连接超时'), '任务 error 写明模型失败原因', task?.error?.slice(0, 60));
 
   const row = await IR.loadTicket(tk.id);
-  check(row?.status === 'root_caused' || row?.status === 'failed',
-    '降级后工单仍有确定状态', row?.status);
-  check(row?.rootCause !== null, '★ 降级后仍有结论（不是空）——规则分析给出的线索',
-    `rootCause=${row?.rootCause?.rootCause?.slice(0, 40)}`);
-  check(row?.rootCause?.analysisBy === 'rule', '标注为规则降级（不冒充模型结论）', row?.rootCause?.analysisBy);
-  check((row?.rootCause?.confidence ?? 100) === 0, '降级不给置信度（没有模型就不该有可信度）',
-    `confidence=${row?.rootCause?.confidence}`);
+  check(row?.status === 'failed', '★ 工单落 failed（不永远停在 analyzing）', row?.status);
+  check(!!row?.error && row.error.includes('根因分析失败'), '工单 error 写明失败环节', row?.error?.slice(0, 60));
+  // 关键：不产出任何规则结论——那会和真正的根因混在同一张工单列表里
+  check(row?.rootCause === null, '★ 不留规则降级结论（不把线索罗列当根因）',
+    `rootCause=${JSON.stringify(row?.rootCause)?.slice(0, 40)}`);
 }
 
 // ---------- 6. 工单查询 ----------
