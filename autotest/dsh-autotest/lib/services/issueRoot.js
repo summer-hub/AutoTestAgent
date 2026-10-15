@@ -18,7 +18,7 @@
 //      会把 prompt 撑爆或把延迟拉到不可接受。
 import fs from 'node:fs';
 import path from 'node:path';
-import { getDb } from '../db/connection.js';
+import { getDb, now } from '../db/connection.js';
 import { llmJson } from './llmCore.js';
 import { inspectRepo, pullRepo, workspaceDir } from './gitRepo.js';
 import { loadStoredSymbols } from './apiExtract.js';
@@ -346,4 +346,109 @@ export function ticketNo() {
     ticketSeq = (ticketSeq + 1) % 100000;
     const rand = Math.random().toString(36).slice(2, 8);
     return `IT-${d.getFullYear()}${p(d.getMonth() + 1)}${p(d.getDate())}${p(d.getHours())}${p(d.getMinutes())}${p(d.getSeconds())}-${String(ticketSeq).padStart(5, '0')}${rand}`;
+}
+function toTicketRow(r) {
+    return {
+        id: Number(r.id), ticketNo: String(r.ticket_no), caseId: Number(r.case_id), libraryId: Number(r.library_id),
+        symptom: String(r.symptom ?? ''), status: String(r.status ?? 'pending'),
+        rootCause: (() => { try {
+            const v = JSON.parse(String(r.root_cause_json ?? '{}'));
+            return v && Object.keys(v).length > 0 ? v : null;
+        }
+        catch {
+            return null;
+        } })(),
+        evidence: (() => { try {
+            return JSON.parse(String(r.evidence_json ?? '[]'));
+        }
+        catch {
+            return [];
+        } })(),
+        verification: (() => { try {
+            return JSON.parse(String(r.verification_json ?? '{}'));
+        }
+        catch {
+            return {};
+        } })(),
+        verdict: String(r.verdict ?? ''), verdictReason: String(r.verdict_reason ?? ''),
+        verdictBy: String(r.verdict_by ?? ''), verdictAt: r.verdict_at ?? null,
+        knowledgeId: String(r.knowledge_id ?? ''), taskId: r.task_id ?? null,
+        error: String(r.error ?? ''), createdAt: String(r.created_at ?? ''), updatedAt: String(r.updated_at ?? ''),
+    };
+}
+export async function loadTicket(ticketId) {
+    const r = await getDb().prepare('SELECT * FROM issue_tickets WHERE id = ?').get(ticketId);
+    return r ? toTicketRow(r) : null;
+}
+export async function listTickets(opts = {}) {
+    const conds = [];
+    const args = [];
+    if (opts.libraryId) {
+        conds.push('library_id = ?');
+        args.push(opts.libraryId);
+    }
+    if (opts.caseId) {
+        conds.push('case_id = ?');
+        args.push(opts.caseId);
+    }
+    if (opts.status) {
+        conds.push('status = ?');
+        args.push(opts.status);
+    }
+    const where = conds.length ? `WHERE ${conds.join(' AND ')}` : '';
+    args.push(Math.min(200, Math.max(1, opts.limit ?? 50)));
+    const rows = await getDb().prepare(`SELECT * FROM issue_tickets ${where} ORDER BY id DESC LIMIT ?`).all(...args);
+    return rows.map(toTicketRow);
+}
+/** 创建工单（symptom 必填——没有问题现象就没有分析对象）。 */
+export async function createTicket(input) {
+    const symptom = String(input.symptom ?? '').trim();
+    if (!symptom)
+        throw Object.assign(new Error('问题现象不能为空（它是 AI 的分析对象）'), { statusCode: 400 });
+    const db = getDb();
+    const c = await db.prepare('SELECT id, library_id FROM cases WHERE id = ?').get(input.caseId);
+    if (!c)
+        throw Object.assign(new Error(`用例 #${input.caseId} 不存在`), { statusCode: 404 });
+    const t = now();
+    const ins = await db.prepare(`INSERT INTO issue_tickets
+    (ticket_no, case_id, library_id, symptom, status, root_cause_json, evidence_json, verification_json,
+     verdict, verdict_reason, verdict_by, verdict_at, knowledge_id, task_id, error, created_at, updated_at)
+    VALUES (?, ?, ?, ?, 'pending', '{}', '[]', '{}', '', '', '', NULL, '', NULL, '', ?, ?)`)
+        .run(ticketNo(), input.caseId, Number(c.library_id), symptom, t, t);
+    // 同步把症状写到用例的 symptom 列（人维护的"当前疑问"）
+    await db.prepare('UPDATE cases SET symptom = ?, updated_at = ? WHERE id = ?').run(symptom, t, input.caseId);
+    const row = await loadTicket(Number(ins.lastInsertRowid));
+    if (!row)
+        throw new Error('工单创建后读取失败');
+    return row;
+}
+/** 更新工单状态（可同时带 error）。 */
+export async function setTicketStatus(ticketId, status, error = '') {
+    await getDb().prepare('UPDATE issue_tickets SET status = ?, error = ?, updated_at = ? WHERE id = ?')
+        .run(status, error.slice(0, 900), now(), ticketId);
+}
+/** 写入根因结论（root_caused）。 */
+export async function saveTicketRootCause(ticketId, verdict) {
+    await getDb().prepare(`UPDATE issue_tickets SET status = 'root_caused', root_cause_json = ?, evidence_json = ?, error = '', updated_at = ? WHERE id = ?`)
+        .run(JSON.stringify(verdict), JSON.stringify(verdict.evidence ?? []), now(), ticketId);
+}
+/** 写入自测试验证结果（verifying / failed）。 */
+export async function saveTicketVerification(ticketId, verification, status, error = '') {
+    await getDb().prepare(`UPDATE issue_tickets SET status = ?, verification_json = ?, error = ?, updated_at = ? WHERE id = ?`)
+        .run(status, JSON.stringify(verification), error.slice(0, 900), now(), ticketId);
+}
+/** 人工验收（接受才沉淀知识；拒绝也记录理由供反查）。 */
+export async function decideTicket(input) {
+    const row = await loadTicket(input.ticketId);
+    if (!row)
+        throw Object.assign(new Error('工单不存在'), { statusCode: 404 });
+    const t = now();
+    await getDb().prepare(`UPDATE issue_tickets
+    SET status = ?, verdict = ?, verdict_reason = ?, verdict_by = ?, verdict_at = ?, knowledge_id = ?, updated_at = ?
+    WHERE id = ?`)
+        .run(input.accept ? 'accepted' : 'rejected', input.accept ? 'accepted' : 'rejected', String(input.reason ?? '').slice(0, 900), input.by ?? 'human', t, input.knowledgeId ?? '', t, input.ticketId);
+    const after = await loadTicket(input.ticketId);
+    if (!after)
+        throw new Error('工单验收后读取失败');
+    return after;
 }

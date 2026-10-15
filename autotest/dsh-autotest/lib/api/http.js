@@ -1895,6 +1895,7 @@ function defineRoutes(llm) {
             update_cases: '更新测试用例', to_script: '用例转自动化脚本',
             matrix_cases: '矩阵驱动生成用例',
             integrate_cases: '整合初版用例为正式用例',
+            analyze_issue: '问题根因定位与自测试',
         };
         const title = b.title ?? titleByType[b.type] ?? b.type;
         const traceId = `tr-${Date.now()}-${Math.floor(Math.random() * 10000)}`;

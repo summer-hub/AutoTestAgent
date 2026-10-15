@@ -96,3 +96,50 @@ export declare const TICKET_STATUS: {
     readonly failed: "failed";
 };
 export declare function ticketNo(): string;
+/** 工单完整行。 */
+export interface IssueTicketRow {
+    id: number;
+    ticketNo: string;
+    caseId: number;
+    libraryId: number;
+    symptom: string;
+    status: string;
+    rootCause: RootCauseVerdict | null;
+    evidence: RootCauseEvidence[];
+    verification: Record<string, unknown>;
+    verdict: string;
+    verdictReason: string;
+    verdictBy: string;
+    verdictAt: string | null;
+    knowledgeId: string;
+    taskId: number | null;
+    error: string;
+    createdAt: string;
+    updatedAt: string;
+}
+export declare function loadTicket(ticketId: number): Promise<IssueTicketRow | null>;
+export declare function listTickets(opts?: {
+    libraryId?: number;
+    caseId?: number;
+    status?: string;
+    limit?: number;
+}): Promise<IssueTicketRow[]>;
+/** 创建工单（symptom 必填——没有问题现象就没有分析对象）。 */
+export declare function createTicket(input: {
+    caseId: number;
+    symptom: string;
+}): Promise<IssueTicketRow>;
+/** 更新工单状态（可同时带 error）。 */
+export declare function setTicketStatus(ticketId: number, status: string, error?: string): Promise<void>;
+/** 写入根因结论（root_caused）。 */
+export declare function saveTicketRootCause(ticketId: number, verdict: RootCauseVerdict): Promise<void>;
+/** 写入自测试验证结果（verifying / failed）。 */
+export declare function saveTicketVerification(ticketId: number, verification: Record<string, unknown>, status: string, error?: string): Promise<void>;
+/** 人工验收（接受才沉淀知识；拒绝也记录理由供反查）。 */
+export declare function decideTicket(input: {
+    ticketId: number;
+    accept: boolean;
+    reason: string;
+    by?: string;
+    knowledgeId?: string;
+}): Promise<IssueTicketRow>;

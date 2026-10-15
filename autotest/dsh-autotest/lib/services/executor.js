@@ -22,6 +22,7 @@ import { bindCaseScript, markBindingStaleOnCaseBump } from './scriptBinding.js';
 import { injectForStage } from './knowledge.js';
 import { bindingTraceLine, resolveBinding } from './agentBinding.js';
 import { appendTrace } from './taskEvents.js';
+import { buildIssueContext, analyzeWithLlm, analyzeByRule, loadTicket, setTicketStatus, saveTicketRootCause, saveTicketVerification, } from './issueRoot.js';
 // ---------- 定向用例设计（write_cases）辅助 ----------
 const normKey = (s) => s.toLowerCase().replace(/[\s_\-./\\()（）]/g, '');
 /** 从任务输入提取关键词（中英文词元）。 */
@@ -142,6 +143,10 @@ async function execute(task, llm, signal) {
             return await matrixCases(task, lib, llm);
         case 'integrate_cases':
             return await integrateCases(task, lib, llm);
+        case 'analyze_issue':
+            // R5：问题现象驱动的根因定位 + 自测试验证。
+            // lib 可空（工单自带 library_id），所以这里自己按工单取库。
+            return await analyzeIssue(task, llm, signal);
         default:
             throw new Error(`未知任务类型：${task.type}`);
     }
@@ -168,6 +173,143 @@ async function repoTask(task, lib, signal) {
     ]);
     await traceTask(task.id, task.type === 'pull_repo' ? 'git clone/pull 完成' : 'git 更新完成', r.summary);
     return r.summary;
+}
+/**
+ * R5：问题现象驱动的根因定位 + 自测试验证。
+ *
+ * 流程（对应用户需求"AI 根据用户更新的问题来克隆工程分析问题，定位根因并自测试，
+ * 最后人类进行验收"）：
+ *   ① 取工单 → 确保仓库已 clone（buildIssueContext 内部处理，非 git 目录不阻断）
+ *   → 组装上下文（用例/oracle/页面源码/遍历 dump/符号/执行日志）
+ *   ② LLM 根因分析（失败降级规则分析，不崩）
+ *   ③ 自测试验证：有真机则跑 hypium 验证，**无真机则置失败并写明原因，不回退模拟**
+ *      （既有纪律：假通过比失败更糟）
+ *   ④ 写回工单（root_caused → verifying），等人类验收
+ *
+ * 输入约定：task.input 为工单 id（数字字符串）。工单自带 library_id，
+ * 所以 lib 参数可空。
+ */
+async function analyzeIssue(task, llm, signal) {
+    const db = getDb();
+    const ticketId = Number(String(task.input ?? '').trim());
+    if (!Number.isFinite(ticketId) || ticketId <= 0) {
+        throw new Error('请提供工单 id（task.input 为 issue_tickets.id）');
+    }
+    const ticket = await loadTicket(ticketId);
+    if (!ticket)
+        throw Object.assign(new Error(`工单 #${ticketId} 不存在`), { statusCode: 404 });
+    if (!ticket.symptom.trim())
+        throw new Error('该工单没有问题现象（symptom 为空），无法分析');
+    const lib = await db.prepare('SELECT * FROM libraries WHERE id = ?').get(ticket.libraryId);
+    if (!lib)
+        throw new Error(`三方库 #${ticket.libraryId} 不存在`);
+    await setTicketStatus(ticketId, 'analyzing');
+    await traceTask(task.id, '开始根因定位', `工单 ${ticket.ticketNo} · 用例 #${ticket.caseId} · 现象：${ticket.symptom.slice(0, 80)}`);
+    // ① + ② 组装上下文并分析
+    const ctx = await buildIssueContext(ticketId);
+    if (ctx.repoNote)
+        await traceTask(task.id, '仓库状态', ctx.repoNote);
+    await traceTask(task.id, '上下文组装', `目标页：${ctx.targetScope} · 源码 ${ctx.targetCode.length} 字符 · 遍历 ${ctx.exploreCtx ? '有' : '无'} · 相关符号 ${ctx.relatedSymbols.length} · 执行日志 ${ctx.lastExecutionLog ? '有' : '无'}`);
+    let verdict;
+    try {
+        verdict = await analyzeWithLlm(ctx, llm);
+        await traceTask(task.id, '根因分析完成', `LLM · 置信度 ${verdict.confidence} · 证据 ${verdict.evidence.length} 条`);
+    }
+    catch (e) {
+        // LLM 失败降级：规则分析只列可回查线索，绝不由规则猜根因
+        verdict = analyzeByRule(ctx);
+        await traceTask(task.id, '根因分析降级', `LLM 不可用（${e.message.slice(0, 100)}），改用规则分析`);
+    }
+    await saveTicketRootCause(ticketId, verdict);
+    await traceTask(task.id, '根因结论', verdict.rootCause.slice(0, 200));
+    // ③ 自测试验证
+    await setTicketStatus(ticketId, 'verifying');
+    const verification = await verifyIssue(ctx, verdict, signal);
+    await saveTicketVerification(ticketId, verification.record, verification.ok ? 'verifying' : 'failed', verification.error);
+    await traceTask(task.id, verification.ok ? '自测试验证通过' : '自测试验证失败', verification.ok ? verification.summary : `${verification.summary}（${verification.error}）`);
+    // ★ 自测试没做成（无真机 / 无判据 / 执行未通过）→ 任务必须失败并写明原因。
+    //   绝不能 return 摘要让任务变成 done——那会让看任务列表的人以为一切顺利，
+    //   而实际上什么都没验证过（假通过比失败更糟，既有纪律）。
+    //   根因与验证记录已落库到工单，人可从工单继续处理。
+    if (!verification.ok) {
+        throw new Error(`自测试未通过：${verification.summary}${verification.error ? `（${verification.error}）` : ''}`);
+    }
+    return `工单 ${ticket.ticketNo}：${verdict.rootCause.slice(0, 160)}\n根因置信度 ${verdict.confidence}（${verdict.analysisBy === 'llm' ? 'LLM' : '规则降级'}）· 证据 ${verdict.evidence.length} 条\n自测试：${verification.summary}\n状态：待人工验收`;
+}
+/**
+ * 自测试验证：在真机上复现问题现象，用 hypium 跑该用例并核对判据。
+ *
+ * **无真机时直接失败并写明原因，绝不回退模拟**——模拟执行出来的"通过"
+ * 无法证明根因判断，是比失败更糟的假通过（既有纪律）。
+ */
+async function verifyIssue(ctx, verdict, signal) {
+    const steps = ctx.steps;
+    const record = {
+        verifiedAt: new Date().toISOString(),
+        mode: 'device',
+        steps: steps.length,
+    };
+    // 无步骤则无从验证（不是失败，是"这条用例没有可执行步骤"）
+    if (steps.length === 0) {
+        return { ok: false, summary: '该用例没有可执行步骤，无法自测试', error: '用例 steps 为空', record: { ...record, mode: 'skipped' } };
+    }
+    // 真机检查：无设备直接失败，不回退模拟
+    let serial = '';
+    try {
+        const targets = await listTargets();
+        if (targets.length === 0) {
+            return {
+                ok: false, summary: '无在线真机，未做自测试', error: 'hdc list targets 为空',
+                record: { ...record, mode: 'skipped_no_device' },
+            };
+        }
+        serial = targets[0];
+    }
+    catch (e) {
+        return {
+            ok: false, summary: '未检测到 hdc，未做自测试', error: e.message,
+            record: { ...record, mode: 'skipped_no_hdc' },
+        };
+    }
+    record.serial = serial;
+    // 无判据则验证无意义：跑完也不知道对错
+    if (ctx.oracles.length === 0) {
+        return {
+            ok: false, summary: '该用例没有机器判据（oracle），自测试无法判定对错',
+            error: 'oracle 为空', record: { ...record, mode: 'skipped_no_oracle' },
+        };
+    }
+    // 真机 dry-run：逐步执行并核对判据（复用 dryRunCase，含取消信号与逐步埋点）
+    try {
+        const r = await dryRunCase(ctx.caseNo, ctx.caseName, steps, serial, {
+            perStepTimeoutMs: 15000,
+            trace: { taskId: undefined, spanId: undefined },
+            signal,
+        });
+        record.execution = {
+            passed: r.passed,
+            stepCount: r.steps.length,
+            passedSteps: r.steps.filter((s) => s.status === 'passed').length,
+            failedSteps: r.steps.filter((s) => s.status === 'failed').length,
+            failureBrief: r.failureBrief ?? '',
+        };
+        const ok = r.passed === true;
+        const passCount = r.steps.filter((s) => s.status === 'passed').length;
+        return {
+            ok,
+            summary: ok
+                ? `真机复现通过（${passCount}/${r.steps.length} 步）`
+                : `真机复现未通过（${passCount}/${r.steps.length} 步）：${(r.failureBrief ?? '').slice(0, 120)}`,
+            error: ok ? '' : (r.failureBrief || 'dry-run 未通过'),
+            record,
+        };
+    }
+    catch (e) {
+        return {
+            ok: false, summary: '自测试执行异常', error: e.message,
+            record: { ...record, execution: { error: e.message } },
+        };
+    }
 }
 async function promptFor(role, fallback) {
     const db = getDb();
