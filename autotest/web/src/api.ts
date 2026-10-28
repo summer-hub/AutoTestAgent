@@ -1,9 +1,30 @@
 // API 客户端 — 统一走 /api（Vite 代理到后端 3280）
-import type { Analysis, CaseVersion, DetectBundleResult, Device, EffectiveModelConfig, Execution, ExploreReportMeta, ExploreResult, Library, LibraryCatalogStatus, LibraryImpact, LibrarySheetSyncResult, ModelConfig, ModelTestResult, Paged, Page, Plan, Prompt, RepoFile, RepoFileEntry, RepoInfo, Task, TestCase } from 'shared';
+import type { Analysis, AnalysisReport, Baseline, CaseVersion, DetectBundleResult, Device, EffectiveModelConfig, Execution, ExploreReportMeta, ExploreResult, IssueAnalysisStep, IssueAttribution, Library, LibraryCatalogStatus, LibraryImpact, LibrarySheetSyncResult, ModelConfig, ModelTestResult, Paged, Page, Plan, Prompt, PrDetail, PrListItem, PrRecord, PrTestStatus, RepoFile, RepoFileEntry, RepoInfo, Requirement, RequirementDetail, RequirementListItem, RequirementSource, ResourceSetDetail, ScenarioAsset, ScenarioAssetDetail, ScenarioAssetKind, ScenarioAssetValidation, ScenarioKind, Task, TestCase, TestRun, TestRunDetail } from 'shared';
+
+// A3（设计 §13.2）：runtime config。独立版构建在 index.html 里前置注入 dist/web/config.js
+// （window.__AUTOTEST_CONFIG__），部署期可直接编辑它改 apiBase/wsBase，无需重新构建前端。
+// 解析顺序：window.__AUTOTEST_CONFIG__.apiBase → 构建期 VITE_API_BASE → '/api'。
+export interface AutotestRuntimeConfig {
+  edition?: string;
+  apiBase?: string;
+  wsBase?: string;
+  features?: Record<string, boolean>;
+}
+const runtimeConfig: AutotestRuntimeConfig =
+  ((window as unknown as { __AUTOTEST_CONFIG__?: AutotestRuntimeConfig }).__AUTOTEST_CONFIG__) ?? {};
+export function getRuntimeConfig(): AutotestRuntimeConfig {
+  return runtimeConfig;
+}
 
 // 嵌入 DSH 时由构建注入 VITE_API_BASE=/api/autotest（同源直连插件路由）；
-// 独立版默认 /api（Vite 代理到 3280）。
-const API_BASE: string = (import.meta.env.VITE_API_BASE as string | undefined) ?? '/api';
+// 独立版默认 /api（Vite 代理到 3280）；跨域分离部署由 config.js 的 apiBase 覆盖。
+const API_BASE: string =
+  String(runtimeConfig.apiBase ?? '').trim() ||
+  (import.meta.env.VITE_API_BASE as string | undefined) ||
+  '/api';
+export function getApiBase(): string {
+  return API_BASE;
+}
 
 /** R5：问题归因工单（现象 → AI 根因 → 自测试 → 人工验收）。 */
 export interface IssueTicket {
@@ -17,7 +38,11 @@ export interface IssueTicket {
   status: string;
   rootCause: {
     rootCause: string;
+    /** B3：归因主结论（设计 §9.3）；旧工单（改造前）无此字段 */
+    attribution?: IssueAttribution;
     confidence: number;
+    /** B3：分析过程（假设 → 检查 → 结论，报告第 4 节） */
+    process?: IssueAnalysisStep[];
     evidence: Array<{ kind: string; ref: string; line: number; excerpt: string; supports: string }>;
     fixSuggestions: string[];
     needsDemoPatch: boolean;
@@ -33,6 +58,17 @@ export interface IssueTicket {
   verdictAt: string | null;
   knowledgeId: string;
   taskId: number | null;
+  /** B3 追溯链路：从执行发起时回填（executionId 为空 = 从用例发起，报告标注"未绑定具体执行"） */
+  executionId: number | null;
+  testRunId: number | null;
+  runItemId: number | null;
+  baselineId: number | null;
+  caseVersion: number | null;
+  /** B3：归因主结论（人工修正后覆盖 LLM 结论；attributionReason 是修正留痕） */
+  attribution: IssueAttribution;
+  attributionReason: string;
+  /** B3：最新分析报告（analysis_reports.id；重新生成会产生新报告并指向它） */
+  reportId: number | null;
   error: string;
   createdAt: string;
   updatedAt: string;
@@ -140,6 +176,17 @@ async function req<T>(url: string, init?: RequestInit): Promise<T> {
     throw new Error((body as { message?: string }).message || `HTTP ${res.status}`);
   }
   return res.json() as Promise<T>;
+}
+
+/** 二进制/markdown 下载：带认证头拉取并触发浏览器另存为。 */
+async function downloadBlob(url: string, init?: RequestInit): Promise<Blob> {
+  const key = getApiKey();
+  const res = await fetch(url, { headers: key ? { Authorization: `Bearer ${key}` } : undefined, ...init });
+  if (!res.ok) {
+    const body = await res.json().catch(() => ({}));
+    throw new Error((body as { message?: string }).message || `HTTP ${res.status}`);
+  }
+  return res.blob();
 }
 
 /**
@@ -385,7 +432,7 @@ export const api = {
     return req<{ items: IssueTicket[]; total: number }>(`${API_BASE}/issues${qs ? `?${qs}` : ''}`);
   },
   issue: (id: number) => req<IssueTicket>(`${API_BASE}/issues/${id}`),
-  issueCreate: (b: { caseId: number; symptom: string }) =>
+  issueCreate: (b: { caseId: number; symptom: string; executionId?: number }) =>
     req<IssueTicket>(`${API_BASE}/issues`, { method: 'POST', body: JSON.stringify(b) }),
   issueAnalyze: (id: number) =>
     req<{ ok: boolean; taskId: number }>(`${API_BASE}/issues/${id}/analyze`, { method: 'POST', body: JSON.stringify({}) }),
@@ -395,6 +442,69 @@ export const api = {
     }),
   issueReject: (id: number, reason: string, by = 'human') =>
     req<IssueTicket>(`${API_BASE}/issues/${id}/reject`, { method: 'POST', body: JSON.stringify({ reason, by }) }),
+  // ---- B3：归因修正 + Markdown 分析报告（设计 §10.7）----
+  issueUpdateAttribution: (id: number, attribution: string, reason: string) =>
+    req<IssueTicket>(`${API_BASE}/issues/${id}/attribution`, { method: 'PUT', body: JSON.stringify({ attribution, reason }) }),
+  issueReport: (id: number) => req<AnalysisReport>(`${API_BASE}/issues/${id}/report`),
+  issueReportGenerate: (id: number) =>
+    req<AnalysisReport>(`${API_BASE}/issues/${id}/report`, { method: 'POST', body: JSON.stringify({}) }),
+  issueReportDownload: (id: number) => downloadBlob(`${API_BASE}/issues/${id}/report.md`),
+  reports: (opts: { libraryId?: number; kind?: string; limit?: number } = {}) => {
+    const q = new URLSearchParams();
+    if (opts.libraryId) q.set('libraryId', String(opts.libraryId));
+    if (opts.kind) q.set('kind', opts.kind);
+    if (opts.limit) q.set('limit', String(opts.limit));
+    const qs = q.toString();
+    return req<{ items: AnalysisReport[]; total: number }>(`${API_BASE}/reports${qs ? `?${qs}` : ''}`);
+  },
+  reportDownload: (id: number) => downloadBlob(`${API_BASE}/reports/${id}.md`),
+  // ---- B4：需求追踪（设计 §10.2）----
+  requirements: (opts: { libraryId?: number; status?: string; q?: string; limit?: number } = {}) => {
+    const q = new URLSearchParams();
+    if (opts.libraryId) q.set('libraryId', String(opts.libraryId));
+    if (opts.status) q.set('status', opts.status);
+    if (opts.q) q.set('q', opts.q);
+    if (opts.limit) q.set('limit', String(opts.limit));
+    const qs = q.toString();
+    return req<{ items: RequirementListItem[]; total: number }>(`${API_BASE}/requirements${qs ? `?${qs}` : ''}`);
+  },
+  requirementDetail: (id: number) => req<RequirementDetail>(`${API_BASE}/requirements/${id}`),
+  requirementCreate: (b: {
+    title: string; source?: RequirementSource; externalId?: string; url?: string;
+    primaryLibraryId?: number | null; priority?: string; acceptanceMd?: string; owner?: string; status?: string;
+  }) => req<Requirement>(`${API_BASE}/requirements`, { method: 'POST', body: JSON.stringify(b) }),
+  requirementUpdate: (id: number, b: {
+    title?: string; status?: string; priority?: string; url?: string;
+    externalId?: string; acceptanceMd?: string; owner?: string;
+  }) => req<Requirement>(`${API_BASE}/requirements/${id}`, { method: 'PUT', body: JSON.stringify(b) }),
+  requirementLinkCases: (id: number, caseIds: number[], relation = 'covers') =>
+    req<{ linked: number }>(`${API_BASE}/requirements/${id}/cases`, { method: 'POST', body: JSON.stringify({ caseIds, relation }) }),
+  requirementUnlinkCase: (id: number, caseId: number) =>
+    req<{ unlinked: number }>(`${API_BASE}/requirements/${id}/cases/${caseId}`, { method: 'DELETE' }),
+  requirementLinkPrs: (id: number, prIds: number[]) =>
+    req<{ linked: number }>(`${API_BASE}/requirements/${id}/prs`, { method: 'POST', body: JSON.stringify({ prIds }) }),
+  // ---- B4：PR 追踪（设计 §10.3）----
+  prsForLibrary: (libraryId: number, opts: { state?: string; q?: string; limit?: number } = {}) => {
+    const q = new URLSearchParams();
+    if (opts.state) q.set('state', opts.state);
+    if (opts.q) q.set('q', opts.q);
+    if (opts.limit) q.set('limit', String(opts.limit));
+    const qs = q.toString();
+    return req<{ source: 'db' | 'git' | 'gitcode'; items: Array<Partial<PrListItem> & { id?: number; number: number; title: string; state: string; createdAt?: string }>; error?: string }>(
+      `${API_BASE}/libraries/${libraryId}/prs${qs ? `?${qs}` : ''}`);
+  },
+  syncLibraryPrs: (libraryId: number, opts: { limit?: number; state?: string } = {}) =>
+    req<{ libraryId: number; provider: string; synced: number; note?: string }>(
+      `${API_BASE}/libraries/${libraryId}/prs/sync`, { method: 'POST', body: JSON.stringify(opts) }),
+  prDetail: (prId: number) => req<PrDetail>(`${API_BASE}/prs/${prId}`),
+  prLinkRequirements: (prId: number, requirementIds: number[]) =>
+    req<{ linked: number }>(`${API_BASE}/prs/${prId}/requirements`, { method: 'POST', body: JSON.stringify({ requirementIds }) }),
+  prLinkCases: (prId: number, caseIds: number[], basis = 'manual') =>
+    req<{ linked: number }>(`${API_BASE}/prs/${prId}/cases`, { method: 'POST', body: JSON.stringify({ caseIds, basis }) }),
+  prCreateBaseline: (prId: number, ref: 'merge' | 'head', versionLabel?: string) =>
+    req<{ baseline: { id: number; baseline_no: string; version_label: string; status: string }; reused: boolean }>(
+      `${API_BASE}/prs/${prId}/baseline`, { method: 'POST', body: JSON.stringify({ ref, versionLabel }) }),
+  prTestStatus: (prId: number) => req<PrTestStatus>(`${API_BASE}/prs/${prId}/test-status`),
   // P8 用例 ↔ 脚本映射与版本联动
   scriptBindings: (libId: number) => req<{
     libraryId: number; total: number; byStatus: Record<string, number>;
@@ -512,6 +622,8 @@ export const api = {
   tasks: (status?: string) => paged<Task>(req<Paged<Task> | Task[]>(`${API_BASE}/tasks${status ? `?status=${status}` : ''}`)),
   createTask: (b: { type: string; libraryId?: number; input?: string; title?: string }) =>
     req<Task>(`${API_BASE}/tasks`, { method: 'POST', body: JSON.stringify(b) }),
+  // 单任务查询：库工作区拉取仓库后要轮询到终态才知道成败（列表接口不带 error/resultSummary 全量）
+  getTask: (id: number) => req<Task>(`${API_BASE}/tasks/${id}`),
   retryTask: (id: number) => req<{ ok: boolean }>(`${API_BASE}/tasks/${id}/retry`, { method: 'POST' }),
   cancelTask: (id: number) => req<{ ok: boolean; result: string }>(`${API_BASE}/tasks/${id}/cancel`, { method: 'POST' }),
   deleteTask: (id: number) => req<{ ok: boolean; deletedTaskNo: string }>(`${API_BASE}/tasks/${id}`, { method: 'DELETE' }),
@@ -586,11 +698,74 @@ export const api = {
   runPlan: (id: number) => req<{ ok: boolean }>(`${API_BASE}/plans/${id}/run`, { method: 'POST' }),
   deletePlan: (id: number) => req<{ ok: boolean }>(`${API_BASE}/plans/${id}`, { method: 'DELETE' }),
 
+  // B1：测试基线（库维度）
+  baselines: (libraryId: number) => req<Baseline[]>(`${API_BASE}/libraries/${libraryId}/baselines`),
+  createBaseline: (libraryId: number, b: { source: 'latest' | 'tag' | 'manual'; ref?: string; commitSha?: string; versionLabel?: string; note?: string }) =>
+    req<Baseline & { reused: boolean }>(`${API_BASE}/libraries/${libraryId}/baselines`, { method: 'POST', body: JSON.stringify(b) }),
+  baseline: (id: number) => req<Baseline>(`${API_BASE}/baselines/${id}`),
+  verifyBaseline: (id: number) => req<{ ok: boolean; problems: string[]; sizeBytes: number }>(`${API_BASE}/baselines/${id}/verify`, { method: 'POST' }),
+  archiveBaseline: (id: number) => req<{ ok: boolean }>(`${API_BASE}/baselines/${id}/archive`, { method: 'POST' }),
+  deleteBaseline: (id: number) => req<{ ok: boolean }>(`${API_BASE}/baselines/${id}`, { method: 'DELETE' }),
+
+  // B1：运行快照
+  testRuns: (params: { planId?: number; limit?: number } = {}) => {
+    const qs = new URLSearchParams();
+    if (params.planId) qs.set('planId', String(params.planId));
+    if (params.limit) qs.set('limit', String(params.limit));
+    return req<TestRun[]>(`${API_BASE}/test-runs?${qs}`);
+  },
+  testRun: (id: number) => req<TestRunDetail>(`${API_BASE}/test-runs/${id}`),
+
+  // B2：场景资产（设计 §10.6）
+  scenarioAssets: (params: { libraryId?: number; kind?: string; status?: string; scenarioKind?: string; q?: string } = {}) => {
+    const qs = new URLSearchParams();
+    if (params.libraryId) qs.set('libraryId', String(params.libraryId));
+    if (params.kind) qs.set('kind', params.kind);
+    if (params.status) qs.set('status', params.status);
+    if (params.scenarioKind) qs.set('scenarioKind', params.scenarioKind);
+    if (params.q) qs.set('q', params.q);
+    return req<{ items: ScenarioAsset[]; kinds: ScenarioAssetKind[]; scenarioKinds: ScenarioKind[] }>(`${API_BASE}/scenario-assets?${qs}`);
+  },
+  createScenarioAsset: (b: { libraryId: number; title: string; kind: ScenarioAssetKind; scenarioKind?: ScenarioKind; uri?: string; entryHint?: string; configGuideMd?: string; compat?: { minVersion?: string; maxVersion?: string; commit?: string } }) =>
+    req<ScenarioAsset>(`${API_BASE}/scenario-assets`, { method: 'POST', body: JSON.stringify(b) }),
+  scenarioAsset: (id: number) => req<ScenarioAssetDetail>(`${API_BASE}/scenario-assets/${id}`),
+  updateScenarioAsset: (id: number, b: Partial<{ title: string; scenarioKind: ScenarioKind; uri: string; entryHint: string; configGuideMd: string; compat: { minVersion?: string; maxVersion?: string; commit?: string } }>) =>
+    req<ScenarioAsset>(`${API_BASE}/scenario-assets/${id}`, { method: 'PUT', body: JSON.stringify(b) }),
+  uploadScenarioAssetFiles: (id: number, files: Array<{ path: string; contentBase64: string; role?: string }>, note?: string) =>
+    req<{ written: Array<{ path: string; sha256: string; size: number; role: string }>; version: string; totalBytes: number; asset: ScenarioAsset }>(
+      `${API_BASE}/scenario-assets/${id}/files`, { method: 'POST', body: JSON.stringify({ files, note }) }),
+  validateScenarioAsset: (id: number) => req<ScenarioAssetValidation>(`${API_BASE}/scenario-assets/${id}/validate`, { method: 'POST', body: JSON.stringify({ level: 'static' }) }),
+  linkScenarioAssetCases: (id: number, caseIds: number[], role?: string) =>
+    req<{ linked: number }>(`${API_BASE}/scenario-assets/${id}/link-cases`, { method: 'POST', body: JSON.stringify({ caseIds, role }) }),
+  linkScenarioAssetRequirements: (id: number, requirementIds: number[]) =>
+    req<{ linked: number }>(`${API_BASE}/scenario-assets/${id}/link-requirements`, { method: 'POST', body: JSON.stringify({ requirementIds }) }),
+  applyScenarioAsset: (id: number, runItemId: number) =>
+    req<{ assetNo: string; version: string; applyStatus: string }>(`${API_BASE}/scenario-assets/${id}/apply`, { method: 'POST', body: JSON.stringify({ runItemId }) }),
+  deprecateScenarioAsset: (id: number) => req<{ ok: boolean; asset: ScenarioAsset }>(`${API_BASE}/scenario-assets/${id}/deprecate`, { method: 'POST' }),
+  deleteScenarioAsset: (id: number) => req<{ removed: boolean; dirRemoved: boolean }>(`${API_BASE}/scenario-assets/${id}`, { method: 'DELETE' }),
+  downloadScenarioAssetZip: async (id: number, filename: string): Promise<void> => {
+    const res = await fetch(`${API_BASE}/scenario-assets/${id}/download`);
+    if (!res.ok) throw new Error(`下载失败（${res.status}）`);
+    const blob = await res.blob();
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = filename;
+    a.click();
+    URL.revokeObjectURL(url);
+  },
+
+  // B2：资源集回查
+  resourceSet: (id: number) => req<ResourceSetDetail>(`${API_BASE}/resource-sets/${id}`),
+
   // 执行记录（调试会话）
-  executions: (params: { planId?: number; status?: string; limit?: number } = {}) => {
+  executions: (params: { planId?: number; status?: string; baselineId?: number; testRunId?: number; runItemId?: number; limit?: number } = {}) => {
     const qs = new URLSearchParams();
     if (params.planId) qs.set('planId', String(params.planId));
     if (params.status) qs.set('status', params.status);
+    if (params.baselineId) qs.set('baselineId', String(params.baselineId));
+    if (params.testRunId) qs.set('testRunId', String(params.testRunId));
+    if (params.runItemId) qs.set('runItemId', String(params.runItemId));
     if (params.limit) qs.set('limit', String(params.limit));
     return paged<Execution & { caseNo: string; caseName: string; libraryName: string; deviceSerial: string | null }>(
       req<Paged<Execution & { caseNo: string; caseName: string; libraryName: string; deviceSerial: string | null }> | Array<Execution & { caseNo: string; caseName: string; libraryName: string; deviceSerial: string | null }>>(`${API_BASE}/executions?${qs}`),

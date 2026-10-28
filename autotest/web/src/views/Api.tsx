@@ -148,7 +148,7 @@ export default function ApiPage({ fixedLibraryId }: { fixedLibraryId?: number } 
           <div className="loading">加载中…</div>
         ) : symbols.length === 0 ? (
           <div className="loading">
-            这个库还没有接口清单。先确认代码已拉取（库管理页「拉取仓库代码」），再点右上角「采集接口清单」。
+             这个库还没有接口清单。先在库工作区左列表选中该库，点顶部「📦 拉取仓库代码」把仓库克隆到服务器工作区，再点右上角「采集接口清单」。
           </div>
         ) : (
           <table>

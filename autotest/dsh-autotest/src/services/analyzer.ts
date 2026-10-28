@@ -48,6 +48,15 @@ export interface GitCodePr {
   removed_lines: number;
   web_url: string;
   files: PrFile[];
+  /** B4：合入提交（真实 PR 才有；拿不到就缺省，不伪造 —— head 基线据此标注"仅预验证"） */
+  merge_commit_sha?: string;
+  /** B4：head 提交（PR 分支最新提交；本地 git 降级时为提交 hash） */
+  head_sha?: string;
+  /** B4：目标分支 / 来源分支 */
+  base_branch?: string;
+  head_branch?: string;
+  /** B4：作者 */
+  author?: string;
 }
 
 /** 从仓库 URL 提取 GitCode owner/repo；非 GitCode 地址返回 null。 */
@@ -98,6 +107,12 @@ function mapPr(pr: Record<string, any>): GitCodePr {
     removed_lines: Number(pr.removed_lines) || 0,
     web_url: String(pr.html_url ?? pr.web_url ?? ''),
     files: [] as PrFile[],
+    // B4 追踪字段（§7.2）：provider 给什么存什么，拿不到留空 —— 不反推、不编造
+    merge_commit_sha: String(pr.merge_commit_sha ?? '') || undefined,
+    head_sha: String(pr.head?.sha ?? pr.head_sha ?? '') || undefined,
+    base_branch: String(pr.base?.ref ?? pr.base_branch ?? '') || undefined,
+    head_branch: String(pr.head?.ref ?? pr.head_branch ?? '') || undefined,
+    author: String(pr.user?.login ?? pr.author ?? '') || undefined,
   };
 }
 
@@ -178,6 +193,9 @@ export function fetchPrsFromGit(dir: string, opts: { limit?: number; numbers?: n
       removed_lines: 0,
       web_url: '',
       files,
+      // B4：本地降级把提交 hash 记为 head_sha（provider='local' 时用它建 head 基线）；
+      // merge_commit_sha 留空 —— 本地提交不是合入提交，不冒充（§7.2）
+      head_sha: c.hash,
     });
   }
   return prs;

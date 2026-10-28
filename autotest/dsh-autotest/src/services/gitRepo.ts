@@ -162,7 +162,7 @@ async function runGit(args: string[], cwd?: string, timeoutMs = 180000): Promise
   return stdout.trim();
 }
 
-function repoName(name: string): string {
+export function repoName(name: string): string {
   return name.replace(/[^\w.-]/g, '_');
 }
 

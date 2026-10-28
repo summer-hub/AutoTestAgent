@@ -1,5 +1,5 @@
-import { useCallback, useEffect, useState } from 'react';
-import type { Library, Page, TestCase } from 'shared';
+import { useCallback, useEffect, useRef, useState } from 'react';
+import type { Library, Page, RepoInfo, TestCase } from 'shared';
 import { api } from '../api';
 import EnvPage from '../views/Env';
 import SurveyPage from '../views/Survey';
@@ -10,6 +10,7 @@ import CoveragePage from '../views/Coverage';
 import IssuePage from '../views/Issues';
 import HumanQueuePage from '../views/HumanQueue';
 import AttributionPage from '../views/Attribution';
+import PrTrackingView from '../views/PrTracking';
 
 /**
  * 库工作区（Phase 1 · 双轨期）—— R8 信息架构重构的新主轴入口。
@@ -26,7 +27,7 @@ import AttributionPage from '../views/Attribution';
 type Tab = 'overview' | 'env' | 'cases' | 'issues';
 
 /** 二级子 Tab：每个主 Tab 下挂多个完整功能视图（原独立页面）。 */
-type SubTab = 'env' | 'survey' | 'cases' | 'scripts' | 'api' | 'coverage' | 'issues' | 'human' | 'attribution';
+type SubTab = 'env' | 'survey' | 'cases' | 'scripts' | 'api' | 'coverage' | 'prs' | 'issues' | 'human' | 'attribution';
 
 const SUB_TABS: Record<Exclude<Tab, 'overview'>, Array<{ key: SubTab; label: string; icon: string }>> = {
   env: [
@@ -38,6 +39,7 @@ const SUB_TABS: Record<Exclude<Tab, 'overview'>, Array<{ key: SubTab; label: str
     { key: 'scripts', label: '脚本', icon: '🤖' },
     { key: 'api', label: '接口面', icon: '🔌' },
     { key: 'coverage', label: '覆盖矩阵', icon: '🧭' },
+    { key: 'prs', label: 'PR 跟踪', icon: '🔀' },
   ],
   issues: [
     { key: 'issues', label: '问题归因', icon: '🩺' },
@@ -105,6 +107,80 @@ export default function LibraryWorkspace() {
   const [queue, setQueue] = useState<{ total: number; open: number; byStage: Record<string, number> } | null>(null);
 
   const selected = libs.find((l) => l.id === sel) ?? null;
+
+  // ---- 拉取 / 更新仓库代码 ----
+  // 为什么在这里做：R8 信息架构重构把「库管理页」并进库工作区后，按库拉取仓库的入口丢了——
+  // 全站只剩任务页「拉取仓库代码」预设卡片，而它**只收手贴 URL 且不带 libraryId**：
+  //   ① 用户点开某个库后找不到任何拉取动作；
+  //   ② 单体仓 171 个库共用一个仓库地址，贴 URL 会经 ensureLibraryByRepoUrl 按 repo_url
+  //      匹配到**别的库行**（子目录被忽略），拉取结果记到错误的库上。
+  // 后端 pull_repo 早就支持 libraryId（repoTask 里 target=lib 直接 pull），缺的只是入口。
+  const [repos, setRepos] = useState<RepoInfo[]>([]);
+  const [pulling, setPulling] = useState(false);
+  const pollRef = useRef<number | null>(null);
+
+  const loadRepos = useCallback(() => {
+    void api.repos().then(setRepos).catch(() => setRepos([]));
+  }, []);
+
+  useEffect(() => { loadRepos(); }, [loadRepos]);
+  // 卸载时清轮询：否则切走页面后定时器还在打接口，且 setState 打在已卸载组件上
+  useEffect(() => () => { if (pollRef.current) window.clearInterval(pollRef.current); }, []);
+
+  const localRepo = repos.find((r) => r.id === sel) ?? null;
+
+  const pullRepo = async (kind: 'pull_repo' | 'update_repo'): Promise<void> => {
+    if (!selected || pulling) return;
+    let url = '';
+    if (!selected.repoUrl) {
+      // 库没配仓库地址：就地补一个。后端 repoTask 已支持
+      // 「target 存在 + input 是 URL + repo_url 为空 → 回写 libraries.repo_url」。
+      const input = window.prompt(`「${selected.name}」还未配置仓库地址。请输入仓库地址（https / git / ssh）：`, '');
+      if (!input) return;
+      url = input.trim();
+      if (!/^(https?:\/\/|git@|ssh:\/\/|git:\/\/)/i.test(url)) {
+        setError('仓库地址格式不正确（需以 http(s)://、git@、ssh:// 或 git:// 开头）');
+        return;
+      }
+    }
+    setPulling(true);
+    setError('');
+    setMsg('');
+    try {
+      const t = await api.createTask({
+        type: kind,
+        libraryId: selected.id,
+        input: url || undefined,
+        title: `${kind === 'pull_repo' ? '拉取仓库代码' : '更新仓库代码'}（${selected.name}）`,
+      });
+      setMsg(`任务 ${t.taskNo} 已创建，正在${kind === 'pull_repo' ? '克隆' : '更新'}「${selected.name}」…`);
+      pollRef.current = window.setInterval(async () => {
+        try {
+          const cur = await api.getTask(t.id);
+          if (!['done', 'failed', 'cancelled', 'stopped'].includes(cur.status)) return;
+          if (pollRef.current) window.clearInterval(pollRef.current);
+          pollRef.current = null;
+          setPulling(false);
+          if (cur.status === 'done') {
+            setMsg(`${t.taskNo} 完成：${cur.resultSummary || '已同步'}`);
+          } else {
+            setError(`${t.taskNo} ${cur.status === 'failed' ? '失败' : '已取消'}：${cur.error || cur.resultSummary || '详见「执行 → 任务」轨迹'}`);
+          }
+          loadRepos();
+          void loadLibs(1);
+          if (sel) void loadTab(sel, tab);
+        } catch (e) {
+          if (pollRef.current) window.clearInterval(pollRef.current);
+          pollRef.current = null;
+          setPulling(false);
+          setError(String((e as Error).message));
+        }
+      }, 1500);
+    } catch (e) {
+      setPulling(false);
+      setError(String((e as Error).message));
+    }
+  };
 
   // 左列表：分页加载。服务端 /libraries 的 pageSize 上限是 100，348 个库必须分页，
   // 否则用户只能看到前 100 个。搜索词变化时重置回第 1 页。
@@ -179,6 +255,26 @@ export default function LibraryWorkspace() {
   const caseTotal = casePage?.total ?? 0;
   const openTickets = tickets.filter((t) => !['accepted', 'rejected'].includes(t.status)).length;
 
+  // 仓库同步状态：四个态都要能自证，别让用户猜"到底拉没拉"
+  //  未配置仓库（红）→ 未拉取到本地（灰）→ 已克隆未同步（黄）→ 已同步 @版本（绿）
+  const syncTag = (() => {
+    if (!selected) return { label: '', cls: 'gray', title: '' };
+    if (!selected.repoUrl) {
+      return { label: '未配置仓库', cls: 'red', title: '点「拉取仓库代码」输入地址，会自动记到该库上' };
+    }
+    if (!localRepo?.exists) {
+      return { label: '未拉取到本地', cls: 'gray', title: `目标目录：${localRepo?.dir ?? '服务器工作区 repos/'}` };
+    }
+    if (selected.lastSyncedAt) {
+      return {
+        label: `已同步 ${selected.currentVersion || ''}`.trim(),
+        cls: 'green',
+        title: `上次同步：${selected.lastSyncedAt}`,
+      };
+    }
+    return { label: '已克隆未同步', cls: 'amber', title: '本地有代码，但库表没有同步记录，点「更新」补一次' };
+  })();
+
   return (
     <div className="ws">
       {/* 左：库列表 */}
@@ -239,6 +335,27 @@ export default function LibraryWorkspace() {
                 </div>
               </div>
               <div style={{ flex: 1 }} />
+              <span className={`tag ${syncTag.cls}`} title={syncTag.title}>{syncTag.label}</span>
+              <button
+                type="button"
+                className="btn sm primary"
+                disabled={pulling}
+                title={selected.repoUrl
+                  ? `克隆/拉取到服务器工作区 ${localRepo?.dir ?? 'repos/'}`
+                  : '该库未配置仓库地址，点击后输入地址（会自动记到库上）'}
+                onClick={() => void pullRepo('pull_repo')}
+              >
+                {pulling ? '⏳ 拉取中…' : '📦 拉取仓库代码'}
+              </button>
+              <button
+                type="button"
+                className="btn sm"
+                disabled={pulling || !selected.repoUrl}
+                title={selected.repoUrl ? 'git pull --ff-only 更新到最新' : '未配置仓库地址，无法更新'}
+                onClick={() => void pullRepo('update_repo')}
+              >
+                🔄 更新
+              </button>
               <span className={`tag ${health.cls}`}>{health.label}</span>
               <span className="tag gray">{caseTotal} 用例</span>
               {openTickets > 0 && <span className="tag amber">{openTickets} 待处理问题</span>}
@@ -332,6 +449,7 @@ export default function LibraryWorkspace() {
                     {subTab === 'scripts' && <ScriptsPage fixedLibraryId={sel ?? undefined} />}
                     {subTab === 'api' && <ApiPage fixedLibraryId={sel ?? undefined} />}
                     {subTab === 'coverage' && <CoveragePage fixedLibraryId={sel ?? undefined} />}
+                    {subTab === 'prs' && <PrTrackingView fixedLibraryId={sel ?? undefined} />}
                   </div>
                 </>
               )}

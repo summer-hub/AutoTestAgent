@@ -16,6 +16,7 @@
 import type { IncomingMessage } from 'node:http';
 import type { Duplex } from 'node:stream';
 import { enforceAuth } from '../services/auth.js';
+import { originAllowed } from '../services/cors.js';
 import { bus, type TaskEventPayload } from '../services/eventBus.js';
 import { closeFrame, computeAccept, parseFrame, pingFrame, pongFrame, textFrame } from './wsFrame.js';
 
@@ -176,6 +177,15 @@ function startKeepalive(): void {
  * path 判定（/api/autotest/ws）由调用方完成；本函数负责鉴权 → 握手 → 连接生命周期。
  */
 export async function handleWsUpgrade(req: IncomingMessage, socket: Duplex, head: Buffer): Promise<void> {
+  // A3（设计 §13.3）：WS 握手同源闸门。浏览器握手必带 Origin；跨源且不在
+  // AUTOTEST_CORS_ORIGINS 白名单 → 403 拒绝（同源/无 Origin/旧开关放行，语义与 HTTP 一致）。
+  if (!originAllowed(req)) {
+    const body = JSON.stringify({ message: `拒绝跨源 WebSocket 连接：Origin=${String(req.headers.origin ?? '')} 不在白名单（AUTOTEST_CORS_ORIGINS）` });
+    try {
+      socket.end(`HTTP/1.1 403 Forbidden\r\nContent-Type: application/json\r\nConnection: close\r\nContent-Length: ${Buffer.byteLength(body)}\r\n\r\n${body}`);
+    } catch { /* ignore */ }
+    return;
+  }
   // query token 合成 Authorization 头，复用 enforceAuth 全量语义（角色/豁免/失效）
   try {
     const url = new URL(req.url ?? '/', 'http://localhost');

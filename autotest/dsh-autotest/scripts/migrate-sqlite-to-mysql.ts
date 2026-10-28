@@ -19,6 +19,14 @@ const TABLES = [
   'libraries', 'cases', 'case_versions', 'tasks', 'plans',
   'executions', 'executions_archive', 'devices', 'prompts', 'models', 'analyses',
   'agent_events', 'settings',
+  // ---- B1/B2/B3/B4 追溯表（设计：独立版产品化与测试基线追溯 §14.5）----
+  'requirements', 'requirement_cases', 'pull_requests', 'pr_libraries', 'pr_requirements',
+  'repo_snapshots', 'test_baselines', 'baseline_prs',
+  'test_runs', 'test_run_items',
+  'scenario_assets', 'scenario_asset_cases', 'scenario_asset_requirements',
+  'scenario_asset_files', 'scenario_asset_versions',
+  'test_resource_sets', 'test_resource_set_items', 'run_item_assets',
+  'analysis_reports',
 ];
 
 async function main(): Promise<void> {

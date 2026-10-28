@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useState } from 'react';
+import type { AnalysisReport, IssueAttribution } from 'shared';
 import type { IssueTicket } from '../api';
 import { api } from '../api';
 
@@ -13,6 +14,8 @@ import { api } from '../api';
  *     不是 cases.symptom 的编辑界面——两者分工在 schema 注释里写明了；
  *   · 验收必须填理由（空理由 = 没处理），接受才沉淀知识、驳回也留理由供反查；
  *   · 无真机时自测试会失败，此时页面要明说"未验证"而不是让人误以为已验证。
+ *   · B3：归因（attribution）是主结论，人工可修正且必须留理由；
+ *     分析完成后自动生成 Markdown 报告，可下载、可重新生成（新报告，历史保留）。
  */
 const STATUS_TAG: Record<string, string> = {
   pending: 'gray', analyzing: 'blue', root_caused: 'blue',
@@ -21,6 +24,20 @@ const STATUS_TAG: Record<string, string> = {
 const STATUS_LABEL: Record<string, string> = {
   pending: '待分析', analyzing: '分析中', root_caused: '已出根因',
   verifying: '自测试中', accepted: '已验收通过', rejected: '已驳回', failed: '验证失败',
+};
+
+/** B3：归因枚举与显示标签（设计 §9.3；与后端 ATTRIBUTIONS 一一对应）。 */
+const ATTRIBUTION_OPTIONS: Array<{ value: IssueAttribution; label: string }> = [
+  { value: 'case_precondition', label: '用例预置条件' },
+  { value: 'demo', label: 'Demo 工程' },
+  { value: 'library', label: '库本身' },
+  { value: 'environment', label: '环境（设备/工具链）' },
+  { value: 'flaky', label: '不稳定（flaky）' },
+  { value: 'unknown', label: '不确定' },
+];
+const ATTRIBUTION_LABEL: Record<string, string> = Object.fromEntries(ATTRIBUTION_OPTIONS.map((o) => [o.value, o.label]));
+const ATTRIBUTION_TAG: Record<string, string> = {
+  case_precondition: 'amber', demo: 'cyan', library: 'red', environment: 'purple', flaky: 'blue', unknown: 'gray',
 };
 
 /**
@@ -41,6 +58,11 @@ export default function IssuePage({ fixedLibraryId }: { fixedLibraryId?: number 
   const [msg, setMsg] = useState('');
   const [busy, setBusy] = useState(false);
   const [verdictText, setVerdictText] = useState('');
+  // B3：归因修正 + 报告
+  const [attrPick, setAttrPick] = useState<IssueAttribution>('unknown');
+  const [attrReason, setAttrReason] = useState('');
+  const [reports, setReports] = useState<AnalysisReport[] | null>(null);
+  const [reportInfo, setReportInfo] = useState<AnalysisReport | null>(null);
 
   const load = useCallback(() => {
     setError('');
@@ -48,13 +70,23 @@ export default function IssuePage({ fixedLibraryId }: { fixedLibraryId?: number 
     api.issues({ libraryId: fixedLibraryId ?? undefined, status, limit: 100 })
       .then((r) => setTickets(r.items))
       .catch((e) => setError(String((e as Error).message)));
+    api.reports({ limit: 50 })
+      .then((r) => setReports(r.items))
+      .catch(() => setReports([]));
   }, [filter]);
 
   useEffect(() => { load(); }, [load]);
 
   const open = async (id: number) => {
     setVerdictText('');
-    try { setSelected(await api.issue(id)); } catch (e) { setError(String((e as Error).message)); }
+    try {
+      const t = await api.issue(id);
+      setSelected(t);
+      setAttrPick(t.attribution ?? 'unknown');
+      setAttrReason('');
+      // 报告元数据（无报告 404 属正常，静默置空）
+      api.issueReport(id).then(setReportInfo).catch(() => setReportInfo(null));
+    } catch (e) { setError(String((e as Error).message)); }
   };
 
   const analyze = async (id: number) => {
@@ -92,6 +124,45 @@ export default function IssuePage({ fixedLibraryId }: { fixedLibraryId?: number 
       load();
     } catch (e) { setError(String((e as Error).message)); }
     finally { setBusy(false); }
+  };
+
+  // B3：人工修正归因（必须留理由 —— 修正历史回查"为什么改了结论"）
+  const fixAttribution = async (id: number) => {
+    const reason = attrReason.trim();
+    if (!reason) { setError('修正归因必须填理由（供反查"为什么改了归因"）'); return; }
+    setBusy(true); setError(''); setMsg('');
+    try {
+      const r = await api.issueUpdateAttribution(id, attrPick, reason);
+      setMsg(`归因已修正为「${ATTRIBUTION_LABEL[attrPick] ?? attrPick}」（理由已留痕）`);
+      setSelected(r); setAttrReason('');
+      load();
+    } catch (e) { setError(String((e as Error).message)); }
+    finally { setBusy(false); }
+  };
+
+  // B3：生成/重新生成报告（不可变 —— 每次新报告，历史保留）
+  const generateReport = async (id: number) => {
+    setBusy(true); setError(''); setMsg('');
+    try {
+      const r = await api.issueReportGenerate(id);
+      setReportInfo(r);
+      setMsg(`报告已生成：${r.reportNo}（重新生成会产生新报告，旧报告保留可查）`);
+      load();
+    } catch (e) { setError(String((e as Error).message)); }
+    finally { setBusy(false); }
+  };
+
+  // B3：下载报告 Markdown
+  const downloadReport = async (id: number, filename: string) => {
+    try {
+      const blob = await api.issueReportDownload(id);
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = filename;
+      a.click();
+      URL.revokeObjectURL(url);
+    } catch (e) { setError(`报告下载失败：${(e as Error).message}`); }
   };
 
   const items = tickets ?? [];
@@ -164,14 +235,46 @@ export default function IssuePage({ fixedLibraryId }: { fixedLibraryId?: number 
                 <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
                   <b className="mono">{selected.ticketNo}</b>
                   <span className={`tag ${STATUS_TAG[selected.status] ?? 'gray'}`}>{STATUS_LABEL[selected.status] ?? selected.status}</span>
+                  {/* B3 归因标签：主结论（人工修正后覆盖 LLM 结论） */}
+                  <span className={`tag ${ATTRIBUTION_TAG[selected.attribution] ?? 'gray'}`} title={selected.attributionReason || undefined}>
+                    归因：{ATTRIBUTION_LABEL[selected.attribution] ?? selected.attribution}
+                  </span>
                   <span className="muted" style={{ fontSize: 11.5 }}>用例 #{selected.caseId} · 创建于 {selected.createdAt}</span>
                   <div style={{ flex: 1 }} />
+                  {/* B3 报告动作：有报告 → 下载/重生成；无报告但有根因 → 生成 */}
+                  {reportInfo && (
+                    <>
+                      <button className="btn sm" disabled={busy} onClick={() => void downloadReport(selected.id, `${reportInfo.reportNo}.md`)}>
+                        ⬇ 下载报告 {reportInfo.reportNo}
+                      </button>
+                      <button className="btn sm" disabled={busy} onClick={() => void generateReport(selected.id)}>重新生成报告</button>
+                    </>
+                  )}
+                  {!reportInfo && selected.rootCause && (
+                    <button className="btn sm" disabled={busy} onClick={() => void generateReport(selected.id)}>📄 生成报告</button>
+                  )}
                   {/* 历史降级工单也要能重跑：后端 /analyze 无状态守卫，root_caused 可直接重新分析 */}
                   {(selected.status === 'pending' || selected.status === 'failed' || isLegacyRuleCause(selected)) && (
                     <button className="btn sm primary" disabled={busy} onClick={() => void analyze(selected.id)}>
                       {busy ? '发起中…' : isLegacyRuleCause(selected) ? '重新分析' : '发起 AI 分析'}
                     </button>
                   )}
+                </div>
+
+                {/* B3 追溯 chips：从执行发起时自动带链路；历史数据显示"未知"不伪造 */}
+                <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', marginTop: 8 }}>
+                  {selected.executionId ? (
+                    <span className="tag blue" title="从执行发起（设计 §9.1）：工单自动带执行/运行/基线/用例版本链路">执行 #{selected.executionId}</span>
+                  ) : (
+                    <span className="tag gray" title="从用例发起：报告会标注「未绑定具体执行」">未绑定具体执行</span>
+                  )}
+                  {selected.baselineId
+                    ? <span className="tag blue">基线 #{selected.baselineId}</span>
+                    : <span className="tag gray">基线：未知（历史数据）</span>}
+                  {selected.caseVersion
+                    ? <span className="tag purple">用例 V{selected.caseVersion}</span>
+                    : <span className="tag gray">用例版本：未知（历史数据）</span>}
+                  {selected.testRunId && <span className="tag plain">运行 #{selected.testRunId}</span>}
                 </div>
 
                 <div style={{ marginTop: 10 }}>
@@ -220,6 +323,44 @@ export default function IssuePage({ fixedLibraryId }: { fixedLibraryId?: number 
                     </div>
                   )}
                   <div style={{ fontSize: 13, marginTop: 6 }}>{selected.rootCause.rootCause}</div>
+
+                  {/* B3 分析过程（设计 §9.4）：假设 → 检查 → 结论 —— 报告第 4 节同款 */}
+                  {(selected.rootCause.process?.length ?? 0) > 0 && (
+                    <div style={{ marginTop: 8 }}>
+                      <div className="muted" style={{ fontSize: 11.5 }}>分析过程（怎么排除的）</div>
+                      {selected.rootCause.process!.map((p, i) => (
+                        <div key={i} style={{ fontSize: 12, marginTop: 3, paddingLeft: 8, borderLeft: '2px solid var(--border, #333)' }}>
+                          <b>假设 {String.fromCharCode(65 + i)}</b>：{p.hypothesis}
+                          <div className="muted">检查：{p.checked}</div>
+                          <span className={`tag ${p.result === 'confirmed' ? 'green' : p.result === 'excluded' ? 'gray' : 'amber'}`} style={{ fontSize: 10 }}>
+                            {p.result === 'confirmed' ? '成立' : p.result === 'excluded' ? '排除' : '不确定'}
+                          </span>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+
+                  {/* B3 归因修正（设计 §10.7）：归因是主结论，人工修正必须留理由 */}
+                  <div style={{ marginTop: 10, padding: '8px 10px', borderRadius: 6, background: 'var(--bg2)', fontSize: 12 }}>
+                    <b style={{ fontSize: 12 }}>归因修正</b>
+                    <span className="muted" style={{ fontSize: 11 }}> 当前：{ATTRIBUTION_LABEL[selected.attribution] ?? selected.attribution} · 修正留理由，历史可回查</span>
+                    {selected.attributionReason && (
+                      <div className="muted" style={{ fontSize: 10.5, marginTop: 3, whiteSpace: 'pre-wrap' }}>修正记录：{selected.attributionReason}</div>
+                    )}
+                    <div style={{ display: 'flex', gap: 6, marginTop: 6, flexWrap: 'wrap' }}>
+                      <select className="input" style={{ width: 200, fontSize: 12 }} value={attrPick} onChange={(e) => setAttrPick(e.target.value as IssueAttribution)}>
+                        {ATTRIBUTION_OPTIONS.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
+                      </select>
+                      <input
+                        className="input" style={{ flex: 1, minWidth: 200, fontSize: 12 }}
+                        placeholder="修正理由（必填）：为什么改归因？"
+                        value={attrReason} onChange={(e) => setAttrReason(e.target.value)}
+                      />
+                      <button className="btn sm" disabled={busy || !attrReason.trim() || attrPick === selected.attribution} onClick={() => void fixAttribution(selected.id)}>
+                        修正
+                      </button>
+                    </div>
+                  </div>
 
                   {selected.rootCause.fixSuggestions.length > 0 && (
                     <div style={{ marginTop: 8 }}>
@@ -309,16 +450,56 @@ export default function IssuePage({ fixedLibraryId }: { fixedLibraryId?: number 
                     value={verdictText}
                     onChange={(e) => setVerdictText(e.target.value)}
                   />
-                  <div style={{ display: 'flex', gap: 8, marginTop: 6 }}>
-                    <button className="btn sm primary" disabled={busy} onClick={() => void accept(selected.id)}>验收通过</button>
-                    <button className="btn sm" disabled={busy} onClick={() => void reject(selected.id)}>驳回</button>
-                  </div>
-                </div>
-              )}
-            </>
-          )}
+                   <div style={{ display: 'flex', gap: 8, marginTop: 6 }}>
+                     <button className="btn sm primary" disabled={busy} onClick={() => void accept(selected.id)}>验收通过</button>
+                     <button className="btn sm" disabled={busy} onClick={() => void reject(selected.id)}>驳回</button>
+                   </div>
+                 </div>
+               )}
+             </>
+           )}
+         </div>
+       </div>
+
+      {/* B3：分析报告列表（跨工单统一入口；正文走 .md 下载，不进列表 DTO） */}
+      {reports !== null && reports.length > 0 && (
+        <div className="card" style={{ marginTop: 4 }}>
+          <div className="card-h" style={{ marginBottom: 8 }}>
+            <span className="t">📄 分析报告</span>
+            <span className="sub">不可变：重新生成产生新报告 · 共 {reports.length} 份</span>
+          </div>
+          <table className="tbl" style={{ width: '100%' }}>
+            <thead>
+              <tr>
+                <th>编号</th><th>标题</th><th>类型</th><th>生成时间</th><th>来源</th><th />
+              </tr>
+            </thead>
+            <tbody>
+              {reports.map((r) => (
+                <tr key={r.id}>
+                  <td className="mono" style={{ fontSize: 11.5 }}>{r.reportNo}</td>
+                  <td style={{ fontSize: 12 }}>{r.title}</td>
+                  <td><span className="tag gray">{r.kind}</span></td>
+                  <td className="muted" style={{ fontSize: 11.5 }}>{r.createdAt}</td>
+                  <td className="muted" style={{ fontSize: 11.5 }}>{r.createdBy || 'system'}</td>
+                  <td>
+                    <button className="btn sm" onClick={() => {
+                      api.reportDownload(r.id).then((blob) => {
+                        const url = URL.createObjectURL(blob);
+                        const a = document.createElement('a');
+                        a.href = url;
+                        a.download = `${r.reportNo}.md`;
+                        a.click();
+                        URL.revokeObjectURL(url);
+                      }).catch((e) => setError(`报告下载失败：${(e as Error).message}`));
+                    }}>⬇ 下载</button>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
         </div>
-      </div>
-    </>
+      )}
+     </>
   );
 }

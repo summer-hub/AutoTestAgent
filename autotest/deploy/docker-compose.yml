@@ -1,0 +1,89 @@
+# AutoTest 独立版一键部署（A3 · 设计 §13.5）。
+# 拓扑 B（默认）：web（Nginx 同域反代）+ server（Node API+WS）+ mysql + redis。
+# 拓扑 C（跨域分离）：把 web 的 API 反代段去掉（或 web 部署到另一台机器），
+#   并给 server 配 AUTOTEST_CORS_ORIGINS 白名单 + 编辑 web 的 config.js 指向 API 绝对地址。
+#
+# 用法（autotest 仓库根）：
+#   docker compose -f deploy/docker-compose.yml up -d --build
+#   首次初始化表结构：docker compose -f deploy/docker-compose.yml exec server node lib/db/init.js
+services:
+  server:
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile
+    image: autotest-server
+    restart: unless-stopped
+    environment:
+      # 数据库：MySQL（服务器化多用户）。单机轻量部署可改为：
+      #   AUTOTEST_DB_MODE=sqlite（去掉下方 MYSQL_URL，挂 data 卷即可）
+      AUTOTEST_DB_MODE: mysql
+      AUTOTEST_MYSQL_URL: mysql://autotest:changeme@mysql:3306/autotest
+      AUTOTEST_PORT: "3280"
+      # 跨域白名单（拓扑 C 才需要；同域反代/同源部署留空即可）。
+      # 逗号分隔完整 origin，例：AUTOTEST_CORS_ORIGINS: https://ui.autotest.example.com
+      AUTOTEST_CORS_ORIGINS: ""
+      # 拓扑 C 下回给前端 /runtime-config 的公开地址（留空 = 同源默认）
+      AUTOTEST_PUBLIC_API_BASE: ""
+      AUTOTEST_PUBLIC_WS_BASE: ""
+      # 工作区（git clone / 用例脚本产物）与数据目录挂卷持久化
+      AUTOTEST_DATA_DIR: /var/lib/autotest/data
+      AUTOTEST_WORKSPACE: /var/lib/autotest/workspace
+      TZ: Asia/Shanghai
+    volumes:
+      - autotest-data:/var/lib/autotest/data
+      - autotest-workspace:/var/lib/autotest/workspace
+    depends_on:
+      mysql:
+        condition: service_healthy
+    # 如需容器外直连 API（拓扑 C），暴露端口并配白名单：
+    # ports:
+    #   - "3280:3280"
+
+  web:
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile.web
+    image: autotest-web
+    restart: unless-stopped
+    ports:
+      - "8080:80"
+    depends_on:
+      server:
+        condition: service_healthy
+
+  mysql:
+    image: mysql:8.4
+    restart: unless-stopped
+    environment:
+      MYSQL_ROOT_PASSWORD: root-changeme
+      MYSQL_DATABASE: autotest
+      MYSQL_USER: autotest
+      MYSQL_PASSWORD: changeme
+      TZ: Asia/Shanghai
+    volumes:
+      - mysql-data:/var/lib/mysql
+    command: --character-set-server=utf8mb4 --collation-server=utf8mb4_unicode_ci
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "127.0.0.1", "-uroot", "-p$$MYSQL_ROOT_PASSWORD"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  # 可选：任务执行进度广播/缓存走 Redis。默认内存实现即可跑；
+  # 启用后在「系统设置」把 data.redisUrl 配为 redis://redis:6379（服务端从 DB 设置读取，不读环境变量）。
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    volumes:
+      - redis-data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+volumes:
+  autotest-data:
+  autotest-workspace:
+  mysql-data:
+  redis-data:

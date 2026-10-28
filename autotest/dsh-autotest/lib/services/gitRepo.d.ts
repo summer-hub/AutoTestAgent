@@ -48,6 +48,7 @@ export declare function reconcileRepos(): Promise<number>;
 export declare function migrateRepoSubpaths(): Promise<number>;
 /** 在「可取消的 git 操作」上下文里执行 fn（任务 lane 取消时中断 clone/pull 等子进程）。 */
 export declare function withGitSignal<T>(signal: AbortSignal | undefined, fn: () => Promise<T>): Promise<T>;
+export declare function repoName(name: string): string;
 /**
  * 从仓库 URL 切出「仓库根 URL」与「库在仓库内的子目录」。
  *

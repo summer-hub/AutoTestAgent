@@ -4,6 +4,9 @@
 //  - 绑定脚本：workspace/hypium/<lib>/testcases/<lib>/<caseNo>.py；
 //    单用例执行 = python main.py <module> → 解析 reports/latest/result/<module>.xml 判定结果
 //  - 实时进度：plans.progress / progress_note 每步更新，前端轮询展示
+//  - B1 追溯：每次运行创建 test_runs + test_run_items（基线、用例版本快照），
+//    每条 executions 写 test_run_id/baseline_id/case_version/case_snapshot_json/actual_json。
+//    库无本地克隆时该库不参与基线追溯（执行照常，列留空并写明原因 —— 不伪造，向后兼容）。
 import fs from 'node:fs';
 import path from 'node:path';
 import { getDb, now } from '../db/connection.js';
@@ -12,14 +15,26 @@ import { getSetting } from './settings.js';
 import { ensureHypiumProject, hypiumProjectDir, hypiumCaseScriptPath, caseClassName } from './hypiumGen.js';
 import { detectPython, runHypiumModule, probePythons, describePythonProbe } from './hypiumRunner.js';
 import { recordScriptRun } from './scriptBinding.js';
+import { nextRunNo, resolveBaselineForRun, getBaselineDetail, type BaselineDetail } from './baseline.js';
+import { recordRunItemAssets } from './scenarioAssets.js';
 
 interface PlanRow {
   id: number; plan_no: string; name: string; type: string; cron: string | null;
   scope: string; device_ids: string; status: string; fail_policy: string;
+  baseline_id: number | null; baseline_mode: string;
   last_run_at: string | null; created_at: string; updated_at: string;
 }
 interface CaseRow {
   id: number; library_id: number; case_no: string; name: string; steps: string; status: string; library_name: string;
+}
+
+interface RunItemCtx {
+  itemId: number;
+  baselineId: number | null;
+  baselineNo: string;
+  commitSha: string;
+  libraryVersion: string;
+  resourceSetNo: string;
 }
 
 function realThinking(caseRow: CaseRow, status: 'passed' | 'failed', failLog: string): string {
@@ -58,6 +73,13 @@ export async function executePlan(planId: number): Promise<void> {
     // 否则计划永久停在 running，而前端每 2 秒轮询一个永远不会结束的状态。
     const reason = (e as Error)?.message || String(e);
     console.error(`[plan #${planId}] 执行异常：${reason}`);
+    // B1：本次运行期间创建的 test_runs / test_run_items 一并落终态（不留 running 悬挂）
+    try {
+      await db.prepare(`UPDATE test_run_items SET status='failed', error=?, finished_at=? WHERE run_id IN (SELECT id FROM test_runs WHERE plan_id=? AND status='running') AND status='running'`)
+        .run(reason.slice(0, 480), now(), planId);
+      await db.prepare(`UPDATE test_runs SET status='failed', error=?, finished_at=?, updated_at=? WHERE plan_id=? AND status='running'`)
+        .run(reason.slice(0, 990), now(), now(), planId);
+    } catch { /* 表未建等极端情况不掩盖原始异常 */ }
     await db.prepare(`UPDATE plans SET status='failed', error=?, progress=100, progress_note=?, updated_at=? WHERE id=?`)
       .run(reason.slice(0, 480), `失败：${reason.slice(0, 120)}`, now(), planId);
     throw e;
@@ -127,9 +149,6 @@ async function runPlanOnce(planId: number, plan: PlanRow, t: string): Promise<vo
   const failPolicy = plan.fail_policy || 'continue';
   const retryTimes = failPolicy === 'retry_twice' ? 2 : 0;
 
-  const insExec = db.prepare(`INSERT INTO executions (plan_id, case_id, library_id, device_id, status, steps, trace_id, thinking, logs, started_at, finished_at)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`);
-
   interface Item { row: CaseRow; scriptPath: string | null; moduleStem: string; projDir: string }
   const groups = new Map<string, Item[]>();
   for (const c of sample) {
@@ -153,21 +172,147 @@ async function runPlanOnce(planId: number, plan: PlanRow, t: string): Promise<vo
   let failed = 0;
   let skipped = 0;
 
+  // ---- B1：运行快照（test_runs + test_run_items + 用例版本快照）----
+  // feature.baseline 关闭或库无本地克隆时降级为旧行为（执行照常，追溯列留空并写明原因）。
+  const baselineEnabled = getSetting('feature.baseline', true);
+  const baselineMode = plan.baseline_mode || 'latest';
+  let testRunId: number | null = null;
+  let runNo = '';
+  const runItems = new Map<number, RunItemCtx>(); // library_id -> run item 上下文
+  const untracedLibs: string[] = [];
+  if (baselineEnabled && total > 0) {
+    runNo = await nextRunNo();
+    const insRun = await db.prepare(
+      `INSERT INTO test_runs (run_no, plan_id, trigger_kind, status, device_id, manifest_json, error, started_at, created_by, created_at, updated_at)
+       VALUES (?, ?, 'manual', 'running', ?, '{}', '', ?, 'plan', ?, ?)`,
+    ).run(runNo, planId, deviceId, t, t, t);
+    testRunId = Number(insRun.lastInsertRowid);
+
+    for (const [libName, items] of groups) {
+      const libId = items[0].row.library_id;
+      // 用例版本快照：运行开始时的 caseId -> current_version（运行中改用例不影响本次执行）
+      const caseVersions: Record<string, number> = {};
+      for (const it of items) {
+        const cv = await db.prepare('SELECT current_version AS v FROM cases WHERE id = ?').get<{ v: number }>(it.row.id);
+        if (cv && cv.v > 0) caseVersions[String(it.row.id)] = cv.v;
+      }
+      try {
+        const baseline = await resolveBaselineForRun(libId, baselineMode, plan.baseline_id);
+        const detail = await getBaselineDetail(baseline.id);
+        const libVersionRow = await db.prepare('SELECT current_version AS v FROM libraries WHERE id = ?').get<{ v: string }>(libId);
+        const insItem = await db.prepare(
+          `INSERT INTO test_run_items (run_id, library_id, baseline_id, commit_sha, repo_subpath, workspace_rel_dir, case_versions_json, status, error, started_at, finished_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, 'running', '', ?, NULL)`,
+        ).run(
+          testRunId, libId, baseline.id, detail?.commit_sha ?? '', baseline.repo_subpath,
+          `runs/${runNo}/${libName}`, JSON.stringify(caseVersions), t,
+        );
+        runItems.set(libId, {
+          itemId: Number(insItem.lastInsertRowid),
+          baselineId: baseline.id,
+          baselineNo: baseline.baseline_no,
+          commitSha: detail?.commit_sha ?? '',
+          libraryVersion: libVersionRow?.v ?? '',
+          resourceSetNo: '',
+        });
+        // B2：收集本次运行用例关联的场景资产 —— 资源集快照（版本/sha256）+ run_item_assets 登记
+        // feature.scenarioAssets 关闭时跳过（运行照常，只是资源不可追溯）。
+        if (getSetting('feature.scenarioAssets', true)) {
+          try {
+            const rs = await recordRunItemAssets(testRunId, Number(insItem.lastInsertRowid), libId, items.map((i) => i.row.id), runNo);
+            if (rs) {
+              const ctx0 = runItems.get(libId)!;
+              ctx0.resourceSetNo = rs.setNo;
+            }
+          } catch (e) {
+            // 资产登记失败不阻断执行 —— 但必须留痕（运行可继续，报告可查原因）
+            console.warn(`[plan #${planId}] 库 ${libName} 场景资产登记失败：${(e as Error).message}`);
+            await db.prepare(`UPDATE test_run_items SET error = ? WHERE id = ?`)
+              .run(`场景资产登记失败：${(e as Error).message}`.slice(0, 450), Number(insItem.lastInsertRowid));
+          }
+        }
+      } catch (e) {
+        // latest 模式下解析失败（典型：库未配置仓库/未克隆）不阻断执行 —— 追溯缺失但执行照常。
+        // fixed 模式是显式用户意图，失败必须让计划失败（在外层由 failPlan 兜底，这里先记录）。
+        const reason = (e as Error)?.message || String(e);
+        if (baselineMode === 'fixed') {
+          await failPlan(`固定基线解析失败（${libName}）：${reason}`);
+          await db.prepare(`UPDATE test_run_items SET status='failed', error=?, finished_at=? WHERE run_id=? AND status='running'`)
+            .run(`固定基线解析失败：${reason}`.slice(0, 480), now(), testRunId);
+          await db.prepare(`UPDATE test_runs SET status='failed', error=?, finished_at=?, updated_at=? WHERE id=?`)
+            .run(`固定基线解析失败：${reason}`.slice(0, 990), now(), now(), testRunId);
+          return;
+        }
+        untracedLibs.push(libName);
+        console.warn(`[plan #${planId}] 库 ${libName} 基线追溯跳过：${reason}`);
+      }
+    }
+  }
+
+  // ---- executions 写入（含 B1 追溯列）----
+  const caseMetaCache = new Map<number, { version: number | null; snapshotJson: string | null }>();
+  const caseMeta = async (caseId: number): Promise<{ version: number | null; snapshotJson: string | null }> => {
+    if (!caseMetaCache.has(caseId)) {
+      const row = await db.prepare(
+        `SELECT c.current_version AS v, cv.snapshot AS s FROM cases c
+         LEFT JOIN case_versions cv ON cv.case_id = c.id AND cv.version = c.current_version
+         WHERE c.id = ?`,
+      ).get<{ v: number | null; s: string | null }>(caseId);
+      caseMetaCache.set(caseId, row ? { version: row.v ?? null, snapshotJson: row.s ?? null } : { version: null, snapshotJson: null });
+    }
+    return caseMetaCache.get(caseId)!;
+  };
+
+  /** actual_json（设计 §6.6）：steps 可为整批 summary，但 result/baseline/caseVersion 必填。 */
+  const buildActualJson = (ctx: RunItemCtx | undefined, caseVersion: number | null, status: string, reason: string, steps: Array<Record<string, unknown>>, startedAt: string, finishedAt: string): string => {
+    return JSON.stringify({
+      schemaVersion: 1,
+      baseline: ctx ? { id: ctx.baselineId, no: ctx.baselineNo, commit: ctx.commitSha, version: ctx.libraryVersion } : null,
+      resourceSet: ctx && ctx.resourceSetNo ? { no: ctx.resourceSetNo } : null,
+      caseVersion,
+      device: { serial: deviceSerial },
+      startedAt,
+      finishedAt,
+      result: { status, reason },
+      steps,
+      untracedReason: ctx ? undefined : (baselineEnabled ? '库无本地克隆或基线解析失败，本次执行未纳入基线追溯' : '基线功能已关闭（feature.baseline=false）'),
+    });
+  };
+
+  const insExec = db.prepare(`INSERT INTO executions (plan_id, case_id, library_id, device_id, status, steps, trace_id,
+    test_run_id, run_item_id, baseline_id, case_version, case_snapshot_json, library_version, commit_sha, actual_json,
+    thinking, logs, started_at, finished_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`);
+
   for (const [libName, items] of groups) {
+    const libId = items[0].row.library_id;
+    const ctx = runItems.get(libId);
     const boundItems = items.filter((i) => i.scriptPath !== null);
     for (const item of items.filter((i) => i.scriptPath === null)) {
       done++;
       skipped++;
+      const meta = await caseMeta(item.row.id);
       await insExec.run(
         planId, item.row.id, item.row.library_id, deviceId, 'skipped',
         JSON.stringify([{ seq: 1, desc: '未绑定自动化脚本，跳过执行', status: 'skipped', durationMs: 0 }]),
         planTraceId,
+        testRunId, ctx?.itemId ?? null, ctx?.baselineId ?? null, meta.version, meta.snapshotJson,
+        ctx?.libraryVersion ?? '', ctx?.commitSha ?? '',
+        buildActualJson(ctx, meta.version, 'skipped', '未绑定自动化脚本', [{ seq: 1, desc: '未绑定自动化脚本', status: 'skipped' }], t, now()),
         '该用例尚未绑定自动化脚本（Python/Hypium）。请在任务页使用「用例转自动化脚本」生成，或在自动化脚本页手工新建 <用例编号>.py 后重试。',
         `[${t}] 设备 ${deviceSerial} · 用例 ${item.row.case_no} 跳过（未绑定脚本）`, t, now(),
       );
       await setProgress(2 + (done / total) * 95, `${done}/${total} · ${item.row.case_no} 跳过（未绑定脚本）`);
     }
-    if (boundItems.length === 0) continue;
+    if (boundItems.length === 0) {
+      // 全部未绑定脚本：该库无实际执行，run item 直接收口
+      if (ctx) {
+        try {
+          await db.prepare(`UPDATE test_run_items SET status='done', finished_at=? WHERE id=?`).run(now(), ctx.itemId);
+        } catch { /* 不影响执行结果 */ }
+      }
+      continue;
+    }
 
     const pkgRow = await db.prepare('SELECT package_name FROM libraries WHERE name = ?').get<{ package_name: string }>(libName);
     ensureHypiumProject({ name: libName, packageName: pkgRow?.package_name || libName }, deviceSerial);
@@ -184,10 +329,16 @@ async function runPlanOnce(planId: number, plan: PlanRow, t: string): Promise<vo
         attempts++;
       }
       const durationMs = Date.now() - t0;
+      const meta = await caseMeta(item.row.id);
+      const stepDesc = `运行 Hypium 脚本 ${item.moduleStem}.py${attempts > 1 ? `（重试 ${attempts - 1} 次）` : ''}`;
+      const stepsJson = [{ seq: 1, desc: stepDesc, status: result.status, durationMs }];
       await insExec.run(
         planId, item.row.id, item.row.library_id, deviceId, result.status,
-        JSON.stringify([{ seq: 1, desc: `运行 Hypium 脚本 ${item.moduleStem}.py${attempts > 1 ? `（重试 ${attempts - 1} 次）` : ''}`, status: result.status, durationMs }]),
+        JSON.stringify(stepsJson),
         planTraceId,
+        testRunId, ctx?.itemId ?? null, ctx?.baselineId ?? null, meta.version, meta.snapshotJson,
+        ctx?.libraryVersion ?? '', ctx?.commitSha ?? '',
+        buildActualJson(ctx, meta.version, result.status, result.status === 'failed' ? result.log.slice(0, 500) : '', stepsJson, t, now()),
         realThinking(item.row, result.status, result.log),
         [`[${now()}] 设备 ${deviceSerial} · ${item.row.case_no} · python main.py ${item.moduleStem}`, result.log].join('\n'),
         t, now(),
@@ -200,10 +351,14 @@ async function runPlanOnce(planId: number, plan: PlanRow, t: string): Promise<vo
         for (const rest of boundItems.slice(idx + 1)) {
           done++;
           skipped++;
+          const restMeta = await caseMeta(rest.row.id);
           await insExec.run(
             planId, rest.row.id, rest.row.library_id, deviceId, 'skipped',
             JSON.stringify([{ seq: 1, desc: '整库失败中止，跳过执行', status: 'skipped', durationMs: 0 }]),
             planTraceId,
+            testRunId, ctx?.itemId ?? null, ctx?.baselineId ?? null, restMeta.version, restMeta.snapshotJson,
+            ctx?.libraryVersion ?? '', ctx?.commitSha ?? '',
+            buildActualJson(ctx, restMeta.version, 'skipped', '整库失败中止', [{ seq: 1, desc: '整库失败中止', status: 'skipped' }], t, now()),
             '按失败策略 abort_library：该库已有失败用例，后续用例跳过。',
             `[${t}] 设备 ${deviceSerial} · 用例 ${rest.row.case_no} 跳过（整库中止）`, t, now(),
           );
@@ -212,9 +367,26 @@ async function runPlanOnce(planId: number, plan: PlanRow, t: string): Promise<vo
       }
       await setProgress(2 + (done / total) * 95, `${done}/${total} · ${item.row.case_no} ${result.status === 'passed' ? '通过' : '失败'}`);
     }
+    // 该库执行结束，收口 run item
+    if (ctx) {
+      try {
+        await db.prepare(`UPDATE test_run_items SET status='done', finished_at=? WHERE id=?`).run(now(), ctx.itemId);
+      } catch { /* 不影响执行结果 */ }
+    }
   }
 
+  // ---- B1：test_runs 收口 ----
+  if (testRunId) {
+    const manifest = {
+      planNo: plan.plan_no, baselineMode, untracedLibs,
+      runCopyCreated: false, // B1：Hypium 脚本直接跑 workspace/hypium，未从基线复制运行副本（B2 场景资源阶段引入）
+    };
+    await db.prepare(`UPDATE test_runs SET status='done', manifest_json=?, finished_at=?, updated_at=? WHERE id=?`)
+      .run(JSON.stringify(manifest), now(), now(), testRunId);
+  }
+
+  const traceNote = untracedLibs.length > 0 ? `；未纳入基线追溯：${untracedLibs.join('、')}` : '';
   await db.prepare(`UPDATE plans SET status='done', progress=100, progress_note=?, last_run_at=?, updated_at=? WHERE id=?`)
-    .run(`完成：通过 ${passed} / 失败 ${failed} / 跳过 ${skipped}（共 ${total} 条，真机 ${deviceSerial}）`, now(), planId);
-  console.log(`[plan #${planId}] ${plan.name} 执行完成：通过 ${passed} / 失败 ${failed} / 跳过 ${skipped}（真机 ${deviceSerial}）`);
+    .run(`完成：通过 ${passed} / 失败 ${failed} / 跳过 ${skipped}（共 ${total} 条，真机 ${deviceSerial}）${traceNote}`.slice(0, 280), now(), planId);
+  console.log(`[plan #${planId}] ${plan.name} 执行完成：通过 ${passed} / 失败 ${failed} / 跳过 ${skipped}（真机 ${deviceSerial}${runNo ? ` · run ${runNo}` : ''}）`);
 }

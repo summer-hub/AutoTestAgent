@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import type { Execution } from 'shared';
+import type { Baseline, Execution, TestRun } from 'shared';
 import { api } from '../api';
 import { taskWs } from '../ws';
 
@@ -13,6 +13,9 @@ export default function DebugPage() {
   const [answers, setAnswers] = useState<Array<{ q: string; a: string }>>([]);
   const [asking, setAsking] = useState(false);
   const [error, setError] = useState('');
+  // B1 追溯 chips：按选中执行记录懒加载基线/运行编号（列表行只带 id，编号要查详情）
+  const [baselineInfo, setBaselineInfo] = useState<Baseline | null>(null);
+  const [runInfo, setRunInfo] = useState<TestRun | null>(null);
   // B4：WS 实时通道状态（执行记录不在事件总线上，WS 在线时放宽兜底轮询 + 事件驱动刷新）
   const [wsOpen, setWsOpen] = useState(false);
   const wsDebounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -57,6 +60,18 @@ export default function DebugPage() {
     setAnswers([]);
   };
 
+  // B1：选中执行记录变化时懒加载追溯编号（BL-… / TR-…）；无追溯列（历史数据）保持 null
+  useEffect(() => {
+    setBaselineInfo(null);
+    setRunInfo(null);
+    if (selected?.baselineId) {
+      api.baseline(selected.baselineId).then(setBaselineInfo).catch(() => setBaselineInfo(null));
+    }
+    if (selected?.testRunId) {
+      api.testRun(selected.testRunId).then((r) => setRunInfo(r)).catch(() => setRunInfo(null));
+    }
+  }, [selected?.baselineId, selected?.testRunId]);
+
   const askAi = () => {
     const q = ask.trim();
     if (!q || !selected || asking) return;
@@ -67,6 +82,22 @@ export default function DebugPage() {
       // 不塞进回答气泡：那会让一段"追问失败"的提示看起来像 AI 的正常回复。
       .catch((e) => setError(`追问失败：${(e as Error).message}`))
       .finally(() => { setAsking(false); setAsk(''); });
+  };
+
+  // B3（设计 §9.1）：从执行建工单 —— 工单自动带 execution_id/run/baseline/用例版本链路
+  const [issueOpen, setIssueOpen] = useState(false);
+  const [issueSymptom, setIssueSymptom] = useState('');
+  const [issueSaving, setIssueSaving] = useState(false);
+  const [issueCreated, setIssueCreated] = useState('');
+
+  const createIssueFromExec = () => {
+    const symptom = issueSymptom.trim();
+    if (!selected || !symptom || issueSaving) return;
+    setIssueSaving(true);
+    api.issueCreate({ caseId: selected.caseId, symptom, executionId: selected.id })
+      .then((r) => { setError(''); setIssueCreated(r.ticketNo); setIssueSymptom(''); })
+      .catch((e) => setError(`建工单失败：${(e as Error).message}`))
+      .finally(() => setIssueSaving(false));
   };
 
   return (
@@ -113,7 +144,56 @@ export default function DebugPage() {
             <div className="card" style={{ padding: 0, overflow: 'hidden', display: 'flex', flexDirection: 'column' }}>
               <div className="card-h" style={{ padding: '10px 14px', marginBottom: 0, borderBottom: '1px solid var(--border)' }}>
                 <span className="t">🎬 执行轨迹 · {selected.caseNo}</span>
-                <span className="sub">{selected.libraryName} · 设备 {selected.deviceSerial ?? '—'}</span>
+                <span className="sub">
+                  {selected.libraryName} · 设备 {selected.deviceSerial ?? '—'}
+                  <button
+                    className="btn" style={{ marginLeft: 10, padding: '2px 10px', fontSize: 11.5 }}
+                    onClick={() => { setIssueOpen(!issueOpen); setIssueCreated(''); }}
+                    title="以此执行建工单：工单自动带基线/运行/用例版本链路（设计 §9.1）"
+                  >🐞 建工单</button>
+                </span>
+              </div>
+              {/* B3：从执行建工单（现象必填 —— 它是 AI 的分析对象） */}
+              {issueOpen && (
+                <div style={{ padding: '10px 14px', borderBottom: '1px solid var(--border)', background: 'var(--bg2)' }}>
+                  {issueCreated ? (
+                    <div style={{ fontSize: 12, color: 'var(--text2)' }}>
+                      ✅ 工单已创建：<span className="mono">{issueCreated}</span>（已绑定执行 #{selected.id}）—— 到「问题工单」页触发分析。
+                    </div>
+                  ) : (
+                    <div style={{ display: 'flex', gap: 8, alignItems: 'flex-start' }}>
+                      <textarea
+                        className="input" style={{ flex: 1, minHeight: 52, fontSize: 12.5, resize: 'vertical' }}
+                        placeholder="问题描述（必填）：观察到了什么现象？例如「点击播放后进度条不动」"
+                        value={issueSymptom} onChange={(e) => setIssueSymptom(e.target.value)}
+                      />
+                      <button className="btn primary" style={{ fontSize: 12 }} disabled={!issueSymptom.trim() || issueSaving} onClick={createIssueFromExec}>
+                        {issueSaving ? '创建中…' : '提交'}
+                      </button>
+                    </div>
+                  )}
+                </div>
+              )}
+              {/* B1 追溯 chips（设计 §11.5）：基线/commit/用例版本/运行编号；历史数据显示「未知」不伪造 */}
+              <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', padding: '8px 14px', borderBottom: '1px solid var(--border)', background: 'var(--bg2)' }}>
+                {selected.baselineId ? (
+                  <span className="tag blue" title={`基线 ${baselineInfo?.baselineNo ?? '#' + selected.baselineId} · ${baselineInfo?.versionLabel ?? ''}\n物理快照：${baselineInfo?.relDir ?? ''}`}>
+                    🧷 {baselineInfo?.baselineNo ?? `基线 #${selected.baselineId}`}（{(selected.commitSha || baselineInfo?.commitSha || '').slice(0, 8) || '?'}）
+                  </span>
+                ) : (
+                  <span className="tag gray" title="该执行创建于 B1 追溯上线前，或库未纳入基线追溯">基线：未知（历史数据）</span>
+                )}
+                {selected.caseVersion ? (
+                  <span className="tag purple">用例 V{selected.caseVersion}</span>
+                ) : (
+                  <span className="tag gray">用例版本：未知（历史数据）</span>
+                )}
+                {selected.libraryVersion && <span className="tag cyan">库 {selected.libraryVersion}</span>}
+                {selected.testRunId ? (
+                  <span className="tag plain">运行 {runInfo?.runNo ?? `#${selected.testRunId}`}</span>
+                ) : (
+                  <span className="tag gray">运行：未知（历史数据）</span>
+                )}
               </div>
               <div style={{ flex: 1, overflowY: 'auto', padding: '6px 8px', maxHeight: 380 }}>
                 {selected.steps.map((s, i) => (

@@ -128,7 +128,7 @@ async function runGit(args, cwd, timeoutMs = 180000) {
     });
     return stdout.trim();
 }
-function repoName(name) {
+export function repoName(name) {
     return name.replace(/[^\w.-]/g, '_');
 }
 /**

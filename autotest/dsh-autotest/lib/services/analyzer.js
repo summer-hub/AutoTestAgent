@@ -77,6 +77,12 @@ function mapPr(pr) {
         removed_lines: Number(pr.removed_lines) || 0,
         web_url: String(pr.html_url ?? pr.web_url ?? ''),
         files: [],
+        // B4 追踪字段（§7.2）：provider 给什么存什么，拿不到留空 —— 不反推、不编造
+        merge_commit_sha: String(pr.merge_commit_sha ?? '') || undefined,
+        head_sha: String(pr.head?.sha ?? pr.head_sha ?? '') || undefined,
+        base_branch: String(pr.base?.ref ?? pr.base_branch ?? '') || undefined,
+        head_branch: String(pr.head?.ref ?? pr.head_branch ?? '') || undefined,
+        author: String(pr.user?.login ?? pr.author ?? '') || undefined,
     };
 }
 /** 拉取单个 PR（含变更文件），供「选择 #PR 分析」使用。 */
@@ -158,6 +164,9 @@ export function fetchPrsFromGit(dir, opts = {}) {
             removed_lines: 0,
             web_url: '',
             files,
+            // B4：本地降级把提交 hash 记为 head_sha（provider='local' 时用它建 head 基线）；
+            // merge_commit_sha 留空 —— 本地提交不是合入提交，不冒充（§7.2）
+            head_sha: c.hash,
         });
     }
     return prs;

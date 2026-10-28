@@ -6,7 +6,9 @@
 //   - 状态回调：connecting / open / closed，供页面做「WS 优先 + 轮询兜底」切换；
 //   - 令牌：复用 api.ts 的 sessionStorage key（Authorization 同源）；WS 握手不支持
 //     自定义头，token 走 query 参数（服务端 /api/autotest/ws?token=）。
-import { getApiKey } from './api';
+//   - A3（设计 §13.2）：连接地址三档推导 —— runtime config 的 wsBase 优先 →
+//     apiBase 为绝对地址时推导协议+host → 回落当前页面 host；路径恒为 /api/autotest/ws。
+import { getApiBase, getApiKey, getRuntimeConfig } from './api';
 
 export type WsStatus = 'connecting' | 'open' | 'closed';
 
@@ -27,6 +29,32 @@ const WS_PATH = '/api/autotest/ws';
 const BACKOFF_MIN_MS = 1_000;
 const BACKOFF_MAX_MS = 30_000;
 
+/**
+ * 解析 WS 连接地址（A3 · 设计 §13.2）。
+ * 优先级：runtime config 的 wsBase（http(s):// 或 ws(s):// 均接受）→
+ * apiBase 为绝对 URL 时推导 wss/ws 协议 + host → 当前页面协议+host。
+ * 路径固定 WS_PATH；token 走 query（见类注释）。
+ */
+function resolveWsUrl(token: string): string {
+  const qs = token ? `?token=${encodeURIComponent(token)}` : '';
+  const wsBase = String(getRuntimeConfig().wsBase ?? '').trim();
+  if (wsBase) {
+    const withWsProto = /^wss?:\/\//i.test(wsBase)
+      ? wsBase
+      : wsBase.replace(/^https:\/\//i, 'wss://').replace(/^http:\/\//i, 'ws://');
+    return `${withWsProto.replace(/\/+$/, '')}${WS_PATH}${qs}`;
+  }
+  const apiBase = getApiBase();
+  if (/^https?:\/\//i.test(apiBase)) {
+    try {
+      const u = new URL(apiBase);
+      return `${u.protocol === 'https:' ? 'wss:' : 'ws:'}//${u.host}${WS_PATH}${qs}`;
+    } catch { /* 非法配置 → 回落当前页面 host */ }
+  }
+  const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
+  return `${proto}//${location.host}${WS_PATH}${qs}`;
+}
+
 export class TaskWsClient {
   private ws: WebSocket | null = null;
   private channels = new Set<string>();
@@ -43,9 +71,7 @@ export class TaskWsClient {
     this.emitStatus('connecting');
 
     const token = getApiKey();
-    const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
-    const qs = token ? `?token=${encodeURIComponent(token)}` : '';
-    const ws = new WebSocket(`${proto}//${location.host}${WS_PATH}${qs}`);
+    const ws = new WebSocket(resolveWsUrl(token));
     this.ws = ws;
 
     ws.onopen = () => {

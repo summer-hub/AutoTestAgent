@@ -23,6 +23,7 @@ import { injectForStage } from './knowledge.js';
 import { bindingTraceLine, resolveBinding } from './agentBinding.js';
 import { appendTrace } from './taskEvents.js';
 import { buildIssueContext, analyzeWithLlm, loadTicket, setTicketStatus, saveTicketRootCause, saveTicketVerification, } from './issueRoot.js';
+import { generateIssueReport } from './analysisReport.js';
 // ---------- 定向用例设计（write_cases）辅助 ----------
 const normKey = (s) => s.toLowerCase().replace(/[\s_\-./\\()（）]/g, '');
 /** 从任务输入提取关键词（中英文词元）。 */
@@ -232,6 +233,21 @@ async function analyzeIssue(task, llm, signal) {
     const verification = await verifyIssue(ctx, verdict, signal);
     await saveTicketVerification(ticketId, verification.record, verification.ok ? 'verifying' : 'failed', verification.error);
     await traceTask(task.id, verification.ok ? '自测试验证通过' : '自测试验证失败', verification.ok ? verification.summary : `${verification.summary}（${verification.error}）`);
+    // ③.5 B3：生成 Markdown 分析报告（设计 §9.6 —— 分析完成后生成）。
+    //   报告必须在「验证未通过也照常生成」：无真机时报告 §7 写「未验证：无在线真机」，
+    //   不伪造通过。开关关闭时跳过（不写文件）；生成失败不吞 —— 任务明确 failed 比静默缺报告好，
+    //   工单里根因/验证已落库，人可通过重生成路由补报告。
+    if (getSetting('feature.mdReport', true)) {
+        try {
+            const report = await generateIssueReport(ticketId, { createdBy: 'analyze_issue' });
+            await traceTask(task.id, '分析报告已生成', `${report.reportNo}（${report.mdPath}）`);
+        }
+        catch (e) {
+            const msg = `分析报告生成失败：${e.message}`;
+            await traceTask(task.id, '分析报告生成失败', msg.slice(0, 200));
+            throw new Error(msg);
+        }
+    }
     // ★ 自测试没做成（无真机 / 无判据 / 执行未通过）→ 任务必须失败并写明原因。
     //   绝不能 return 摘要让任务变成 done——那会让看任务列表的人以为一切顺利，
     //   而实际上什么都没验证过（假通过比失败更糟，既有纪律）。

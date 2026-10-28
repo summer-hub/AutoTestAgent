@@ -201,6 +201,10 @@ export interface Plan {
   status: PlanStatus;
   failPolicy: 'continue' | 'abort_library' | 'retry_twice';
   scriptMode?: string;        // 兼容保留（现版本计划固定直接执行绑定脚本）
+  /** B1：基线模式 —— latest=最新可用（默认，运行时懒创建）；fixed=固定基线；pr=PR 合入基线（B4） */
+  baselineMode?: 'latest' | 'fixed' | 'pr';
+  /** B1：fixed 模式绑定的基线 id（其它模式为 null） */
+  baselineId?: number | null;
   error?: string;             // 最近一次执行失败原因（设备未连接等）
   progress?: number;          // 执行进度 0-100
   progressNote?: string;      // 实时进度说明（如 12/30 · C-AI-005 通过）
@@ -208,6 +212,297 @@ export interface Plan {
   createdAt: string;
   updatedAt: string;
 }
+
+/** B1：测试基线（逻辑基线 = 物理快照 + 库子目录视角） */
+export interface Baseline {
+  id: number;
+  baselineNo: string;         // BL-YYYYMMDD-001
+  libraryId: number;
+  snapshotId: number;
+  repoSubpath: string;
+  versionLabel: string;
+  source: 'latest' | 'pr' | 'tag' | 'manual';
+  status: 'ready' | 'archived' | 'creating' | 'failed';
+  note: string;
+  createdBy: string;
+  commitSha: string;
+  repoUrl: string;
+  relDir: string;
+  snapshotStatus: string;
+  sizeBytes: number;
+  sourcePrId: number | null;
+  execCount: number;
+  referencedByPlan: boolean;
+  createdAt: string;
+  updatedAt: string;
+}
+
+/** B1：一次计划运行的快照（test_runs 行） */
+export interface TestRun {
+  id: number;
+  runNo: string;              // TR-YYYYMMDD-001
+  planId: number | null;
+  planNo: string;
+  planName: string;
+  triggerKind: 'manual' | 'schedule' | 'api';
+  status: 'pending' | 'running' | 'done' | 'failed';
+  deviceId: number | null;
+  manifest: Record<string, unknown> | null;
+  error: string;
+  startedAt: string | null;
+  finishedAt: string | null;
+  createdAt: string;
+}
+
+/** B1：一次运行中每库的目标（test_run_items 行） */
+export interface TestRunItem {
+  id: number;
+  runId: number;
+  libraryId: number;
+  libraryName: string;
+  baselineId: number | null;
+  baselineNo: string;
+  baselineLabel: string;
+  commitSha: string;
+  repoSubpath: string;
+  workspaceRelDir: string;
+  caseVersions: Record<string, number> | null;
+  status: string;
+  error: string;
+  startedAt: string | null;
+  finishedAt: string | null;
+}
+
+/** B1：运行详情（头部 + 每库 items） */
+export interface TestRunDetail extends TestRun {
+  items: TestRunItem[];
+}
+
+/** B2：场景资产类型（设计 §8.2 五类来源） */
+export type ScenarioAssetKind = 'onebox_link' | 'demo_page' | 'fixture' | 'config' | 'mixed';
+
+/** B2：资产适用场景 */
+export type ScenarioKind = 'happy' | 'empty' | 'boundary' | 'bigdata' | 'general';
+
+/** B2：场景资产（scenario_assets 行，列表视角含统计） */
+export interface ScenarioAsset {
+  id: number;
+  assetNo: string;             // SA-YYYYMMDD-001
+  libraryId: number;
+  libraryName: string;
+  title: string;
+  kind: ScenarioAssetKind;
+  scenarioKind: ScenarioKind;
+  uri: string;
+  entryHint: string;
+  configGuideMd: string;
+  compat: { minVersion?: string; maxVersion?: string; commit?: string } | null;
+  status: 'draft' | 'validated' | 'deprecated';
+  version: string;
+  sha256: string;
+  validation: { level?: string; checkedAt?: string; problems?: string[] } | null;
+  validatedAt: string | null;
+  fileCount: number;
+  caseCount: number;
+  createdAt: string;
+  updatedAt: string;
+}
+
+/** B2：场景资产文件（scenario_asset_files 行） */
+export interface ScenarioAssetFile {
+  id: number;
+  path: string;                // 资产内相对路径
+  sha256: string;
+  size: number;
+  role: string;                // page / fixture / config…
+  createdAt: string;
+}
+
+/** B2：资产版本史（scenario_asset_versions 行） */
+export interface ScenarioAssetVersion {
+  id: number;
+  version: string;
+  sha256: string;
+  note: string;
+  createdAt: string;
+}
+
+/** B2：资产关联的用例 */
+export interface ScenarioAssetCaseLink {
+  case_id: number;
+  case_no: string;
+  name: string;
+  role: string;
+}
+
+/** B2：资产关联的需求 */
+export interface ScenarioAssetRequirementLink {
+  requirement_id: number;
+  requirement_no: string;
+  title: string;
+}
+
+/** B2：资产的应用记录（run_item_assets 视角） */
+export interface ScenarioAssetRunRef {
+  run_item_id: number;
+  run_no: string;
+  asset_id: number;
+  version: string;
+  apply_status: string;        // recorded（登记制）/ applied / failed
+  created_at: string;
+}
+
+/** B2：场景资产详情 */
+export interface ScenarioAssetDetail extends ScenarioAsset {
+  files: ScenarioAssetFile[];
+  versions: ScenarioAssetVersion[];
+  cases: ScenarioAssetCaseLink[];
+  requirements: ScenarioAssetRequirementLink[];
+  runRefs: ScenarioAssetRunRef[];
+}
+
+/** B2：静态校验结果 */
+export interface ScenarioAssetValidation {
+  ok: boolean;
+  level: string;
+  problems: string[];
+  checks: Array<{ name: string; ok: boolean; detail?: string }>;
+}
+
+/** B2：资源集回查（test_resource_sets + items） */
+export interface ResourceSetDetail {
+  id: number;
+  setNo: string;               // RS-YYYYMMDD-001
+  libraryId: number;
+  name: string;
+  manifest: Record<string, unknown> | null;
+  createdAt: string;
+  items: Array<{
+    id: number;
+    kind: string;              // scenario_asset / test_resource
+    refId: number;
+    version: string;
+    role: string;
+    sha256: string;
+    createdAt: string;
+  }>;
+}
+
+/** B3：归因枚举（设计 §9.3，attribution 是主结论） */
+export type IssueAttribution = 'case_precondition' | 'demo' | 'library' | 'environment' | 'flaky' | 'unknown';
+
+/** B3：分析过程条目（设计 §9.4 —— 假设 → 检查 → 结论，报告第 4 节） */
+export interface IssueAnalysisStep {
+  hypothesis: string;
+  checked: string;
+  result: 'confirmed' | 'excluded' | 'uncertain';
+}
+
+/** B3：Markdown 分析报告（analysis_reports 行；正文不入 DTO，下载走 .md 接口） */
+export interface AnalysisReport {
+  id: number;
+  reportNo: string;            // RP-YYYYMMDD-001
+  kind: string;                // issue_root_cause（留扩展）
+  issueId: number | null;
+  executionId: number | null;
+  testRunId: number | null;
+  libraryId: number | null;
+  caseId: number | null;
+  baselineId: number | null;
+  title: string;
+  mdPath: string;              // 相对 workspace（reports/<lib>/<reportNo>.md）
+  contentHash: string;
+  createdBy: string;
+  createdAt: string;
+}
+
+/** B4：需求来源（设计 §7.1） */
+export type RequirementSource = 'manual' | 'onebox' | 'import';
+
+/** B4：需求行（requirements 表；只存 external_id + url + 验收点，不复制外部系统全文） */
+export interface Requirement {
+  id: number;
+  requirementNo: string;        // RQ-YYYYMMDD-NNN
+  externalId: string;
+  source: string;
+  title: string;
+  url: string;
+  primaryLibraryId: number | null;
+  status: string;               // active | done | closed | dropped
+  priority: string;
+  acceptanceMd: string;
+  owner: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+/** B4：需求列表项（统计现算：用例数/PR 数/最近失败/基线数） */
+export interface RequirementListItem extends Requirement {
+  caseCount: number;
+  prCount: number;
+  recentFailed: number;
+  baselineCount: number;
+}
+
+/** B4：需求详情（关联用例/PR/场景资产） */
+export interface RequirementDetail extends RequirementListItem {
+  cases: Array<{ id: number; caseNo: string; name: string; status: string; relation: string }>;
+  prs: Array<{ id: number; number: number; title: string; state: string }>;
+  scenarioAssets: Array<{ id: number; assetNo: string; title: string; kind: string }>;
+}
+
+/** B4：PR 派生测试状态（设计 §7.3：untested/testing/passed/failed/partial，不由 PR 表自维护） */
+export type PrDerivedStatus = 'untested' | 'testing' | 'passed' | 'failed' | 'partial';
+
+export interface PrTestStatus {
+  status: PrDerivedStatus;
+  baselineCount: number;
+  runItemCount: number;
+  executionCount: number;
+  passedCount: number;
+  failedCount: number;
+  lastRunAt: string;
+}
+
+/** B4：PR 行（pull_requests 表；merge_commit_sha 拿不到留空不编造） */
+export interface PrRecord {
+  id: number;
+  provider: string;
+  repoUrl: string;
+  number: number;
+  libraryId: number | null;
+  title: string;
+  state: string;
+  url: string;
+  baseBranch: string;
+  headBranch: string;
+  headSha: string;
+  mergeCommitSha: string;
+  mergedAt: string | null;
+  author: string;
+  bodyExcerpt: string;
+  filesJson: string;
+  syncedAt: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
+/** B4：PR 列表项（关联计数 + 派生测试状态） */
+export interface PrListItem extends PrRecord {
+  requirementCount: number;
+  caseCount: number;
+  baselineCount: number;
+  testStatus: PrTestStatus;
+}
+
+/** B4：PR 详情（关联需求/用例/基线） */
+export interface PrDetail extends PrListItem {
+  libraryName: string;
+  requirements: Array<{ id: number; requirementNo: string; title: string; status: string }>;
+  cases: Array<{ id: number; caseNo: string; name: string; basis: string }>;
+  baselines: Array<{ id: number; baselineNo: string; versionLabel: string; status: string; commitSha: string }>;
+}
+
 
 /** 执行步骤（调试会话轨迹） */
 export interface ExecutionStep {
@@ -228,6 +523,14 @@ export interface Execution {
   steps: ExecutionStep[];    // 执行轨迹
   thinking: string | null;   // AI 思考过程
   logs: string | null;
+  /** B1 追溯列（旧数据为 null —— 显示「未知（历史数据）」，不伪造） */
+  testRunId: number | null;  // 所属运行 TR-...
+  runItemId: number | null;
+  baselineId: number | null; // 基线 BL-...
+  caseVersion: number | null; // 用例版本快照
+  libraryVersion: string;
+  commitSha: string;
+  actualJson: string | null;  // 执行实际结果快照（设计 §6.6）
   startedAt: string | null;
   finishedAt: string | null;
 }

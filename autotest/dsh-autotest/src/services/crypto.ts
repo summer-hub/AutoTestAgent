@@ -29,20 +29,32 @@ const ALGO = 'aes-256-gcm';
 let cachedKey: Buffer | null = null;
 let keyHardened = false;
 
+/** 当前用户 SID（Windows）。whoami CSV 输出形如 "MACHINE\user","S-1-5-21-…"。 */
+function currentUserSid(): string {
+  try {
+    const out = execFileSync('whoami', ['/user', '/fo', 'csv', '/nh'], { encoding: 'utf8', windowsHide: true }).trim();
+    const m = out.match(/"(S-1-[^"]+)"/);
+    return m ? m[1] : '';
+  } catch { return ''; }
+}
+
 /**
  * 主密钥文件访问收敛。
  * POSIX：chmod 0600 真实生效；
  * Windows：NTFS 上 POSIX mode 是摆设（writeFileSync 的 mode 会被忽略成继承 ACL），
  *   必须用 icacls 断继承 + 只授予当前用户，否则同机其他用户可读主密钥 → 解密全部凭据。
+ *   必须按 **SID** 授权：按用户名授权在"机器名 == 用户名"的机器上会被 icacls 解析成
+ *   "MACHINE\:" 这种无效主体（本机曾中招：.master-key 无人可删，verify 脚本临时目录清理 EPERM）。
  *   icacls 不可用（被裁剪的系统）时尽力而为，由 masterKeyHardened() 暴露真实状态。
  */
 function hardenKeyFile(file: string): void {
   try { chmodSync(file, 0o600); } catch { /* Windows 上仅能置只读位，忽略 */ }
   if (process.platform !== 'win32') { keyHardened = true; return; }
   try {
-    const user = process.env.USERNAME ?? '';
-    if (!user) { keyHardened = false; return; }
-    execFileSync('icacls', [file, '/inheritance:r', '/grant:r', `${user}:(F)`], { windowsHide: true });
+    const sid = currentUserSid();
+    if (!sid) { keyHardened = false; return; }
+    // *SID 语法：显式按 SID 授权，绕开名字解析的歧义
+    execFileSync('icacls', [file, '/inheritance:r', '/grant:r', `*${sid}:(F)`], { windowsHide: true });
     keyHardened = true;
   } catch {
     keyHardened = false;

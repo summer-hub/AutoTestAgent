@@ -212,6 +212,15 @@ CREATE TABLE IF NOT EXISTS issue_tickets (
   verdict_at VARCHAR(32) NULL,
   knowledge_id VARCHAR(64) NOT NULL DEFAULT '',
   task_id BIGINT UNSIGNED NULL,
+  execution_id BIGINT UNSIGNED NULL,
+  test_run_id BIGINT UNSIGNED NULL,
+  run_item_id BIGINT UNSIGNED NULL,
+  baseline_id BIGINT UNSIGNED NULL,
+  case_version INT NULL,
+  attribution VARCHAR(24) NOT NULL DEFAULT 'unknown',
+  attribution_reason VARCHAR(500) NOT NULL DEFAULT '',
+  input_snapshot_json MEDIUMTEXT NULL,
+  report_id BIGINT UNSIGNED NULL,
   error VARCHAR(1000) NOT NULL DEFAULT '',
   created_at VARCHAR(32) NOT NULL,
   updated_at VARCHAR(32) NOT NULL,
@@ -219,6 +228,8 @@ CREATE TABLE IF NOT EXISTS issue_tickets (
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 CREATE INDEX idx_issue_tickets_case ON issue_tickets(case_id, status);
 CREATE INDEX idx_issue_tickets_lib ON issue_tickets(library_id, status);
+CREATE INDEX idx_issue_tickets_exec ON issue_tickets(execution_id);
+CREATE INDEX idx_issue_tickets_attr ON issue_tickets(attribution);
 
 -- 用例 ↔ 接口符号的关联（P11）：一条用例可能覆盖多个接口，一个接口也需要多条用例
 -- （正向/空值/边界/大数据），单列 cases.api_symbol_id 表达不了这种多对多。
@@ -291,6 +302,8 @@ CREATE TABLE IF NOT EXISTS plans (
   progress INT NOT NULL DEFAULT 0,
   progress_note VARCHAR(300) NOT NULL DEFAULT '',
   error VARCHAR(500) NOT NULL DEFAULT '',
+  baseline_id BIGINT UNSIGNED NULL,
+  baseline_mode VARCHAR(16) NOT NULL DEFAULT 'latest',
   last_run_at VARCHAR(32) NULL,
   created_at VARCHAR(32) NOT NULL,
   updated_at VARCHAR(32) NOT NULL,
@@ -299,6 +312,8 @@ CREATE TABLE IF NOT EXISTS plans (
 CREATE INDEX idx_plans_status ON plans(status);
 
 -- 执行记录（含调试轨迹 / AI 思考）
+-- B1 追溯列：test_run_id/run_item_id/baseline_id/case_version/case_snapshot_json/library_version/commit_sha/actual_json。
+-- 旧数据允许 NULL（UI 显示「未知（历史数据）」，绝不反推伪造）。
 CREATE TABLE IF NOT EXISTS executions (
   id BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
   plan_id BIGINT UNSIGNED NULL,
@@ -308,6 +323,14 @@ CREATE TABLE IF NOT EXISTS executions (
   status VARCHAR(16) NOT NULL DEFAULT 'pending',
   steps MEDIUMTEXT NOT NULL,
   trace_id VARCHAR(64) NOT NULL DEFAULT '',
+  test_run_id BIGINT UNSIGNED NULL,
+  run_item_id BIGINT UNSIGNED NULL,
+  baseline_id BIGINT UNSIGNED NULL,
+  case_version INT NULL,
+  case_snapshot_json MEDIUMTEXT NULL,
+  library_version VARCHAR(64) NOT NULL DEFAULT '',
+  commit_sha VARCHAR(64) NOT NULL DEFAULT '',
+  actual_json MEDIUMTEXT NULL,
   thinking MEDIUMTEXT NULL,
   logs MEDIUMTEXT NULL,
   started_at VARCHAR(32) NULL,
@@ -316,6 +339,8 @@ CREATE TABLE IF NOT EXISTS executions (
 CREATE INDEX idx_executions_plan ON executions(plan_id);
 CREATE INDEX idx_executions_case ON executions(case_id);
 CREATE INDEX idx_executions_status ON executions(status);
+CREATE INDEX idx_executions_baseline ON executions(baseline_id);
+CREATE INDEX idx_executions_run ON executions(test_run_id);
 
 -- 执行归档（旧记录按月归档，主表保持小；由 scheduler 每日触发）
 -- ⚠️ 列必须与 executions 一一对应：归档用列名显式 INSERT..SELECT，
@@ -331,6 +356,14 @@ CREATE TABLE IF NOT EXISTS executions_archive (
   trace_id VARCHAR(64) NOT NULL DEFAULT '',
   env_run_id BIGINT UNSIGNED NULL,
   resource_set_id BIGINT UNSIGNED NULL,
+  test_run_id BIGINT UNSIGNED NULL,
+  run_item_id BIGINT UNSIGNED NULL,
+  baseline_id BIGINT UNSIGNED NULL,
+  case_version INT NULL,
+  case_snapshot_json MEDIUMTEXT NULL,
+  library_version VARCHAR(64) NOT NULL DEFAULT '',
+  commit_sha VARCHAR(64) NOT NULL DEFAULT '',
+  actual_json MEDIUMTEXT NULL,
   thinking MEDIUMTEXT NULL,
   logs MEDIUMTEXT NULL,
   started_at VARCHAR(32) NULL,
@@ -429,6 +462,10 @@ CREATE TABLE IF NOT EXISTS analyses (
   title VARCHAR(255) NOT NULL DEFAULT '',
   content MEDIUMTEXT NOT NULL,
   round VARCHAR(48) NOT NULL DEFAULT '',
+  pr_id BIGINT UNSIGNED NULL,
+  baseline_id BIGINT UNSIGNED NULL,
+  execution_ids_json MEDIUMTEXT NULL,
+  report_id BIGINT UNSIGNED NULL,
   created_at VARCHAR(32) NOT NULL
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 CREATE INDEX idx_analyses_kind ON analyses(kind, granularity);
@@ -738,6 +775,312 @@ CREATE TABLE IF NOT EXISTS readme_intel (
   created_at VARCHAR(32) NOT NULL,
   KEY idx_readme_intel_lib (library_id, kind, status)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+-- ============================================================
+-- B1/B2/B3/B4：测试基线与执行追溯（设计：docs/设计-独立版产品化与测试基线追溯.md）
+-- 全部为增量表：CREATE IF NOT EXISTS；旧版本二进制可忽略。
+-- ============================================================
+
+-- B4：需求主档（OneBox / 手工 / 导入）。只存 external_id + url + 验收点，不复制外部系统全文。
+CREATE TABLE IF NOT EXISTS requirements (
+  id BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+  requirement_no VARCHAR(64) NOT NULL,
+  external_id VARCHAR(128) NOT NULL DEFAULT '',
+  source VARCHAR(24) NOT NULL DEFAULT 'manual',
+  title VARCHAR(255) NOT NULL,
+  url VARCHAR(1024) NOT NULL DEFAULT '',
+  primary_library_id BIGINT UNSIGNED NULL,
+  status VARCHAR(24) NOT NULL DEFAULT 'active',
+  priority VARCHAR(8) NOT NULL DEFAULT 'P1',
+  acceptance_md MEDIUMTEXT NOT NULL,
+  owner VARCHAR(64) NOT NULL DEFAULT '',
+  created_at VARCHAR(32) NOT NULL,
+  updated_at VARCHAR(32) NOT NULL,
+  UNIQUE KEY uk_requirements_no (requirement_no),
+  UNIQUE KEY uk_requirements_ext (source, external_id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+CREATE INDEX idx_requirements_lib ON requirements(primary_library_id);
+CREATE INDEX idx_requirements_status ON requirements(status);
+
+-- B4：需求 ↔ 用例多对多
+CREATE TABLE IF NOT EXISTS requirement_cases (
+  requirement_id BIGINT UNSIGNED NOT NULL,
+  case_id BIGINT UNSIGNED NOT NULL,
+  relation VARCHAR(16) NOT NULL DEFAULT 'covers',
+  created_at VARCHAR(32) NOT NULL,
+  UNIQUE KEY uk_requirement_cases (requirement_id, case_id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+CREATE INDEX idx_requirement_cases_case ON requirement_cases(case_id);
+
+-- B4：PR 实体（状态、分支、head/merge commit）。merge_commit_sha 是基线创建的关键。
+CREATE TABLE IF NOT EXISTS pull_requests (
+  id BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+  provider VARCHAR(16) NOT NULL,
+  repo_url VARCHAR(512) NOT NULL,
+  number INT NOT NULL,
+  library_id BIGINT UNSIGNED NULL,
+  title VARCHAR(512) NOT NULL DEFAULT '',
+  state VARCHAR(16) NOT NULL DEFAULT 'unknown',
+  url VARCHAR(1024) NOT NULL DEFAULT '',
+  base_branch VARCHAR(128) NOT NULL DEFAULT '',
+  head_branch VARCHAR(128) NOT NULL DEFAULT '',
+  head_sha VARCHAR(64) NOT NULL DEFAULT '',
+  merge_commit_sha VARCHAR(64) NOT NULL DEFAULT '',
+  merged_at VARCHAR(32) NULL,
+  author VARCHAR(128) NOT NULL DEFAULT '',
+  body_excerpt MEDIUMTEXT NOT NULL,
+  files_json MEDIUMTEXT NOT NULL,
+  synced_at VARCHAR(32) NULL,
+  created_at VARCHAR(32) NOT NULL,
+  updated_at VARCHAR(32) NOT NULL,
+  UNIQUE KEY uk_pull_requests (provider, repo_url, number)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+CREATE INDEX idx_pr_library_state ON pull_requests(library_id, state);
+CREATE INDEX idx_pr_merge_sha ON pull_requests(merge_commit_sha);
+
+-- B4：PR ↔ 受影响库（单体仓一个 PR 影响多个库）
+CREATE TABLE IF NOT EXISTS pr_libraries (
+  pr_id BIGINT UNSIGNED NOT NULL,
+  library_id BIGINT UNSIGNED NOT NULL,
+  relation VARCHAR(16) NOT NULL DEFAULT 'affects',
+  created_at VARCHAR(32) NOT NULL,
+  UNIQUE KEY uk_pr_libraries (pr_id, library_id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+-- B4：PR ↔ 需求
+CREATE TABLE IF NOT EXISTS pr_requirements (
+  pr_id BIGINT UNSIGNED NOT NULL,
+  requirement_id BIGINT UNSIGNED NOT NULL,
+  created_at VARCHAR(32) NOT NULL,
+  UNIQUE KEY uk_pr_requirements (pr_id, requirement_id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+-- B4：PR ↔ 受影响用例（basis：file=按 PR 改动文件覆盖 / manual=人工关联）
+CREATE TABLE IF NOT EXISTS pr_cases (
+  pr_id BIGINT UNSIGNED NOT NULL,
+  case_id BIGINT UNSIGNED NOT NULL,
+  basis VARCHAR(16) NOT NULL DEFAULT 'manual',
+  created_at VARCHAR(32) NOT NULL,
+  UNIQUE KEY uk_pr_cases (pr_id, case_id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+CREATE INDEX idx_pr_cases_case ON pr_cases(case_id);
+
+-- B1：物理快照 —— 每仓库每 commit 一份只读检出（git worktree --detach）。
+-- ready 后只读不变量：任何构建/补丁/场景资源写入 runs 副本，绝不写基线。
+CREATE TABLE IF NOT EXISTS repo_snapshots (
+  id BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+  repo_url VARCHAR(512) NOT NULL,
+  commit_sha VARCHAR(64) NOT NULL,
+  rel_dir VARCHAR(512) NOT NULL,
+  version_label VARCHAR(64) NOT NULL DEFAULT '',
+  source VARCHAR(16) NOT NULL,
+  source_pr_id BIGINT UNSIGNED NULL,
+  status VARCHAR(16) NOT NULL DEFAULT 'creating',
+  size_bytes BIGINT NOT NULL DEFAULT 0,
+  metadata_json MEDIUMTEXT NOT NULL,
+  error VARCHAR(1000) NOT NULL DEFAULT '',
+  created_by VARCHAR(64) NOT NULL DEFAULT '',
+  created_at VARCHAR(32) NOT NULL,
+  updated_at VARCHAR(32) NOT NULL,
+  UNIQUE KEY uk_repo_snapshots (repo_url, commit_sha)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+CREATE INDEX idx_repo_snapshots_status ON repo_snapshots(status);
+CREATE INDEX idx_repo_snapshots_pr ON repo_snapshots(source_pr_id);
+
+-- B1：逻辑基线 —— 每库引用一个物理快照 + repo_subpath。
+-- 单体仓同一 commit 下 N 个库 = 1 份物理目录 + N 条逻辑基线。
+CREATE TABLE IF NOT EXISTS test_baselines (
+  id BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+  baseline_no VARCHAR(64) NOT NULL,
+  snapshot_id BIGINT UNSIGNED NOT NULL,
+  library_id BIGINT UNSIGNED NOT NULL,
+  repo_subpath VARCHAR(512) NOT NULL DEFAULT '',
+  version_label VARCHAR(64) NOT NULL DEFAULT '',
+  source VARCHAR(16) NOT NULL,
+  status VARCHAR(16) NOT NULL DEFAULT 'creating',
+  note VARCHAR(500) NOT NULL DEFAULT '',
+  created_by VARCHAR(64) NOT NULL DEFAULT '',
+  created_at VARCHAR(32) NOT NULL,
+  updated_at VARCHAR(32) NOT NULL,
+  UNIQUE KEY uk_test_baselines_no (baseline_no),
+  UNIQUE KEY uk_test_baselines (snapshot_id, library_id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+CREATE INDEX idx_test_baselines_lib ON test_baselines(library_id, status);
+
+-- B1：基线包含的 PR（主 PR source / 批量合入 included）
+CREATE TABLE IF NOT EXISTS baseline_prs (
+  baseline_id BIGINT UNSIGNED NOT NULL,
+  pr_id BIGINT UNSIGNED NOT NULL,
+  relation VARCHAR(16) NOT NULL DEFAULT 'source',
+  created_at VARCHAR(32) NOT NULL,
+  UNIQUE KEY uk_baseline_prs (baseline_id, pr_id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+-- B1：一次计划运行的快照（test_runs + test_run_items + executions 快照三层之一）
+CREATE TABLE IF NOT EXISTS test_runs (
+  id BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+  run_no VARCHAR(64) NOT NULL,
+  plan_id BIGINT UNSIGNED NULL,
+  trigger_kind VARCHAR(16) NOT NULL DEFAULT 'manual',
+  status VARCHAR(16) NOT NULL DEFAULT 'pending',
+  device_id BIGINT UNSIGNED NULL,
+  env_run_id BIGINT UNSIGNED NULL,
+  resource_set_id BIGINT UNSIGNED NULL,
+  manifest_json MEDIUMTEXT NOT NULL,
+  error VARCHAR(1000) NOT NULL DEFAULT '',
+  started_at VARCHAR(32) NULL,
+  finished_at VARCHAR(32) NULL,
+  created_by VARCHAR(64) NOT NULL DEFAULT '',
+  created_at VARCHAR(32) NOT NULL,
+  updated_at VARCHAR(32) NOT NULL,
+  UNIQUE KEY uk_test_runs_no (run_no)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+CREATE INDEX idx_test_runs_plan ON test_runs(plan_id, status);
+CREATE INDEX idx_test_runs_created ON test_runs(created_at);
+
+-- B1：一次运行中每库的目标（基线、用例版本快照、运行副本目录）
+CREATE TABLE IF NOT EXISTS test_run_items (
+  id BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+  run_id BIGINT UNSIGNED NOT NULL,
+  library_id BIGINT UNSIGNED NOT NULL,
+  baseline_id BIGINT UNSIGNED NOT NULL,
+  commit_sha VARCHAR(64) NOT NULL DEFAULT '',
+  repo_subpath VARCHAR(512) NOT NULL DEFAULT '',
+  workspace_rel_dir VARCHAR(512) NOT NULL DEFAULT '',
+  case_versions_json MEDIUMTEXT NOT NULL,
+  resource_set_id BIGINT UNSIGNED NULL,
+  env_run_id BIGINT UNSIGNED NULL,
+  status VARCHAR(16) NOT NULL DEFAULT 'pending',
+  error VARCHAR(1000) NOT NULL DEFAULT '',
+  started_at VARCHAR(32) NULL,
+  finished_at VARCHAR(32) NULL,
+  UNIQUE KEY uk_test_run_items (run_id, library_id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+CREATE INDEX idx_test_run_items_lib ON test_run_items(library_id, baseline_id);
+
+-- B2：场景扩展资产（OneBox 链接 / 本地 .ets 页面 / fixture / 配置指导 / 组合）
+CREATE TABLE IF NOT EXISTS scenario_assets (
+  id BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+  asset_no VARCHAR(64) NOT NULL,
+  library_id BIGINT UNSIGNED NOT NULL,
+  title VARCHAR(255) NOT NULL,
+  kind VARCHAR(24) NOT NULL,
+  scenario_kind VARCHAR(16) NOT NULL DEFAULT 'general',
+  uri VARCHAR(1024) NOT NULL DEFAULT '',
+  rel_dir VARCHAR(512) NOT NULL DEFAULT '',
+  entry_hint VARCHAR(512) NOT NULL DEFAULT '',
+  config_guide_md MEDIUMTEXT NOT NULL,
+  compat_json MEDIUMTEXT NOT NULL,
+  status VARCHAR(16) NOT NULL DEFAULT 'draft',
+  version VARCHAR(32) NOT NULL DEFAULT '1',
+  sha256 CHAR(64) NOT NULL DEFAULT '',
+  validation_json MEDIUMTEXT NOT NULL,
+  validated_at VARCHAR(32) NULL,
+  created_by VARCHAR(64) NOT NULL DEFAULT '',
+  created_at VARCHAR(32) NOT NULL,
+  updated_at VARCHAR(32) NOT NULL,
+  UNIQUE KEY uk_scenario_assets_no (asset_no)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+CREATE INDEX idx_scenario_assets_lib ON scenario_assets(library_id, kind, scenario_kind);
+CREATE INDEX idx_scenario_assets_status ON scenario_assets(status);
+
+-- B2：场景资产 ↔ 用例
+CREATE TABLE IF NOT EXISTS scenario_asset_cases (
+  asset_id BIGINT UNSIGNED NOT NULL,
+  case_id BIGINT UNSIGNED NOT NULL,
+  role VARCHAR(16) NOT NULL DEFAULT 'precondition',
+  created_at VARCHAR(32) NOT NULL,
+  UNIQUE KEY uk_scenario_asset_cases (asset_id, case_id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+-- B2：场景资产 ↔ 需求
+CREATE TABLE IF NOT EXISTS scenario_asset_requirements (
+  asset_id BIGINT UNSIGNED NOT NULL,
+  requirement_id BIGINT UNSIGNED NOT NULL,
+  created_at VARCHAR(32) NOT NULL,
+  UNIQUE KEY uk_scenario_asset_reqs (asset_id, requirement_id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+-- B2：本地资产文件清单（带 sha256；上传安全：路径逐段剔除 ..）
+CREATE TABLE IF NOT EXISTS scenario_asset_files (
+  id BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+  asset_id BIGINT UNSIGNED NOT NULL,
+  rel_path VARCHAR(512) NOT NULL,
+  sha256 CHAR(64) NOT NULL DEFAULT '',
+  size BIGINT NOT NULL DEFAULT 0,
+  role VARCHAR(16) NOT NULL DEFAULT 'page',
+  created_at VARCHAR(32) NOT NULL,
+  UNIQUE KEY uk_scenario_asset_files (asset_id, rel_path)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+-- B2：资产版本史
+CREATE TABLE IF NOT EXISTS scenario_asset_versions (
+  id BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+  asset_id BIGINT UNSIGNED NOT NULL,
+  version VARCHAR(32) NOT NULL,
+  sha256 CHAR(64) NOT NULL DEFAULT '',
+  manifest_json MEDIUMTEXT NOT NULL,
+  note VARCHAR(500) NOT NULL DEFAULT '',
+  created_at VARCHAR(32) NOT NULL,
+  UNIQUE KEY uk_scenario_asset_versions (asset_id, version)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+-- B2：资源集合 —— 一次运行使用的资源（fixture / 场景资产）整体版本化
+CREATE TABLE IF NOT EXISTS test_resource_sets (
+  id BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+  set_no VARCHAR(64) NOT NULL,
+  library_id BIGINT UNSIGNED NOT NULL,
+  name VARCHAR(255) NOT NULL,
+  manifest_json MEDIUMTEXT NOT NULL,
+  created_at VARCHAR(32) NOT NULL,
+  updated_at VARCHAR(32) NOT NULL,
+  UNIQUE KEY uk_test_resource_sets (set_no)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+-- B2：资源集合明细。kind：test_resource（现有 fixture）/ scenario_asset
+CREATE TABLE IF NOT EXISTS test_resource_set_items (
+  id BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+  set_id BIGINT UNSIGNED NOT NULL,
+  kind VARCHAR(24) NOT NULL,
+  ref_id BIGINT UNSIGNED NOT NULL,
+  version VARCHAR(32) NOT NULL DEFAULT '',
+  role VARCHAR(16) NOT NULL DEFAULT '',
+  sha256 CHAR(64) NOT NULL DEFAULT '',
+  created_at VARCHAR(32) NOT NULL,
+  UNIQUE KEY uk_test_resource_set_items (set_id, kind, ref_id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+-- B2：运行副本实际应用的资产/版本（回查"这次失败是不是资源换了版本"）
+CREATE TABLE IF NOT EXISTS run_item_assets (
+  run_item_id BIGINT UNSIGNED NOT NULL,
+  asset_id BIGINT UNSIGNED NOT NULL,
+  version VARCHAR(32) NOT NULL DEFAULT '',
+  apply_status VARCHAR(16) NOT NULL DEFAULT 'pending',
+  manifest_json MEDIUMTEXT NOT NULL,
+  created_at VARCHAR(32) NOT NULL,
+  UNIQUE KEY uk_run_item_assets (run_item_id, asset_id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+-- B3：Markdown 分析报告索引（正文同时入库；文件在 workspace/reports/<lib>/<reportNo>.md）
+CREATE TABLE IF NOT EXISTS analysis_reports (
+  id BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+  report_no VARCHAR(64) NOT NULL,
+  kind VARCHAR(24) NOT NULL,
+  issue_id BIGINT UNSIGNED NULL,
+  execution_id BIGINT UNSIGNED NULL,
+  test_run_id BIGINT UNSIGNED NULL,
+  library_id BIGINT UNSIGNED NULL,
+  case_id BIGINT UNSIGNED NULL,
+  baseline_id BIGINT UNSIGNED NULL,
+  title VARCHAR(255) NOT NULL,
+  md_path VARCHAR(1024) NOT NULL,
+  content_hash CHAR(64) NOT NULL,
+  content MEDIUMTEXT NOT NULL,
+  created_by VARCHAR(64) NOT NULL DEFAULT '',
+  created_at VARCHAR(32) NOT NULL,
+  UNIQUE KEY uk_analysis_reports_no (report_no)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+CREATE INDEX idx_analysis_reports_lib ON analysis_reports(library_id, created_at);
 `;
 
 /** 建表语句拆分（MySQL 不允许一条 query 跑多语句）。 */

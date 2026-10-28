@@ -1,22 +1,28 @@
 import { useCallback, useEffect, useState } from 'react';
 import { api } from '../api';
 import KnowledgePage from '../views/Knowledge';
+import ScenarioAssetsView from '../views/ScenarioAssets';
+import RequirementsView from '../views/Requirements';
 
 /**
- * 资产页（R8 Phase 2a）—— 平台沉淀的可复用资产，一个页面 4 个 Tab。
+ * 资产页（R8 Phase 2a）—— 平台沉淀的可复用资产，一个页面 5 个 Tab。
  *
  * 产品动机：预设方案 / 脚本资产 / 测试资源这三项能力 R1/R2 就建好了
  * （GET /survey/presets、/env/scripts、/resources 都有），但前端一直没给入口，
  * 用户根本不知道它们存在。这里补上门，并把知识库并入同一区——
  * 四者的共性都是"平台攒下来的、可复用的东西"。
+ * B2（设计 §8/§11.6）新增「场景资产」：demo 页面 / OneBox 链接 / fixture / 配置指导，
+ * 与「测试资源」（数据类）分工：一个管场景，一个管数据。
  */
-type Tab = 'knowledge' | 'presets' | 'scripts' | 'resources';
+type Tab = 'knowledge' | 'presets' | 'scripts' | 'resources' | 'scenario' | 'requirements';
 
 const TABS: Array<{ key: Tab; label: string; icon: string }> = [
   { key: 'knowledge', label: '知识', icon: '📖' },
   { key: 'presets', label: '预设方案', icon: '📋' },
   { key: 'scripts', label: '脚本资产', icon: '🧰' },
   { key: 'resources', label: '测试资源', icon: '📦' },
+  { key: 'scenario', label: '场景资产', icon: '🧩' },
+  { key: 'requirements', label: '需求', icon: '📌' },
 ];
 
 export default function AssetsPage() {
@@ -26,8 +32,8 @@ export default function AssetsPage() {
     <>
       <div className="page-title">资产</div>
       <div className="page-desc">
-        平台沉淀的可复用资产 —— 知识条目、按库类别的预设方案、环境脚本资产、测试资源。
-        这四类是"用得越久越值钱"的部分：每次人工确认的结论都会沉淀到这里。
+        平台沉淀的可复用资产 —— 知识条目、按库类别的预设方案、环境脚本资产、测试资源、场景资产。
+        这些是"用得越久越值钱"的部分：每次人工确认的结论都会沉淀到这里。
       </div>
 
       <div className="ws-tabs" style={{ borderBottom: '1px solid var(--border)', marginBottom: 14 }}>
@@ -47,6 +53,8 @@ export default function AssetsPage() {
       {tab === 'presets' && <PresetsTab />}
       {tab === 'scripts' && <ScriptsTab />}
       {tab === 'resources' && <ResourcesTab />}
+      {tab === 'scenario' && <ScenarioAssetsView />}
+      {tab === 'requirements' && <RequirementsView />}
     </>
   );
 }

@@ -23,6 +23,15 @@ import { getDb, now } from '../db/connection.js';
 import { llmJson } from './llmCore.js';
 import { inspectRepo, pullRepo, workspaceDir } from './gitRepo.js';
 import { loadStoredSymbols } from './apiExtract.js';
+export const ATTRIBUTIONS = ['case_precondition', 'demo', 'library', 'environment', 'flaky', 'unknown'];
+export const ATTRIBUTION_LABELS = {
+    case_precondition: '用例预置条件',
+    demo: 'Demo 工程',
+    library: '库本身',
+    environment: '环境（设备/工具链）',
+    flaky: '不稳定（flaky）',
+    unknown: '不确定',
+};
 /** 源码/日志的读取上限（防巨型仓库撑爆 prompt）。 */
 const MAX_CODE_CHARS = 16000;
 const MAX_EXPLORE_CHARS = 6000;
@@ -221,7 +230,7 @@ function latestExploreForLib(libName) {
 const ROOT_CAUSE_SYSTEM = [
     '你是鸿蒙三方库的"问题根因定位"Agent。输入是一条测试用例、人观察到的**问题现象**，',
     '以及工程的真实上下文（源码 / 真机遍历 dump / 接口签名 / 执行日志 / README）。',
-    '你要给出根因假设、可回查的证据、修复建议。',
+    '你要给出归因结论、可回查的证据、排除过程、修复建议。',
     '',
     '硬性纪律（违反即作废）：',
     '① 不臆造——证据必须来自给定上下文。上下文里没有的信息，写进 uncertainties 问人，',
@@ -230,8 +239,18 @@ const ROOT_CAUSE_SYSTEM = [
     '   禁止"可能是兼容性问题""建议检查代码"这类无法验证的废话；',
     '③ 没有证据就不给高置信度：evidence 为空时 confidence 不得超过 40；',
     '④ 修复建议必须具体到动作（改哪个文件、加什么判断、补什么判据）；',
-    '⑤ 只输出 JSON，不要解释、不要围栏。',
+    '⑤ attribution 归因只能取枚举值：case_precondition（用例预置条件问题）/ demo（demo 工程问题）/',
+    '   library（库本身缺陷）/ environment（设备/工具链环境）/ flaky（时好时坏）/ unknown（证据不足），',
+    '   拿不准就 unknown，不许硬凑；',
+    '⑥ process 必须展示排除过程：每个假设写清检查了什么（源码/日志/遍历/资源）与结论，',
+    '   结论只能是 confirmed / excluded / uncertain；',
+    '⑦ 只输出 JSON，不要解释、不要围栏。',
 ].join('\n');
+/** 归因字符串 → 枚举（LLM 输出不可信，必须白名单过滤；缺省 unknown）。 */
+export function normalizeAttribution(v) {
+    const s = String(v ?? '');
+    return ATTRIBUTIONS.includes(s) ? s : 'unknown';
+}
 /**
  * 用 LLM 做根因分析。
  *
@@ -256,7 +275,7 @@ export async function analyzeWithLlm(ctx, llm) {
         ctx.lastExecutionLog || '## 最近执行日志\n（该用例没有执行记录）',
         ctx.readmeExcerpt ? `## README 摘录\n${ctx.readmeExcerpt}` : '',
         '',
-        '请输出 JSON：{ "rootCause": "...", "confidence": 0-100, "evidence": [{"kind":"source|symbol|explore|execution|readme","ref":"...","line":0,"excerpt":"...","supports":"..."}], "fixSuggestions": ["..."], "needsDemoPatch": true|false, "uncertainties": ["..."] }',
+        '请输出 JSON：{ "rootCause": "...", "attribution": "case_precondition|demo|library|environment|flaky|unknown", "confidence": 0-100, "process": [{"hypothesis": "...", "checked": "...", "result": "confirmed|excluded|uncertain"}], "evidence": [{"kind":"source|symbol|explore|execution|readme|asset|pr","ref":"...","line":0,"excerpt":"...","supports":"..."}], "fixSuggestions": ["..."], "needsDemoPatch": true|false, "uncertainties": ["..."] }',
     ].filter(Boolean).join('\n');
     const r = await llmJson(llm, {
         system: ROOT_CAUSE_SYSTEM, user, temperature: 0.2, maxTokens: 2500,
@@ -268,11 +287,18 @@ export async function analyzeWithLlm(ctx, llm) {
     const confidence = evidence.length === 0
         ? Math.min(Number(v.confidence ?? 0) || 0, 40)
         : Math.max(0, Math.min(100, Number(v.confidence ?? 0) || 0));
+    const process = (Array.isArray(v.process) ? v.process : []).filter((p) => p && String(p.hypothesis ?? '').trim()).slice(0, 8).map((p) => ({
+        hypothesis: String(p.hypothesis ?? '').slice(0, 400),
+        checked: String(p.checked ?? '').slice(0, 400),
+        result: ['confirmed', 'excluded', 'uncertain'].includes(String(p.result)) ? String(p.result) : 'uncertain',
+    }));
     return {
         rootCause: String(v.rootCause ?? '').slice(0, 1200),
+        attribution: normalizeAttribution(v.attribution),
         confidence,
+        process,
         evidence: evidence.slice(0, 12).map((e) => ({
-            kind: ['source', 'symbol', 'explore', 'execution', 'readme'].includes(String(e.kind)) ? String(e.kind) : 'source',
+            kind: ['source', 'symbol', 'explore', 'execution', 'readme', 'asset', 'pr'].includes(String(e.kind)) ? String(e.kind) : 'source',
             ref: String(e.ref ?? '').slice(0, 300),
             line: Number(e.line ?? 0) || 0,
             excerpt: String(e.excerpt ?? '').slice(0, 400),
@@ -337,6 +363,14 @@ function toTicketRow(r) {
         verdict: String(r.verdict ?? ''), verdictReason: String(r.verdict_reason ?? ''),
         verdictBy: String(r.verdict_by ?? ''), verdictAt: r.verdict_at ?? null,
         knowledgeId: String(r.knowledge_id ?? ''), taskId: r.task_id ?? null,
+        executionId: r.execution_id ?? null,
+        testRunId: r.test_run_id ?? null,
+        runItemId: r.run_item_id ?? null,
+        baselineId: r.baseline_id ?? null,
+        caseVersion: r.case_version ?? null,
+        attribution: normalizeAttribution(r.attribution),
+        attributionReason: String(r.attribution_reason ?? ''),
+        reportId: r.report_id ?? null,
         error: String(r.error ?? ''), createdAt: String(r.created_at ?? ''), updatedAt: String(r.updated_at ?? ''),
     };
 }
@@ -364,7 +398,13 @@ export async function listTickets(opts = {}) {
     const rows = await getDb().prepare(`SELECT * FROM issue_tickets ${where} ORDER BY id DESC LIMIT ?`).all(...args);
     return rows.map(toTicketRow);
 }
-/** 创建工单（symptom 必填——没有问题现象就没有分析对象）。 */
+/**
+ * 创建工单（symptom 必填——没有问题现象就没有分析对象）。
+ *
+ * B3（设计 §9.1）：推荐从执行发起 —— executionId 存在时把 run/baseline/用例版本链路一并快照进工单；
+ * 从用例发起（executionId 为空）时用**最近一次执行**回填链路但 execution_id 留空，
+ * 报告据此标注「未绑定具体执行」，不伪造精确绑定。
+ */
 export async function createTicket(input) {
     const symptom = String(input.symptom ?? '').trim();
     if (!symptom)
@@ -374,11 +414,31 @@ export async function createTicket(input) {
     if (!c)
         throw Object.assign(new Error(`用例 #${input.caseId} 不存在`), { statusCode: 404 });
     const t = now();
+    // 执行链路回填：显式 executionId 优先；否则取该用例最近一次执行（仅回填版本链，不算绑定）
+    let exec = null;
+    if (Number.isFinite(Number(input.executionId)) && Number(input.executionId) > 0) {
+        exec = await db.prepare('SELECT * FROM executions WHERE id = ?').get(Number(input.executionId)) ?? null;
+        if (!exec)
+            throw Object.assign(new Error(`执行 #${input.executionId} 不存在`), { statusCode: 404 });
+        if (Number(exec.case_id) !== input.caseId) {
+            throw Object.assign(new Error(`执行 #${input.executionId} 不属于用例 #${input.caseId}`), { statusCode: 400 });
+        }
+    }
+    else {
+        exec = await db.prepare('SELECT * FROM executions WHERE case_id = ? ORDER BY id DESC LIMIT 1').get(input.caseId) ?? null;
+    }
+    const executionId = Number.isFinite(Number(input.executionId)) && Number(input.executionId) > 0 ? Number(input.executionId) : null;
+    const testRunId = exec ? exec.test_run_id ?? null : null;
+    const runItemId = exec ? exec.run_item_id ?? null : null;
+    const baselineId = exec ? exec.baseline_id ?? null : null;
+    const caseVersion = exec ? exec.case_version ?? null : null;
     const ins = await db.prepare(`INSERT INTO issue_tickets
     (ticket_no, case_id, library_id, symptom, status, root_cause_json, evidence_json, verification_json,
-     verdict, verdict_reason, verdict_by, verdict_at, knowledge_id, task_id, error, created_at, updated_at)
-    VALUES (?, ?, ?, ?, 'pending', '{}', '[]', '{}', '', '', '', NULL, '', NULL, '', ?, ?)`)
-        .run(ticketNo(), input.caseId, Number(c.library_id), symptom, t, t);
+     verdict, verdict_reason, verdict_by, verdict_at, knowledge_id, task_id,
+     execution_id, test_run_id, run_item_id, baseline_id, case_version, attribution, attribution_reason,
+     error, created_at, updated_at)
+    VALUES (?, ?, ?, ?, 'pending', '{}', '[]', '{}', '', '', '', NULL, '', NULL, ?, ?, ?, ?, ?, 'unknown', '', '', ?, ?)`)
+        .run(ticketNo(), input.caseId, Number(c.library_id), symptom, executionId, testRunId, runItemId, baselineId, caseVersion, t, t);
     // 同步把症状写到用例的 symptom 列（人维护的"当前疑问"）
     await db.prepare('UPDATE cases SET symptom = ?, updated_at = ? WHERE id = ?').run(symptom, t, input.caseId);
     const row = await loadTicket(Number(ins.lastInsertRowid));
@@ -391,10 +451,32 @@ export async function setTicketStatus(ticketId, status, error = '') {
     await getDb().prepare('UPDATE issue_tickets SET status = ?, error = ?, updated_at = ? WHERE id = ?')
         .run(status, error.slice(0, 900), now(), ticketId);
 }
-/** 写入根因结论（root_caused）。 */
+/** 写入根因结论（root_caused；B3 同时落归因列——attribution 是主结论）。 */
 export async function saveTicketRootCause(ticketId, verdict) {
-    await getDb().prepare(`UPDATE issue_tickets SET status = 'root_caused', root_cause_json = ?, evidence_json = ?, error = '', updated_at = ? WHERE id = ?`)
-        .run(JSON.stringify(verdict), JSON.stringify(verdict.evidence ?? []), now(), ticketId);
+    await getDb().prepare(`UPDATE issue_tickets SET status = 'root_caused', root_cause_json = ?, evidence_json = ?, attribution = ?, error = '', updated_at = ? WHERE id = ?`)
+        .run(JSON.stringify(verdict), JSON.stringify(verdict.evidence ?? []), verdict.attribution ?? 'unknown', now(), ticketId);
+}
+/**
+ * B3 人工修正归因（设计 §10.7 PUT /issues/:id/attribution）。
+ * 必须留理由——修正历史供报告/审计回查「为什么改了结论」。
+ */
+export async function updateTicketAttribution(input) {
+    const row = await loadTicket(input.ticketId);
+    if (!row)
+        throw Object.assign(new Error('工单不存在'), { statusCode: 404 });
+    const reason = String(input.reason ?? '').trim();
+    if (!reason)
+        throw Object.assign(new Error('修正理由不能为空（理由供反查"为什么改了归因"）'), { statusCode: 400 });
+    const stamp = now();
+    const by = input.by ?? 'human';
+    // 留痕格式：时间/人/原归因→新归因/理由，追加在 reason 列（旧记录不丢）
+    const history = `${row.attributionReason ? `${row.attributionReason}\n` : ''}[${stamp}] ${by}: ${row.attribution} → ${input.attribution}（${reason.slice(0, 300)}）`.slice(0, 1900);
+    await getDb().prepare('UPDATE issue_tickets SET attribution = ?, attribution_reason = ?, updated_at = ? WHERE id = ?')
+        .run(input.attribution, history, stamp, input.ticketId);
+    const after = await loadTicket(input.ticketId);
+    if (!after)
+        throw new Error('归因修正后读取失败');
+    return after;
 }
 /** 写入自测试验证结果（verifying / failed）。 */
 export async function saveTicketVerification(ticketId, verification, status, error = '') {
@@ -406,11 +488,14 @@ export async function decideTicket(input) {
     const row = await loadTicket(input.ticketId);
     if (!row)
         throw Object.assign(new Error('工单不存在'), { statusCode: 404 });
+    const reason = String(input.reason ?? '').trim();
+    if (!reason)
+        throw Object.assign(new Error('验收结论不能为空（空结论等于没处理）'), { statusCode: 400 });
     const t = now();
     await getDb().prepare(`UPDATE issue_tickets
     SET status = ?, verdict = ?, verdict_reason = ?, verdict_by = ?, verdict_at = ?, knowledge_id = ?, updated_at = ?
     WHERE id = ?`)
-        .run(input.accept ? 'accepted' : 'rejected', input.accept ? 'accepted' : 'rejected', String(input.reason ?? '').slice(0, 900), input.by ?? 'human', t, input.knowledgeId ?? '', t, input.ticketId);
+        .run(input.accept ? 'accepted' : 'rejected', input.accept ? 'accepted' : 'rejected', reason.slice(0, 900), input.by ?? 'human', t, input.knowledgeId ?? '', t, input.ticketId);
     const after = await loadTicket(input.ticketId);
     if (!after)
         throw new Error('工单验收后读取失败');

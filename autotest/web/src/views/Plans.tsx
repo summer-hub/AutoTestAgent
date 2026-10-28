@@ -1,5 +1,5 @@
 ﻿import { useCallback, useEffect, useRef, useState } from 'react';
-import type { Library, Plan, TestCase } from 'shared';
+import type { Baseline, Library, Plan, TestCase } from 'shared';
 import { api } from '../api';
 
 const TYPE_OPTIONS: Array<{ v: string; icon: string; label: string; desc: string }> = [
@@ -10,6 +10,13 @@ const TYPE_OPTIONS: Array<{ v: string; icon: string; label: string; desc: string
   { v: 'full', icon: '🌐', label: '全量执行', desc: '全部库用例（按系统配置抽样执行）' },
 ];
 
+/** B1：基线模式选项（设计 §11.5）。pr 需要 B4 的 PR 同步，暂不可选但透出存在。 */
+const BASELINE_MODES: Array<{ v: 'latest' | 'fixed' | 'pr'; icon: string; label: string; desc: string; disabled?: boolean }> = [
+  { v: 'latest', icon: '📌', label: '最新可用', desc: '运行时取库最新基线；没有则按当前 HEAD 自动创建' },
+  { v: 'fixed', icon: '🔒', label: '固定基线', desc: '每次都跑同一份代码（可复现回归）' },
+  { v: 'pr', icon: '🔀', label: 'PR 合入基线', desc: '按 PR 合入提交建基线（需 PR 同步，暂未开放）', disabled: true },
+];
+
 const TYPE_TAG: Record<string, string> = { immediate: 'amber', scheduled: 'blue', single: 'green', batch: 'cyan', full: 'purple' };
 const STATUS_TAG: Record<string, string> = { draft: 'gray', running: 'blue', done: 'green', failed: 'red', stopped: 'gray' };
 
@@ -18,7 +25,10 @@ export default function PlansPage() {
   const [libs, setLibs] = useState<Library[]>([]);
   const [error, setError] = useState('');
   const [modal, setModal] = useState(false);
-  const [form, setForm] = useState({ name: '', type: 'immediate', cron: '0 2 * * *', libraryId: 0, deviceIds: [1] as number[], failPolicy: 'continue' });
+  const [form, setForm] = useState({ name: '', type: 'immediate', cron: '0 2 * * *', libraryId: 0, deviceIds: [1] as number[], failPolicy: 'continue', baselineMode: 'latest' as 'latest' | 'fixed' | 'pr', baselineLibId: 0, baselineId: 0 });
+  // B1：固定基线选择 —— 选了库后加载该库 ready 基线列表
+  const [baselineOptions, setBaselineOptions] = useState<Baseline[]>([]);
+  const [baselineLoading, setBaselineLoading] = useState(false);
   // 跨库用例多选
   const [selCases, setSelCases] = useState<Map<number, { caseNo: string; name: string; libraryName: string }>>(new Map());
   const [pickerOpen, setPickerOpen] = useState(false);
@@ -43,6 +53,17 @@ export default function PlansPage() {
     return () => clearInterval(timer);
   }, [plans, load]);
 
+  // B1：fixed 模式下按所选库加载基线选项（切库/切模式时清空已选基线）
+  useEffect(() => {
+    setBaselineOptions([]);
+    if (form.baselineMode !== 'fixed' || !form.baselineLibId) return;
+    setBaselineLoading(true);
+    api.baselines(form.baselineLibId)
+      .then((r) => setBaselineOptions(r.filter((b) => b.status === 'ready')))
+      .catch(() => setBaselineOptions([]))
+      .finally(() => setBaselineLoading(false));
+  }, [form.baselineMode, form.baselineLibId]);
+
   const create = async () => {
     setError('');
     try {
@@ -58,6 +79,8 @@ export default function PlansPage() {
         scope,
         deviceIds: form.deviceIds,
         failPolicy: form.failPolicy as Plan['failPolicy'],
+        baselineMode: form.baselineMode,
+        baselineId: form.baselineMode === 'fixed' ? form.baselineId : null,
       });
       setModal(false);
       setSelCases(new Map());
@@ -139,6 +162,7 @@ export default function PlansPage() {
                 <div className="muted" style={{ fontSize: 11.8, marginTop: 3 }}>
                   {p.planNo} · {p.type === 'full' ? '全量' : p.type === 'scheduled' ? `cron ${p.cron}` : p.type}
                   {p.scriptMode ? ` · ${p.scriptMode === 'script' ? '绑定脚本' : '用例步骤'}` : ''}
+                  {' · 基线 '}{p.baselineMode === 'fixed' ? `固定 ${p.baselineId ? `#${p.baselineId}` : ''}` : (p.baselineMode ?? 'latest') === 'latest' ? '最新可用' : p.baselineMode}
                   · 创建于 {p.createdAt}
                 </div>
                 {p.status === 'failed' && p.error && (
@@ -247,6 +271,50 @@ export default function PlansPage() {
                   <option value="retry_twice">失败自动重试 2 次</option>
                 </select>
               </div>
+              <div className="s-field" style={{ marginBottom: 12, alignItems: 'flex-start' }}>
+                <div className="fl"><div className="ft">测试基线</div></div>
+                <div style={{ flex: 1 }}>
+                  <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 8 }}>
+                    {BASELINE_MODES.map((m) => (
+                      <div
+                        key={m.v}
+                        title={m.disabled ? '需要 PR 同步能力（B4 阶段），当前版本暂未开放' : m.desc}
+                        style={{
+                          border: `1px solid ${form.baselineMode === m.v ? 'var(--accent)' : 'var(--border2)'}`,
+                          background: form.baselineMode === m.v ? 'var(--accent-dim)' : 'transparent',
+                          opacity: m.disabled ? 0.45 : 1,
+                          cursor: m.disabled ? 'not-allowed' : 'pointer',
+                          borderRadius: 9, padding: '9px 11px',
+                        }}
+                        onClick={() => { if (!m.disabled) setForm({ ...form, baselineMode: m.v, baselineId: 0 }); }}
+                      >
+                        <div style={{ fontWeight: 600, fontSize: 12.2 }}>{m.icon} {m.label}</div>
+                        <div style={{ fontSize: 10.8, color: 'var(--text3)', marginTop: 3 }}>{m.disabled ? '（暂未开放）' : m.desc}</div>
+                      </div>
+                    ))}
+                  </div>
+                  {form.baselineMode === 'fixed' && (
+                    <div style={{ display: 'flex', gap: 8, marginTop: 8 }}>
+                      <select className="select" style={{ flex: 1 }} value={form.baselineLibId} onChange={(e) => setForm({ ...form, baselineLibId: Number(e.target.value), baselineId: 0 })}>
+                        <option value={0}>选择库…</option>
+                        {libs.map((l) => <option key={l.id} value={l.id}>{l.name}</option>)}
+                      </select>
+                      <select
+                        className="select"
+                        style={{ flex: 1.4 }}
+                        value={form.baselineId}
+                        onChange={(e) => setForm({ ...form, baselineId: Number(e.target.value) })}
+                        disabled={!form.baselineLibId || baselineLoading}
+                      >
+                        <option value={0}>{baselineLoading ? '加载基线…' : !form.baselineLibId ? '先选择库' : baselineOptions.length === 0 ? '该库暂无可用基线（可先到「测试基线」创建）' : '选择基线…'}</option>
+                        {baselineOptions.map((b) => (
+                          <option key={b.id} value={b.id}>{b.baselineNo} · {b.versionLabel || b.commitSha.slice(0, 8)}</option>
+                        ))}
+                      </select>
+                    </div>
+                  )}
+                </div>
+              </div>
               <div className="s-field" style={{ marginBottom: 12 }}>
                 <div className="fl"><div className="ft">脚本绑定</div></div>
                 <div className="muted" style={{ fontSize: 11.8, lineHeight: 1.7 }}>
@@ -257,7 +325,15 @@ export default function PlansPage() {
               </div>
               <div style={{ display: 'flex', gap: 10, justifyContent: 'flex-end', marginTop: 16 }}>
                 <button className="btn" onClick={() => setModal(false)}>取消</button>
-                <button className="btn primary" onClick={create}>创建计划</button>
+                {/* fixed 模式必须选好基线才可提交（后端同样强校验，这里前置拦截避免报错弹条） */}
+                <button
+                  className="btn primary"
+                  disabled={form.baselineMode === 'fixed' && !form.baselineId}
+                  title={form.baselineMode === 'fixed' && !form.baselineId ? '固定基线模式需先选择库与基线' : ''}
+                  onClick={create}
+                >
+                  创建计划
+                </button>
               </div>
             </div>
           </div>

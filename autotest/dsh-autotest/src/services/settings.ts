@@ -50,6 +50,16 @@ export const SETTING_DEFAULTS: Record<string, unknown> = {
   // ---- 认证与 RBAC（企业级 P0-1；默认关闭保持既有部署/DSH 插件零感知）----
   'auth.enabled': false,        // 开启后所有业务 API 要求 Authorization: Bearer <apiKey>
   'auth.allowLocalBypass': true, // 本机回环请求免 Key（桌面端/本地开发/DSH 本机形态不受影响）
+  // ---- 测试基线与追溯（B1/B2/B3，设计：docs/设计-独立版产品化与测试基线追溯.md §18.2）----
+  'feature.baseline': true,       // 基线功能开关（关闭后基线 API 返回 403，计划按旧行为执行）
+  'feature.scenarioAssets': true, // 场景资产开关（B2）
+  'feature.mdReport': true,       // Markdown 分析报告开关（B3）
+  'baseline.retainDays': 90,      // 未被引用的旧基线保留天数（清理策略，仅提示不自动删）
+  'baseline.maxTotalGb': 50,      // 基线总容量配额（GB，超出时创建接口给出告警）
+  'report.retainDays': 365,       // 分析报告保留天数（报告默认长期保留）
+  // ---- B2 场景资产（设计 §8.5：上传大小限制属静态校验第一道闸）----
+  'scenarioAsset.maxFileMb': 2,   // 单个资产文件解码后上限（MB）
+  'scenarioAsset.maxTotalMb': 20, // 单个资产全部文件累计上限（MB）
 };
 
 export type SettingValue = string | number | boolean | null;

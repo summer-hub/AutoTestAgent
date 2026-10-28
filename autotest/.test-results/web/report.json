@@ -1,7 +1,7 @@
 {
-  "base": "http://127.0.0.1:3500",
-  "mode": "headless-chrome(cdp:9222)",
-  "time": "2026-10-12T16:48:48.966Z",
+  "base": "http://127.0.0.1:3280",
+  "mode": "headless-chrome(cdp:9231)",
+  "time": "2026-10-15T12:42:47.670Z",
   "summary": {
     "total": 17,
     "passed": 17,
@@ -11,7 +11,7 @@
     "netFailures": 1
   },
   "expectedEmptyState": [
-    "scripts: 404 http://127.0.0.1:3500/api/autotest/repos/1/files?path=&root=scripts（空态契约：该库尚无 Hypium 脚本）"
+    "scripts: 404 http://127.0.0.1:3280/api/autotest/repos/2/files?path=&root=scripts（空态契约：该库尚无 Hypium 脚本）"
   ],
   "modal": {
     "ok": true,
@@ -24,9 +24,9 @@
       "ok": true,
       "problems": [],
       "state": {
-        "htmlLen": 5750,
+        "htmlLen": 22080,
         "pill": "v1.0.0-rc.1 · sqlite",
-        "navItems": 17
+        "navItems": 21
       },
       "shot": "home.png",
       "console": [],
@@ -39,9 +39,9 @@
       "ok": true,
       "problems": [],
       "state": {
-        "htmlLen": 5662,
+        "htmlLen": 6996,
         "pill": "v1.0.0-rc.1 · sqlite",
-        "navItems": 17
+        "navItems": 21
       },
       "shot": "tasks.png",
       "console": [],
@@ -54,9 +54,9 @@
       "ok": true,
       "problems": [],
       "state": {
-        "htmlLen": 5830,
+        "htmlLen": 63129,
         "pill": "v1.0.0-rc.1 · sqlite",
-        "navItems": 17
+        "navItems": 21
       },
       "shot": "libraries.png",
       "console": [],
@@ -69,9 +69,9 @@
       "ok": true,
       "problems": [],
       "state": {
-        "htmlLen": 5722,
+        "htmlLen": 11249,
         "pill": "v1.0.0-rc.1 · sqlite",
-        "navItems": 17
+        "navItems": 21
       },
       "shot": "api.png",
       "console": [],
@@ -84,9 +84,9 @@
       "ok": true,
       "problems": [],
       "state": {
-        "htmlLen": 7238,
+        "htmlLen": 13008,
         "pill": "v1.0.0-rc.1 · sqlite",
-        "navItems": 17
+        "navItems": 21
       },
       "shot": "coverage.png",
       "console": [],
@@ -99,9 +99,9 @@
       "ok": true,
       "problems": [],
       "state": {
-        "htmlLen": 5711,
+        "htmlLen": 11653,
         "pill": "v1.0.0-rc.1 · sqlite",
-        "navItems": 17
+        "navItems": 21
       },
       "shot": "human.png",
       "console": [],
@@ -114,9 +114,9 @@
       "ok": true,
       "problems": [],
       "state": {
-        "htmlLen": 5901,
+        "htmlLen": 8753,
         "pill": "v1.0.0-rc.1 · sqlite",
-        "navItems": 17
+        "navItems": 21
       },
       "shot": "knowledge.png",
       "console": [],
@@ -129,9 +129,9 @@
       "ok": true,
       "problems": [],
       "state": {
-        "htmlLen": 6841,
+        "htmlLen": 22821,
         "pill": "v1.0.0-rc.1 · sqlite",
-        "navItems": 18
+        "navItems": 121
       },
       "shot": "cases.png",
       "console": [],
@@ -144,9 +144,9 @@
       "ok": true,
       "problems": [],
       "state": {
-        "htmlLen": 5525,
+        "htmlLen": 55704,
         "pill": "v1.0.0-rc.1 · sqlite",
-        "navItems": 18
+        "navItems": 369
       },
       "shot": "scripts.png",
       "console": [],
@@ -159,9 +159,9 @@
       "ok": true,
       "problems": [],
       "state": {
-        "htmlLen": 4471,
+        "htmlLen": 7260,
         "pill": "v1.0.0-rc.1 · sqlite",
-        "navItems": 17
+        "navItems": 21
       },
       "shot": "plans.png",
       "console": [],
@@ -174,9 +174,9 @@
       "ok": true,
       "problems": [],
       "state": {
-        "htmlLen": 5253,
+        "htmlLen": 12234,
         "pill": "v1.0.0-rc.1 · sqlite",
-        "navItems": 17
+        "navItems": 21
       },
       "shot": "analysis.png",
       "console": [],
@@ -189,9 +189,9 @@
       "ok": true,
       "problems": [],
       "state": {
-        "htmlLen": 5083,
+        "htmlLen": 8293,
         "pill": "v1.0.0-rc.1 · sqlite",
-        "navItems": 17
+        "navItems": 21
       },
       "shot": "attribution.png",
       "console": [],
@@ -204,9 +204,9 @@
       "ok": true,
       "problems": [],
       "state": {
-        "htmlLen": 4603,
+        "htmlLen": 8211,
         "pill": "v1.0.0-rc.1 · sqlite",
-        "navItems": 17
+        "navItems": 21
       },
       "shot": "debug.png",
       "console": [],
@@ -219,9 +219,9 @@
       "ok": true,
       "problems": [],
       "state": {
-        "htmlLen": 4837,
+        "htmlLen": 8461,
         "pill": "v1.0.0-rc.1 · sqlite",
-        "navItems": 17
+        "navItems": 21
       },
       "shot": "devices.png",
       "console": [],
@@ -234,9 +234,9 @@
       "ok": true,
       "problems": [],
       "state": {
-        "htmlLen": 12249,
+        "htmlLen": 16096,
         "pill": "v1.0.0-rc.1 · sqlite",
-        "navItems": 17
+        "navItems": 21
       },
       "shot": "prompts.png",
       "console": [],
@@ -249,9 +249,9 @@
       "ok": true,
       "problems": [],
       "state": {
-        "htmlLen": 9355,
+        "htmlLen": 17404,
         "pill": "v1.0.0-rc.1 · sqlite",
-        "navItems": 17
+        "navItems": 21
       },
       "shot": "agents.png",
       "console": [],
@@ -264,9 +264,9 @@
       "ok": true,
       "problems": [],
       "state": {
-        "htmlLen": 16658,
+        "htmlLen": 20967,
         "pill": "v1.0.0-rc.1 · sqlite",
-        "navItems": 17
+        "navItems": 21
       },
       "shot": "settings.png",
       "console": [],

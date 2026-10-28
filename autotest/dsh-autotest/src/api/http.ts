@@ -30,8 +30,18 @@ import { decideApproval, listApprovals, pendingApprovalCount, requireApproval } 
 import { verifySkillLock } from '../services/skillLock.js';
 import { injectRules } from '../services/rules.js';
 import { cacheDel, cacheGet, cacheSet } from '../services/cache.js';
+import { corsHeaders, crossOriginFullyOpen, isOriginAllowed } from '../services/cors.js';
 // LLM 限流单独一个模块：Redis 可用时多节点共享计数，模块级数组在多节点下形同虚设
 import { checkLlmRate } from '../services/llmLimit.js';
+// B4：需求/PR 追踪（设计 §7 / §10.2 / §10.3）
+import {
+  createRequirement, getRequirementDetail, linkRequirementCases, linkRequirementPrs,
+  listRequirements, unlinkRequirementCase, updateRequirement, type RequirementSource, type RequirementStatus,
+} from '../services/requirements.js';
+import {
+  createBaselineFromPr, getPrDetail, linkPrCases, linkPrRequirements, listLibraryPrs, syncLibraryPrs, type PrSyncRef,
+} from '../services/prTracking.js';
+import { derivePrTestStatus } from '../services/prStatus.js';
 import { readDshDefaultModel } from '../services/llmCore.js';
 import {
   listDirectModels, normalizeProtocol, readLlmEnvOverride,
@@ -40,7 +50,7 @@ import {
 import { autoScanDevices } from '../services/deviceScanner.js';
 import { guessBundleFor, hdcAvailable, listTargets } from '../services/hdc.js';
 import { spawn } from 'node:child_process';
-import { normalizeRepoUrl, normalizeSubpath, pullRepo, repoDirFor, splitRepoUrl, workspaceConfigured, workspaceDir, workspaceNotice, type RepoLib } from '../services/gitRepo.js';
+import { normalizeRepoUrl, normalizeSubpath, pullRepo, repoDirFor, repoRootDir, splitRepoUrl, workspaceConfigured, workspaceDir, workspaceNotice, type RepoLib } from '../services/gitRepo.js';
 import { type ExploreResult } from '../services/uiExplorer.js';
 import { hypiumProjectDir, writeCaseScript, ensureHypiumProject } from '../services/hypiumGen.js';
 import { listEvents } from '../services/events.js';
@@ -70,8 +80,12 @@ import { applyCasePatch, revertCasePatch, runTestability } from '../services/tes
 import { evaluateQuality, validateOracles, type Oracle, type OracleProblem } from '../services/oracle.js';
 import { loadHumanQueue, resolveQueueItem, runTriage, queueSummary } from '../services/automation.js';
 import {
-  createTicket, listTickets, loadTicket, decideTicket,
+  ATTRIBUTIONS, createTicket, decideTicket, listTickets, loadTicket, updateTicketAttribution,
+  type AttributionKind,
 } from '../services/issueRoot.js';
+import {
+  generateIssueReport, getReport, getReportByIssue, getReportMarkdown, listReports,
+} from '../services/analysisReport.js';
 import { bindCaseScript, confirmBinding, listBindings, refreshBindingStatuses, unbindCaseScript } from '../services/scriptBinding.js';
 import {
   canConfirm, loadEntriesFromDisk, rebuildIndex, renderInjection, retrieve, saveEntry, wikiRoot, sediteFromQueue, type KnowledgeEntry, type KnowledgeStatus,
@@ -81,6 +95,16 @@ import {
   rpcError, rpcResult, STAGES, upsertBinding, type AgentKind, type JsonRpcRequest,
 } from '../services/agentBinding.js';
 import { detectPython, runHypiumModule, probePythons, describePythonProbe } from '../services/hypiumRunner.js';
+import {
+  archiveBaseline, createBaselineForLibrary, deleteBaseline, getBaselineDetail,
+  listBaselines, verifyBaseline, type BaselineDetail, type BaselineSource,
+} from '../services/baseline.js';
+import {
+  applyAssetToRunItem, buildAssetZip, createAsset, deprecateAsset, getAssetDetail, getResourceSet,
+  linkCases, linkRequirements, listAssetFiles, listAssets, removeAsset, updateAsset,
+  validateAsset, writeAssetFiles, ASSET_KINDS, SCENARIO_KINDS,
+  type AssetKind, type CreateAssetInput, type ScenarioAssetRow, type ScenarioKind, type UpdateAssetInput,
+} from '../services/scenarioAssets.js';
 
 // ---------- mini router ----------
 interface HandlerArgs {
@@ -197,10 +221,16 @@ function readBody(req: IncomingMessage): Promise<any> {
  * 本 API 无鉴权且挂在 127.0.0.1，浏览器里的任意网页都能发"简单请求"触发副作用
  * （不校验 Content-Type 时，<form enctype="text/plain"> 就能构造出合法 JSON body）。
  * 这里拒绝跨站来源：带 Origin 且与 Host 不一致 → 403；Sec-Fetch-Site: cross-site 同理。
- * 服务端/CLI/脚本调用不带 Origin，照常放行；确有跨源需要时用 AUTOTEST_ALLOW_CROSS_ORIGIN=1 关闭本闸门。
+ * 服务端/CLI/脚本调用不带 Origin，照常放行。
+ * 放行通道（A3 · 设计 §13.3，按优先级）：
+ *   1. AUTOTEST_ALLOW_CROSS_ORIGIN=1 —— 完全放开（旧开关，保留给既有部署）；
+ *   2. Origin 命中 AUTOTEST_CORS_ORIGINS 白名单 —— 分离部署的前端来源；
+ *   3. 同源（Origin host == Host）—— 默认拓扑。
  */
 function assertSameOrigin(req: IncomingMessage): void {
-  if (String(process.env.AUTOTEST_ALLOW_CROSS_ORIGIN || '') === '1') return;
+  if (crossOriginFullyOpen()) return;
+  const originHeader = req.headers.origin ? String(req.headers.origin) : '';
+  if (originHeader && isOriginAllowed(originHeader)) return;
   const site = String(req.headers['sec-fetch-site'] ?? '').toLowerCase();
   if (site === 'cross-site') {
     throw Object.assign(new Error('拒绝跨站请求（Sec-Fetch-Site: cross-site）'), { statusCode: 403 });
@@ -280,6 +310,22 @@ export function makeApiHandler(llm: LlmCall): (req: IncomingMessage, res: Server
     let statusCode = 500;
     try {
       await ensureReady();
+      // A3（设计 §13.3）：白名单 Origin 的跨源请求。
+      //  - 响应头：命中白名单即附加 CORS 头（res.setHeader 与后续 writeHead 合并，所有出口统一覆盖）；
+      //  - 预检：OPTIONS → 204，不要求认证（浏览器预检不带 Authorization），也不进路由/鉴权；
+      //    非白名单 Origin 的 OPTIONS 走下方 assertSameOrigin → 403。
+      const originHeader = req.headers.origin ? String(req.headers.origin) : '';
+      const corsAllowed = originHeader !== '' && isOriginAllowed(originHeader);
+      if (corsAllowed) {
+        for (const [k, v] of Object.entries(corsHeaders(originHeader))) res.setHeader(k, v);
+      }
+      if (method === 'OPTIONS' && corsAllowed) {
+        routeLabel = '(preflight)';
+        statusCode = 204;
+        res.writeHead(204);
+        res.end();
+        return;
+      }
       assertSameOrigin(req);
       const url = new URL(req.url ?? '/', 'http://localhost');
       const path = url.pathname.replace(/^\/api\/autotest/, '') || '/';
@@ -325,6 +371,17 @@ export function makeApiHandler(llm: LlmCall): (req: IncomingMessage, res: Server
       const body = ['POST', 'PUT', 'PATCH'].includes(method) ? await readBody(req) : {};
       if (matched.llm) await checkLlmRate();
       const data = await matched.handler({ params, query, body, req, auth });
+      // 二进制下载（带元数据的 Buffer）：zip 报告等非 xlsx 场景
+      if (data !== null && typeof data === 'object' && (data as { __binary?: boolean }).__binary === true) {
+        const bin = data as { contentType: string; filename: string; data: Buffer };
+        statusCode = 200;
+        res.writeHead(200, {
+          'Content-Type': bin.contentType,
+          'Content-Disposition': `attachment; filename="${bin.filename}"`,
+        });
+        res.end(bin.data);
+        return;
+      }
       if (Buffer.isBuffer(data)) {
         statusCode = 200;
         res.writeHead(200, {
@@ -364,6 +421,16 @@ function defineRoutes(llm: LlmCall): void {
 
   // ---- health ----（免鉴权：LB 探活与桌面端就绪探测用）
   route('GET', '/health', async () => ({ ok: true, service: 'dsh-autotest', version: PKG_VERSION, db: dbMode(), routes: routes.length, time: new Date().toISOString() }), { authOpen: true });
+
+  // A3（设计 §13.2/§13.3）：分离部署 runtime config。前端启动时读取，用于跨域拓扑下
+  // 指定 apiBase/wsBase（AUTOTEST_PUBLIC_API_BASE / AUTOTEST_PUBLIC_WS_BASE，缺省空串 =
+  // 同源默认）。authOpen：拓扑探测先于登录，不依赖密钥；无敏感信息（只有地址与特性开关）。
+  route('GET', '/runtime-config', async () => ({
+    edition: 'standalone',
+    apiBase: String(process.env.AUTOTEST_PUBLIC_API_BASE ?? '').trim(),
+    wsBase: String(process.env.AUTOTEST_PUBLIC_WS_BASE ?? '').trim(),
+    features: { baseline: true, scenarioAssets: true, mdReport: true },
+  }), { authOpen: true });
 
   // ---- 认证与 RBAC（P0-1）----
   // /auth/status 免鉴权：登录门需要在不带 key 时得知认证是否开启、当前身份是什么
@@ -1155,11 +1222,11 @@ function defineRoutes(llm: LlmCall): void {
   // 与 human_queue 的分工：human_queue 是"自动化跑不了"的阻塞条目；
   // 工单是"人对用例有疑问"的一次完整归因流程（含 AI 根因、证据、自测试、人工结论）。
   route('POST', '/issues', async ({ body }) => {
-    const b = (body ?? {}) as { caseId?: number; symptom?: string };
+    const b = (body ?? {}) as { caseId?: number; symptom?: string; executionId?: number };
     const caseId = Number(b.caseId);
     if (!Number.isFinite(caseId) || caseId <= 0) throw Object.assign(new Error('caseId 必填'), { statusCode: 400 });
-    const r = await createTicket({ caseId, symptom: String(b.symptom ?? '') });
-    console.log(`[autotest] 问题工单创建：${r.ticketNo}（用例 #${r.caseId}）`);
+    const r = await createTicket({ caseId, symptom: String(b.symptom ?? ''), executionId: b.executionId });
+    console.log(`[autotest] 问题工单创建：${r.ticketNo}（用例 #${r.caseId}${r.executionId ? ` · 执行 #${r.executionId}` : ''}）`);
     invalidateCaseCaches();
     return r;
   }, { role: 'operator' });
@@ -1239,6 +1306,203 @@ function defineRoutes(llm: LlmCall): void {
     console.log(`[autotest] 工单 ${row.ticketNo} 验收驳回：${reason.slice(0, 60)}`);
     return row;
   }, { role: 'operator' });
+
+  // ---- B3：归因修正 + Markdown 分析报告（设计 §10.7）----
+
+  // 人工修正归因（attribution 是主结论；修正必须留理由，历史追加在 attribution_reason）
+  route('PUT', '/issues/:id/attribution', async ({ params, body }) => {
+    const id = Number(params.id);
+    const b = (body ?? {}) as { attribution?: string; reason?: string; by?: string };
+    const attribution = String(b.attribution ?? '');
+    if (!(ATTRIBUTIONS as string[]).includes(attribution)) {
+      throw Object.assign(new Error(`归因必须是合法枚举：${ATTRIBUTIONS.join(' / ')}`), { statusCode: 400 });
+    }
+    const row = await updateTicketAttribution({
+      ticketId: id, attribution: attribution as AttributionKind, reason: String(b.reason ?? ''), by: String(b.by ?? 'human'),
+    });
+    console.log(`[autotest] 工单 ${row.ticketNo} 归因修正：${attribution}`);
+    return row;
+  }, { role: 'operator' });
+
+  // 工单的报告元数据（无报告 404 —— 与「报告不存在」区分开）
+  route('GET', '/issues/:id/report', async ({ params }) => {
+    const id = Number(params.id);
+    const ticket = await loadTicket(id);
+    if (!ticket) throw Object.assign(new Error('工单不存在'), { statusCode: 404 });
+    const report = await getReportByIssue(id, { withContent: false });
+    if (!report) throw Object.assign(new Error('该工单还没有分析报告（先跑分析，或用 POST /issues/:id/report 生成）'), { statusCode: 404 });
+    return report;
+  }, { role: 'viewer' });
+
+  // 生成/重新生成报告：不可变 —— 每次都是新 report_no，旧报告保留可查
+  route('POST', '/issues/:id/report', async ({ params, body }) => {
+    const id = Number(params.id);
+    const ticket = await loadTicket(id);
+    if (!ticket) throw Object.assign(new Error('工单不存在'), { statusCode: 404 });
+    if (!ticket.rootCause) {
+      throw Object.assign(new Error('该工单还没有根因结论，先跑分析（POST /issues/:id/analyze）再生成报告'), { statusCode: 400 });
+    }
+    const b = (body ?? {}) as { createdBy?: string };
+    const report = await generateIssueReport(id, { createdBy: String(b.createdBy ?? 'human') });
+    console.log(`[autotest] 工单 ${ticket.ticketNo} 报告生成：${report.reportNo}（${report.mdPath}）`);
+    return report;
+  }, { role: 'operator' });
+
+  // 工单报告 Markdown 下载（text/markdown + attachment；设计 §9.6）
+  route('GET', '/issues/:id/report.md', async ({ params }) => {
+    const id = Number(params.id);
+    const report = await getReportByIssue(id, { withContent: false });
+    if (!report) throw Object.assign(new Error('该工单还没有分析报告'), { statusCode: 404 });
+    const md = await getReportMarkdown(report.id);
+    return {
+      __binary: true,
+      contentType: 'text/markdown; charset=utf-8',
+      filename: `${report.reportNo}.md`,
+      data: Buffer.from(md.content, 'utf8'),
+    };
+  }, { role: 'viewer' });
+
+  // 报告列表 / 详情 / 下载（跨工单的统一报告入口）
+  route('GET', '/reports', async ({ query }) => {
+    const items = await listReports({
+      libraryId: Number(query.get('libraryId')) || undefined,
+      kind: query.get('kind') ?? undefined,
+      limit: Number(query.get('limit')) || undefined,
+    });
+    return { items, total: items.length };
+  }, { role: 'viewer' });
+
+  route('GET', '/reports/:id.md', async ({ params }) => {
+    const md = await getReportMarkdown(Number(params.id));
+    return {
+      __binary: true,
+      contentType: 'text/markdown; charset=utf-8',
+      filename: `${md.report.reportNo}.md`,
+      data: Buffer.from(md.content, 'utf8'),
+    };
+  }, { role: 'viewer' });
+
+  route('GET', '/reports/:id', async ({ params }) => {
+    const id = Number(params.id);
+    const report = await getReport(id, { withContent: false });
+    if (!report) throw Object.assign(new Error(`报告 #${id} 不存在`), { statusCode: 404 });
+    return report;
+  }, { role: 'viewer' });
+
+  // ---- B4：需求追踪（设计 §10.2）----
+  // 需求只存 external_id + url + 验收点；用例/PR/统计从关联表派生（§7.1）。
+  route('GET', '/requirements', async ({ query }) => {
+    const items = await listRequirements({
+      libraryId: Number(query.get('libraryId')) || undefined,
+      status: query.get('status') ?? undefined,
+      q: query.get('q') ?? undefined,
+      limit: Number(query.get('limit')) || undefined,
+    });
+    return { items, total: items.length };
+  }, { role: 'viewer' });
+
+  route('POST', '/requirements', async ({ body }) => {
+    const b = (body ?? {}) as {
+      title?: string; source?: string; externalId?: string; url?: string;
+      primaryLibraryId?: number; priority?: string; acceptanceMd?: string; owner?: string; status?: string;
+    };
+    const source = (['manual', 'onebox', 'import'] as string[]).includes(String(b.source)) ? b.source as RequirementSource : 'manual';
+    const status = (['active', 'done', 'closed', 'dropped'] as string[]).includes(String(b.status)) ? b.status as RequirementStatus : 'active';
+    const row = await createRequirement({
+      title: String(b.title ?? ''),
+      source,
+      externalId: b.externalId,
+      url: b.url,
+      primaryLibraryId: b.primaryLibraryId ?? null,
+      priority: b.priority,
+      acceptanceMd: b.acceptanceMd,
+      owner: b.owner,
+      status,
+    });
+    console.log(`[autotest] 需求创建：${row.requirementNo} ${row.title}`);
+    return row;
+  }, { role: 'operator' });
+
+  route('GET', '/requirements/:id', async ({ params }) => {
+    return getRequirementDetail(Number(params.id));
+  }, { role: 'viewer' });
+
+  route('PUT', '/requirements/:id', async ({ params, body }) => {
+    const id = Number(params.id);
+    const b = (body ?? {}) as {
+      title?: string; status?: string; priority?: string; url?: string;
+      externalId?: string; acceptanceMd?: string; owner?: string;
+    };
+    const status = (['active', 'done', 'closed', 'dropped'] as string[]).includes(String(b.status)) ? b.status as RequirementStatus : undefined;
+    return updateRequirement(id, {
+      title: b.title, status, priority: b.priority, url: b.url,
+      externalId: b.externalId, acceptanceMd: b.acceptanceMd, owner: b.owner,
+    });
+  }, { role: 'operator' });
+
+  route('POST', '/requirements/:id/cases', async ({ params, body }) => {
+    const id = Number(params.id);
+    const b = (body ?? {}) as { caseIds?: number[]; relation?: string };
+    const caseIds = Array.isArray(b.caseIds) ? b.caseIds.map((c) => Number(c)).filter((c) => Number.isFinite(c) && c > 0) : [];
+    if (caseIds.length === 0) throw Object.assign(new Error('caseIds 不能为空（要关联哪些用例）'), { statusCode: 400 });
+    return linkRequirementCases(id, caseIds, String(b.relation ?? 'covers'));
+  }, { role: 'operator' });
+
+  route('DELETE', '/requirements/:id/cases/:caseId', async ({ params }) => {
+    return unlinkRequirementCase(Number(params.id), Number(params.caseId));
+  }, { role: 'operator' });
+
+  route('POST', '/requirements/:id/prs', async ({ params, body }) => {
+    const id = Number(params.id);
+    const b = (body ?? {}) as { prIds?: number[] };
+    const prIds = Array.isArray(b.prIds) ? b.prIds.map((p) => Number(p)).filter((p) => Number.isFinite(p) && p > 0) : [];
+    if (prIds.length === 0) throw Object.assign(new Error('prIds 不能为空（要关联哪些 PR）'), { statusCode: 400 });
+    return linkRequirementPrs(id, prIds);
+  }, { role: 'operator' });
+
+  // ---- B4：PR 追踪（设计 §10.3）----
+  // PR 同步进表（GitCode 优先 / 本地 git 降级）；测试状态派生（§7.3）。
+  route('POST', '/libraries/:libraryId/prs/sync', async ({ params, body }) => {
+    const id = Number(params.libraryId);
+    const b = (body ?? {}) as { limit?: number; state?: string };
+    const r = await syncLibraryPrs(id, { limit: Number(b.limit) || 20, state: b.state });
+    console.log(`[autotest] PR 同步 #${id}：provider=${r.provider} 同步 ${r.synced} 条${r.note ? `（${r.note}）` : ''}`);
+    return r;
+  }, { role: 'operator' });
+
+  route('GET', '/prs/:prId', async ({ params }) => {
+    return getPrDetail(Number(params.prId));
+  }, { role: 'viewer' });
+
+  route('POST', '/prs/:prId/requirements', async ({ params, body }) => {
+    const id = Number(params.prId);
+    const b = (body ?? {}) as { requirementIds?: number[] };
+    const requirementIds = Array.isArray(b.requirementIds) ? b.requirementIds.map((r) => Number(r)).filter((r) => Number.isFinite(r) && r > 0) : [];
+    if (requirementIds.length === 0) throw Object.assign(new Error('requirementIds 不能为空（要关联哪些需求）'), { statusCode: 400 });
+    return linkPrRequirements(id, requirementIds);
+  }, { role: 'operator' });
+
+  route('POST', '/prs/:prId/cases', async ({ params, body }) => {
+    const id = Number(params.prId);
+    const b = (body ?? {}) as { caseIds?: number[]; basis?: string };
+    const caseIds = Array.isArray(b.caseIds) ? b.caseIds.map((c) => Number(c)).filter((c) => Number.isFinite(c) && c > 0) : [];
+    if (caseIds.length === 0) throw Object.assign(new Error('caseIds 不能为空（要关联哪些用例）'), { statusCode: 400 });
+    return linkPrCases(id, caseIds, String(b.basis ?? 'manual'));
+  }, { role: 'operator' });
+
+  // 从 PR 建基线（§7.4）：merge 需合入提交；head 是预验证通道（不伪造"已合入"）
+  route('POST', '/prs/:prId/baseline', async ({ params, body }) => {
+    const id = Number(params.prId);
+    const b = (body ?? {}) as { ref?: string; versionLabel?: string };
+    const ref: PrSyncRef = b.ref === 'head' ? 'head' : 'merge';
+    const r = await createBaselineFromPr(id, { ref, versionLabel: b.versionLabel, createdBy: 'human' });
+    console.log(`[autotest] PR #${id} 建基线：${r.baseline.baseline_no}${r.reused ? '（复用已有）' : ''}`);
+    return r;
+  }, { role: 'operator' });
+
+  route('GET', '/prs/:prId/test-status', async ({ params }) => {
+    return derivePrTestStatus(Number(params.prId));
+  }, { role: 'viewer' });
 
   route('POST', '/human-queue/:id/resolve', async ({ params, body }) => {
     const id = Number(params.id);
@@ -1576,10 +1840,29 @@ function defineRoutes(llm: LlmCall): void {
     return { saved: false, bundleName: row.package_name, mainAbility: row.main_ability, candidates };
   });
 
-  // PR 列表（供前端选择 #PR 分析）
-  route('GET', '/libraries/:libraryId/prs', async ({ params }) => {
+  // PR 列表（B4：优先读同步表 —— 带 关联需求/用例/基线/派生测试状态；表空退回实时拉取）
+  route('GET', '/libraries/:libraryId/prs', async ({ params, query }) => {
     const lib = await getDb().prepare('SELECT * FROM libraries WHERE id = ?').get<Record<string, any>>(Number(params.libraryId));
     if (!lib) throw Object.assign(new Error('三方库不存在'), { statusCode: 404 });
+    // 已同步过的 PR 走表（含派生状态，§7.3）
+    const fromDb = await listLibraryPrs(Number(params.libraryId), {
+      state: query.get('state') ?? undefined,
+      q: query.get('q') ?? undefined,
+      limit: Number(query.get('limit')) || 50,
+    }).catch(() => []);
+    if (fromDb.length > 0) {
+      return {
+        source: 'db',
+        items: fromDb.map((p) => ({
+          id: p.id, number: p.number, title: p.title, state: p.state,
+          mergeCommitSha: p.mergeCommitSha, headSha: p.headSha,
+          requirementCount: p.requirementCount, caseCount: p.caseCount, baselineCount: p.baselineCount,
+          testStatus: p.testStatus.status, mergedAt: p.mergedAt, url: p.url,
+          createdAt: p.createdAt,
+        })),
+      };
+    }
+    // 未同步：老行为 —— 实时拉取（GitCode → 本地 git 降级），调用方可再 POST /prs/sync 落表
     const repoPath = parseRepoPath(lib.repo_url);
     try {
       const prs = repoPath ? await fetchPrs(repoPath, 8) : [];
@@ -2183,12 +2466,17 @@ function defineRoutes(llm: LlmCall): void {
     ).all<{ id: number; name: string; repo_url: string; repo_subpath: string; current_version: string; last_commit: string; last_synced_at: string | null }>();
     return rows.map((r) => {
       const dir = repoDirFor(r);
+      // 「是否已拉取」必须看**仓库根**有没有 .git：单体仓 171 个库共享一份克隆，
+      // 而库目录 = 仓库根 + 子目录，子目录里本来就没有 .git——照旧写法会把已拉取的
+      // 单体仓库永远显示成"未拉取"（用户据此反复点拉取，白等一场）。
+      // 没有 repo_url 的历史库才退回按库名定位的目录。
+      const repoRoot = r.repo_url ? repoRootDir(r.repo_url) : dir;
       return {
         id: r.id,
         name: r.name,
         repoUrl: r.repo_url,
         dir,
-        exists: fs.existsSync(path.join(dir, '.git')),
+        exists: fs.existsSync(path.join(repoRoot, '.git')),
         version: r.current_version,
         lastCommit: r.last_commit,
         lastSyncedAt: r.last_synced_at,
@@ -2321,17 +2609,27 @@ function defineRoutes(llm: LlmCall): void {
   });
 
   route('POST', '/plans', async ({ body }) => {
-    const b = body as { name?: string; type?: string; cron?: string; scope?: { libraryIds: number[]; caseIds: number[] }; deviceIds?: number[]; failPolicy?: string; scriptMode?: string };
+    const b = body as { name?: string; type?: string; cron?: string; scope?: { libraryIds: number[]; caseIds: number[] }; deviceIds?: number[]; failPolicy?: string; scriptMode?: string; baselineId?: number | null; baselineMode?: string };
     if (!b.name || !b.type) throw Object.assign(new Error('name / type 必填'), { statusCode: 400 });
     const scriptMode = ['script', 'step'].includes(String(b.scriptMode ?? '')) ? String(b.scriptMode) : '';
+    // B1：基线模式校验。fixed 必须带 ready 基线 id；pr 模式 B4 未实现 PR 同步，明确拒绝（不静默降级）。
+    const baselineMode = ['latest', 'fixed', 'pr'].includes(String(b.baselineMode ?? '')) ? String(b.baselineMode) : 'latest';
+    const baselineId = Number(b.baselineId) || null;
+    if (baselineMode === 'fixed') {
+      if (!baselineId) throw Object.assign(new Error('fixed 基线模式必须指定 baselineId'), { statusCode: 400 });
+      const bl = await getBaselineDetail(baselineId);
+      if (!bl) throw Object.assign(new Error('指定的基线不存在'), { statusCode: 404 });
+      if (bl.status !== 'ready') throw Object.assign(new Error(`基线 ${bl.baseline_no} 状态为 ${bl.status}，不可绑定计划`), { statusCode: 409 });
+    }
+    if (baselineMode === 'pr') throw Object.assign(new Error('pr 基线模式需要先完成 PR 同步（B4），当前不可用'), { statusCode: 400 });
     const db = getDb();
     const t = now();
     const planNo = await nextPlanNo();
     const scope = b.scope ?? { libraryIds: [], caseIds: [] };
     const deviceIds = b.deviceIds ?? [];
-    const res = await db.prepare(`INSERT INTO plans (plan_no, name, type, cron, scope, device_ids, status, fail_policy, script_mode, error, created_at, updated_at)
-      VALUES (?, ?, ?, ?, ?, ?, 'draft', ?, ?, '', ?, ?)`).run(
-      planNo, b.name, b.type, b.cron ?? null, JSON.stringify(scope), JSON.stringify(deviceIds), b.failPolicy ?? 'continue', scriptMode, t, t,
+    const res = await db.prepare(`INSERT INTO plans (plan_no, name, type, cron, scope, device_ids, status, fail_policy, script_mode, baseline_id, baseline_mode, error, created_at, updated_at)
+      VALUES (?, ?, ?, ?, ?, ?, 'draft', ?, ?, ?, ?, '', ?, ?)`).run(
+      planNo, b.name, b.type, b.cron ?? null, JSON.stringify(scope), JSON.stringify(deviceIds), b.failPolicy ?? 'continue', scriptMode, baselineId, baselineMode, t, t,
     );
     const id = Number(res.lastInsertRowid);
     if (b.type === 'scheduled' && b.cron) {
@@ -2371,12 +2669,18 @@ function defineRoutes(llm: LlmCall): void {
   route('GET', '/executions', async ({ query }) => {
     const planId = Number(query.get('planId')) || null;
     const status = query.get('status') ?? '';
+    const baselineId = Number(query.get('baselineId')) || null;
+    const testRunId = Number(query.get('testRunId')) || null;
+    const runItemId = Number(query.get('runItemId')) || null;
     const limit = clampInt(query.get('limit'), 50, 1, 200);
     const cursor = Number(query.get('cursor')) || 0;
     const conds: string[] = [];
     const p: Record<string, unknown> = { limit, cursor };
     if (planId) { conds.push('e.plan_id = @planId'); p.planId = planId; }
     if (status) { conds.push('e.status = @status'); p.status = status; }
+    if (baselineId) { conds.push('e.baseline_id = @baselineId'); p.baselineId = baselineId; }
+    if (testRunId) { conds.push('e.test_run_id = @testRunId'); p.testRunId = testRunId; }
+    if (runItemId) { conds.push('e.run_item_id = @runItemId'); p.runItemId = runItemId; }
     if (cursor) conds.push('e.id < @cursor');
     const where = conds.length ? `WHERE ${conds.join(' AND ')}` : '';
     const rows = await getDb().prepare(
@@ -2399,6 +2703,280 @@ function defineRoutes(llm: LlmCall): void {
        WHERE e.id = ?`).get<Record<string, unknown>>(Number(params.id));
     if (!row) throw Object.assign(new Error('执行记录不存在'), { statusCode: 404 });
     return mapExecution(row);
+  });
+
+  // ---- baselines（B1 测试基线）----
+  const mapBaseline = (b: BaselineDetail) => ({
+    id: b.id, baselineNo: b.baseline_no, libraryId: b.library_id, snapshotId: b.snapshot_id,
+    repoSubpath: b.repo_subpath, versionLabel: b.version_label, source: b.source,
+    status: b.status, note: b.note, createdBy: b.created_by,
+    commitSha: b.commit_sha, repoUrl: b.repo_url, relDir: b.rel_dir,
+    snapshotStatus: b.snapshot_status, sizeBytes: Number(b.size_bytes ?? 0),
+    sourcePrId: b.source_pr_id, execCount: Number(b.exec_count ?? 0),
+    referencedByPlan: Boolean(b.referenced_by_plan),
+    createdAt: b.created_at, updatedAt: b.updated_at,
+  });
+
+  route('GET', '/libraries/:id/baselines', async ({ params }) => {
+    return (await listBaselines(Number(params.id))).map(mapBaseline);
+  });
+
+  route('POST', '/libraries/:id/baselines', async ({ params, body }) => {
+    const b = body as { source?: string; ref?: string; commitSha?: string; versionLabel?: string; note?: string; createdBy?: string };
+    const source = (['latest', 'tag', 'manual'].includes(String(b.source ?? '')) ? String(b.source) : 'latest') as BaselineSource;
+    const r = await createBaselineForLibrary(Number(params.id), {
+      source,
+      ref: b.ref,
+      commitSha: b.commitSha,
+      versionLabel: b.versionLabel,
+      note: b.note,
+      createdBy: b.createdBy ?? 'web',
+    });
+    const detail = await getBaselineDetail(r.baseline.id);
+    return { ...mapBaseline(detail!), reused: r.reused };
+  });
+
+  route('GET', '/baselines/:id', async ({ params }) => {
+    const detail = await getBaselineDetail(Number(params.id));
+    if (!detail) throw Object.assign(new Error('基线不存在'), { statusCode: 404 });
+    return mapBaseline(detail);
+  });
+
+  route('POST', '/baselines/:id/verify', async ({ params }) => {
+    return verifyBaseline(Number(params.id));
+  });
+
+  route('POST', '/baselines/:id/archive', async ({ params }) => {
+    await archiveBaseline(Number(params.id));
+    return { ok: true };
+  });
+
+  route('DELETE', '/baselines/:id', async ({ params }) => {
+    await deleteBaseline(Number(params.id));
+    return { ok: true };
+  });
+
+  // ---- test-runs（B1 运行快照）----
+  route('GET', '/test-runs', async ({ query }) => {
+    const planId = Number(query.get('planId')) || null;
+    const limit = clampInt(query.get('limit'), 50, 1, 200);
+    const conds: string[] = [];
+    const p: Record<string, unknown> = { limit };
+    if (planId) { conds.push('r.plan_id = @planId'); p.planId = planId; }
+    const where = conds.length ? `WHERE ${conds.join(' AND ')}` : '';
+    const rows = await getDb().prepare(
+      `SELECT r.*, p.name AS plan_name, p.plan_no AS plan_no_ref
+       FROM test_runs r LEFT JOIN plans p ON p.id = r.plan_id
+       ${where} ORDER BY r.id DESC LIMIT @limit`).all<Record<string, unknown>>(p);
+    return rows.map((r) => ({
+      id: r.id, runNo: r.run_no, planId: r.plan_id, planNo: r.plan_no_ref, planName: r.plan_name,
+      triggerKind: r.trigger_kind, status: r.status, deviceId: r.device_id,
+      manifest: safeParseJson(r.manifest_json), error: r.error ?? '',
+      startedAt: r.started_at, finishedAt: r.finished_at, createdAt: r.created_at,
+    }));
+  });
+
+  route('GET', '/test-runs/:id', async ({ params }) => {
+    const db = getDb();
+    const r = await db.prepare(
+      `SELECT r.*, p.name AS plan_name, p.plan_no AS plan_no_ref
+       FROM test_runs r LEFT JOIN plans p ON p.id = r.plan_id WHERE r.id = ?`,
+    ).get<Record<string, unknown>>(Number(params.id));
+    if (!r) throw Object.assign(new Error('运行记录不存在'), { statusCode: 404 });
+    const items = await db.prepare(
+      `SELECT i.*, b.baseline_no, b.version_label AS baseline_label, l.name AS library_name, s.commit_sha
+       FROM test_run_items i
+       LEFT JOIN test_baselines b ON b.id = i.baseline_id
+       LEFT JOIN libraries l ON l.id = i.library_id
+       LEFT JOIN repo_snapshots s ON s.id = b.snapshot_id
+       WHERE i.run_id = ? ORDER BY i.id`).all<Record<string, unknown>>(r.id);
+    return {
+      id: r.id, runNo: r.run_no, planId: r.plan_id, planNo: r.plan_no_ref, planName: r.plan_name,
+      triggerKind: r.trigger_kind, status: r.status, deviceId: r.device_id,
+      manifest: safeParseJson(r.manifest_json), error: r.error ?? '',
+      startedAt: r.started_at, finishedAt: r.finished_at, createdAt: r.created_at,
+      items: items.map((i) => ({
+        id: i.id, runId: i.run_id, libraryId: i.library_id, libraryName: i.library_name,
+        baselineId: i.baseline_id, baselineNo: i.baseline_no, baselineLabel: i.baseline_label,
+        commitSha: i.commit_sha ?? '', repoSubpath: i.repo_subpath,
+        workspaceRelDir: i.workspace_rel_dir, caseVersions: safeParseJson(i.case_versions_json),
+        status: i.status, error: i.error ?? '', startedAt: i.started_at, finishedAt: i.finished_at,
+      })),
+    };
+  });
+
+  // ---- scenario-assets（B2 场景资产，设计 §10.6）----
+  // feature.scenarioAssets 关闭 → 全组 403（读写一致，避免"能建不能查"的半开状态）
+  const assertScenarioAssets = (): void => {
+    if (!getSetting('feature.scenarioAssets', true)) {
+      throw Object.assign(new Error('场景资产功能已关闭（feature.scenarioAssets=false）'), { statusCode: 403 });
+    }
+  };
+
+  // mapAssetRow 入参：list 带关联统计列，单查/写返回裸行 —— 全字段可选以兼容两种来源
+  const mapAssetRow = (a: Partial<ScenarioAssetRow> & { library_name?: string; file_count?: number; case_count?: number }) => ({
+    id: a.id, assetNo: a.asset_no, libraryId: a.library_id, libraryName: a.library_name ?? '',
+    title: a.title, kind: a.kind, scenarioKind: a.scenario_kind, uri: a.uri,
+    entryHint: a.entry_hint, configGuideMd: a.config_guide_md,
+    compat: safeParseJson(a.compat_json), status: a.status, version: a.version,
+    sha256: a.sha256, validation: safeParseJson(a.validation_json),
+    validatedAt: a.validated_at, fileCount: Number(a.file_count ?? 0), caseCount: Number(a.case_count ?? 0),
+    createdAt: a.created_at, updatedAt: a.updated_at,
+  });
+
+  route('GET', '/scenario-assets', async ({ query }) => {
+    assertScenarioAssets();
+    const rows = await listAssets({
+      libraryId: Number(query.get('libraryId')) || undefined,
+      kind: query.get('kind') ?? undefined,
+      status: query.get('status') ?? undefined,
+      scenarioKind: query.get('scenarioKind') ?? undefined,
+      q: query.get('q') ?? undefined,
+    });
+    return { items: rows.map(mapAssetRow), kinds: ASSET_KINDS, scenarioKinds: SCENARIO_KINDS };
+  });
+
+  route('POST', '/scenario-assets', async ({ body }) => {
+    assertScenarioAssets();
+    const b = body as { libraryId?: number; title?: string; kind?: string; scenarioKind?: string; uri?: string; entryHint?: string; configGuideMd?: string; compat?: { minVersion?: string; maxVersion?: string; commit?: string } };
+    if (!ASSET_KINDS.includes(String(b.kind ?? '') as AssetKind)) {
+      throw Object.assign(new Error(`kind 必须是 ${ASSET_KINDS.join(' / ')}`), { statusCode: 400 });
+    }
+    const input: CreateAssetInput = {
+      libraryId: Number(b.libraryId),
+      title: String(b.title ?? ''),
+      kind: String(b.kind) as AssetKind,
+      scenarioKind: (SCENARIO_KINDS.includes(String(b.scenarioKind ?? '') as ScenarioKind) ? String(b.scenarioKind) : 'general') as ScenarioKind,
+      uri: b.uri,
+      entryHint: b.entryHint,
+      configGuideMd: b.configGuideMd,
+      compat: b.compat ?? { minVersion: '', maxVersion: '', commit: '' },
+      createdBy: 'web',
+    };
+    const asset = await createAsset(input);
+    return mapAssetRow({ ...asset, library_name: '', file_count: 0, case_count: 0 });
+  });
+
+  route('GET', '/scenario-assets/:id', async ({ params }) => {
+    assertScenarioAssets();
+    const d = await getAssetDetail(Number(params.id));
+    return {
+      ...mapAssetRow(d.asset as unknown as Record<string, unknown>),
+      files: d.files.map((f) => ({ id: f.id, path: f.rel_path, sha256: f.sha256, size: f.size, role: f.role, createdAt: f.created_at })),
+      versions: d.versions,
+      cases: d.cases,
+      requirements: d.requirements,
+      runRefs: d.runRefs,
+    };
+  });
+
+  route('PUT', '/scenario-assets/:id', async ({ params, body }) => {
+    assertScenarioAssets();
+    const b = body as Partial<{ title: string; scenarioKind: string; uri: string; entryHint: string; configGuideMd: string; compat: { minVersion?: string; maxVersion?: string; commit?: string } }>;
+    const input: UpdateAssetInput = {};
+    if (b.title !== undefined) input.title = b.title;
+    if (b.scenarioKind !== undefined) {
+      if (!SCENARIO_KINDS.includes(String(b.scenarioKind) as ScenarioKind)) {
+        throw Object.assign(new Error(`scenarioKind 必须是 ${SCENARIO_KINDS.join(' / ')}`), { statusCode: 400 });
+      }
+      input.scenarioKind = String(b.scenarioKind) as ScenarioKind;
+    }
+    if (b.uri !== undefined) input.uri = b.uri;
+    if (b.entryHint !== undefined) input.entryHint = b.entryHint;
+    if (b.configGuideMd !== undefined) input.configGuideMd = b.configGuideMd;
+    if (b.compat !== undefined) input.compat = b.compat;
+    const asset = await updateAsset(Number(params.id), input);
+    return mapAssetRow({ ...asset, library_name: '', file_count: 0, case_count: 0 });
+  });
+
+  route('GET', '/scenario-assets/:id/files', async ({ params }) => {
+    assertScenarioAssets();
+    const files = await listAssetFiles(Number(params.id));
+    return { items: files.map((f) => ({ id: f.id, path: f.rel_path, sha256: f.sha256, size: f.size, role: f.role, createdAt: f.created_at })) };
+  });
+
+  // 上传（base64 JSON 分批，前端按 2MB 请求体限制切批；zip 解包暂不支持，前端解包后走本接口）
+  route('POST', '/scenario-assets/:id/files', async ({ params, body }) => {
+    assertScenarioAssets();
+    const b = body as { files?: Array<{ path?: string; contentBase64?: string; role?: string }>; note?: string };
+    const files = (b.files ?? []).map((f) => ({ path: String(f.path ?? ''), contentBase64: String(f.contentBase64 ?? ''), role: f.role }));
+    const r = await writeAssetFiles(Number(params.id), files, { note: b.note });
+    return {
+      written: r.written, version: r.version, totalBytes: r.totalBytes,
+      asset: mapAssetRow({ ...r.asset, library_name: '', file_count: r.written.length, case_count: 0 }),
+    };
+  });
+
+  route('GET', '/scenario-assets/:id/download', async ({ params }) => {
+    assertScenarioAssets();
+    const zip = await buildAssetZip(Number(params.id));
+    const asset = await getAssetDetail(Number(params.id));
+    return {
+      __binary: true,
+      contentType: 'application/zip',
+      filename: `${asset.asset.asset_no}-v${asset.asset.version}.zip`,
+      data: zip,
+    };
+  });
+
+  route('POST', '/scenario-assets/:id/validate', async ({ params, body }) => {
+    assertScenarioAssets();
+    const level = String((body as { level?: string })?.level ?? 'static');
+    return validateAsset(Number(params.id), level);
+  });
+
+  route('POST', '/scenario-assets/:id/link-cases', async ({ params, body }) => {
+    assertScenarioAssets();
+    const b = body as { caseIds?: number[]; role?: string };
+    const ids = (b.caseIds ?? []).map((x) => Number(x)).filter((x) => Number.isFinite(x) && x > 0);
+    return linkCases(Number(params.id), ids, String(b.role ?? 'precondition'));
+  });
+
+  route('POST', '/scenario-assets/:id/link-requirements', async ({ params, body }) => {
+    assertScenarioAssets();
+    const b = body as { requirementIds?: number[] };
+    const ids = (b.requirementIds ?? []).map((x) => Number(x)).filter((x) => Number.isFinite(x) && x > 0);
+    return linkRequirements(Number(params.id), ids);
+  });
+
+  // 应用到运行（当前登记制：写 run_item_assets，注入待运行副本机制）
+  route('POST', '/scenario-assets/:id/apply', async ({ params, body }) => {
+    assertScenarioAssets();
+    const b = body as { runItemId?: number };
+    const runItemId = Number(b.runItemId);
+    if (!Number.isFinite(runItemId) || runItemId <= 0) {
+      throw Object.assign(new Error('runItemId 必填'), { statusCode: 400 });
+    }
+    return applyAssetToRunItem(Number(params.id), runItemId);
+  });
+
+  route('POST', '/scenario-assets/:id/deprecate', async ({ params }) => {
+    assertScenarioAssets();
+    return { ok: true, asset: mapAssetRow({ ...(await deprecateAsset(Number(params.id))), library_name: '', file_count: 0, case_count: 0 }) };
+  });
+
+  route('GET', '/scenario-assets/:id/versions', async ({ params }) => {
+    assertScenarioAssets();
+    const d = await getAssetDetail(Number(params.id));
+    return { items: d.versions };
+  });
+
+  route('DELETE', '/scenario-assets/:id', async ({ params }) => {
+    assertScenarioAssets();
+    return removeAsset(Number(params.id));
+  });
+
+  // ---- resource-sets（B2 资源集回查，设计 §8.7）----
+  route('GET', '/resource-sets/:id', async ({ params }) => {
+    assertScenarioAssets();
+    const { set, items } = await getResourceSet(Number(params.id));
+    return {
+      id: set.id, setNo: set.set_no, libraryId: set.library_id, name: set.name,
+      manifest: safeParseJson(set.manifest_json), createdAt: set.created_at,
+      items: items.map((i) => ({
+        id: i.id, kind: i.kind, refId: i.ref_id, version: i.version, role: i.role, sha256: i.sha256, createdAt: i.created_at,
+      })),
+    };
   });
 
   // 调试会话追问：基于执行轨迹/思考/日志调用真实 LLM（DSH 模型配置）。
@@ -3159,6 +3737,8 @@ function mapPlan(row: Record<string, unknown>) {
     deviceIds: JSON.parse((row.device_ids as string) || '[]'),
     status: row.status, failPolicy: row.fail_policy,
     scriptMode: (row.script_mode as string | undefined) ?? '',
+    baselineId: (row.baseline_id as number | null) ?? null,
+    baselineMode: (row.baseline_mode as string | undefined) ?? 'latest',
     error: (row.error as string | undefined) ?? '',
     progress: Number(row.progress ?? 0) || 0,
     progressNote: (row.progress_note as string | undefined) ?? '',
@@ -3170,6 +3750,13 @@ function mapExecution(row: Record<string, unknown>) {
   return {
     id: row.id, planId: row.plan_id, caseId: row.case_id, libraryId: row.library_id, deviceId: row.device_id,
     status: row.status, steps: parseStepsStored(row.steps), thinking: row.thinking, logs: row.logs,
+    testRunId: (row.test_run_id as number | null) ?? null,
+    runItemId: (row.run_item_id as number | null) ?? null,
+    baselineId: (row.baseline_id as number | null) ?? null,
+    caseVersion: (row.case_version as number | null) ?? null,
+    libraryVersion: (row.library_version as string | undefined) ?? '',
+    commitSha: (row.commit_sha as string | undefined) ?? '',
+    actualJson: (row.actual_json as string | null) ?? null,
     startedAt: row.started_at, finishedAt: row.finished_at,
     caseNo: row.case_no, caseName: row.case_name, libraryName: row.library_name, deviceSerial: row.device_serial,
   };
@@ -3198,6 +3785,11 @@ async function nextPlanNo(): Promise<string> {
   const db = getDb();
   const row = (await db.prepare(`SELECT MAX(CAST(SUBSTRING(plan_no, 3) AS UNSIGNED)) AS m FROM plans`).get<{ m: number | null }>()) ?? { m: null };
   return `P-${(row.m ?? 1000) + 1}`;
+}
+/** 宽容解析 JSON 列（历史数据/手改数据可能为空或损坏，返回 null 由前端兜底显示）。 */
+function safeParseJson(v: unknown): unknown {
+  if (v === null || v === undefined) return null;
+  try { return JSON.parse(String(v)); } catch { return null; }
 }
 
 // eslint-disable-next-line @typescript-eslint/no-namespace

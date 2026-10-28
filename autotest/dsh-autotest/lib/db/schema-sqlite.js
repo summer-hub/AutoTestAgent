@@ -216,6 +216,15 @@ CREATE TABLE IF NOT EXISTS issue_tickets (
   -- 沉淀出的知识条目 id（接受时回填，供前端跳转与反查）
   knowledge_id TEXT NOT NULL DEFAULT '',
   task_id INTEGER NULL,
+  execution_id INTEGER NULL,
+  test_run_id INTEGER NULL,
+  run_item_id INTEGER NULL,
+  baseline_id INTEGER NULL,
+  case_version INTEGER NULL,
+  attribution TEXT NOT NULL DEFAULT 'unknown',
+  attribution_reason TEXT NOT NULL DEFAULT '',
+  input_snapshot_json TEXT NULL,
+  report_id INTEGER NULL,
   error TEXT NOT NULL DEFAULT '',
   created_at TEXT NOT NULL,
   updated_at TEXT NOT NULL,
@@ -223,6 +232,8 @@ CREATE TABLE IF NOT EXISTS issue_tickets (
 );
 CREATE INDEX IF NOT EXISTS idx_issue_tickets_case ON issue_tickets(case_id, status);
 CREATE INDEX IF NOT EXISTS idx_issue_tickets_lib ON issue_tickets(library_id, status);
+CREATE INDEX IF NOT EXISTS idx_issue_tickets_exec ON issue_tickets(execution_id);
+CREATE INDEX IF NOT EXISTS idx_issue_tickets_attr ON issue_tickets(attribution);
 
 -- 用例 ↔ 接口符号的关联（P11）：一条用例可能覆盖多个接口，一个接口也需要多条用例
 -- （正向/空值/边界/大数据），单列 cases.api_symbol_id 表达不了这种多对多。
@@ -292,6 +303,8 @@ CREATE TABLE IF NOT EXISTS plans (
   progress INTEGER NOT NULL DEFAULT 0,
   progress_note TEXT NOT NULL DEFAULT '',
   error TEXT NOT NULL DEFAULT '',
+  baseline_id INTEGER NULL,
+  baseline_mode TEXT NOT NULL DEFAULT 'latest',
   last_run_at TEXT NULL,
   created_at TEXT NOT NULL,
   updated_at TEXT NOT NULL,
@@ -308,6 +321,14 @@ CREATE TABLE IF NOT EXISTS executions (
   status TEXT NOT NULL DEFAULT 'pending',
   steps TEXT NOT NULL,
   trace_id TEXT NOT NULL DEFAULT '',
+  test_run_id INTEGER NULL,
+  run_item_id INTEGER NULL,
+  baseline_id INTEGER NULL,
+  case_version INTEGER NULL,
+  case_snapshot_json TEXT NULL,
+  library_version TEXT NOT NULL DEFAULT '',
+  commit_sha TEXT NOT NULL DEFAULT '',
+  actual_json TEXT NULL,
   thinking TEXT NULL,
   logs TEXT NULL,
   started_at TEXT NULL,
@@ -316,6 +337,8 @@ CREATE TABLE IF NOT EXISTS executions (
 CREATE INDEX IF NOT EXISTS idx_executions_plan ON executions(plan_id);
 CREATE INDEX IF NOT EXISTS idx_executions_case ON executions(case_id);
 CREATE INDEX IF NOT EXISTS idx_executions_status ON executions(status);
+CREATE INDEX IF NOT EXISTS idx_executions_baseline ON executions(baseline_id);
+CREATE INDEX IF NOT EXISTS idx_executions_run ON executions(test_run_id);
 
 CREATE TABLE IF NOT EXISTS executions_archive (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -328,6 +351,14 @@ CREATE TABLE IF NOT EXISTS executions_archive (
   trace_id TEXT NOT NULL DEFAULT '',
   env_run_id INTEGER NULL,
   resource_set_id INTEGER NULL,
+  test_run_id INTEGER NULL,
+  run_item_id INTEGER NULL,
+  baseline_id INTEGER NULL,
+  case_version INTEGER NULL,
+  case_snapshot_json TEXT NULL,
+  library_version TEXT NOT NULL DEFAULT '',
+  commit_sha TEXT NOT NULL DEFAULT '',
+  actual_json TEXT NULL,
   thinking TEXT NULL,
   logs TEXT NULL,
   started_at TEXT NULL,
@@ -420,6 +451,10 @@ CREATE TABLE IF NOT EXISTS analyses (
   title TEXT NOT NULL DEFAULT '',
   content TEXT NOT NULL,
   round TEXT NOT NULL DEFAULT '',
+  pr_id INTEGER NULL,
+  baseline_id INTEGER NULL,
+  execution_ids_json TEXT NULL,
+  report_id INTEGER NULL,
   created_at TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_analyses_kind ON analyses(kind, granularity);
@@ -708,6 +743,295 @@ CREATE TABLE IF NOT EXISTS readme_intel (
   created_at TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_readme_intel_lib ON readme_intel(library_id, kind, status);
+
+-- ============================================================
+-- B1/B2/B3/B4：测试基线与执行追溯（与 schema.ts 逐表对应）
+-- ============================================================
+
+-- B4：需求主档
+CREATE TABLE IF NOT EXISTS requirements (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  requirement_no TEXT NOT NULL,
+  external_id TEXT NOT NULL DEFAULT '',
+  source TEXT NOT NULL DEFAULT 'manual',
+  title TEXT NOT NULL,
+  url TEXT NOT NULL DEFAULT '',
+  primary_library_id INTEGER NULL,
+  status TEXT NOT NULL DEFAULT 'active',
+  priority TEXT NOT NULL DEFAULT 'P1',
+  acceptance_md TEXT NOT NULL,
+  owner TEXT NOT NULL DEFAULT '',
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  UNIQUE (requirement_no)
+);
+CREATE UNIQUE INDEX IF NOT EXISTS uk_requirements_ext ON requirements(source, external_id);
+CREATE INDEX IF NOT EXISTS idx_requirements_lib ON requirements(primary_library_id);
+CREATE INDEX IF NOT EXISTS idx_requirements_status ON requirements(status);
+
+-- B4：需求 ↔ 用例多对多
+CREATE TABLE IF NOT EXISTS requirement_cases (
+  requirement_id INTEGER NOT NULL,
+  case_id INTEGER NOT NULL,
+  relation TEXT NOT NULL DEFAULT 'covers',
+  created_at TEXT NOT NULL,
+  UNIQUE (requirement_id, case_id)
+);
+CREATE INDEX IF NOT EXISTS idx_requirement_cases_case ON requirement_cases(case_id);
+
+-- B4：PR 实体
+CREATE TABLE IF NOT EXISTS pull_requests (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  provider TEXT NOT NULL,
+  repo_url TEXT NOT NULL,
+  number INTEGER NOT NULL,
+  library_id INTEGER NULL,
+  title TEXT NOT NULL DEFAULT '',
+  state TEXT NOT NULL DEFAULT 'unknown',
+  url TEXT NOT NULL DEFAULT '',
+  base_branch TEXT NOT NULL DEFAULT '',
+  head_branch TEXT NOT NULL DEFAULT '',
+  head_sha TEXT NOT NULL DEFAULT '',
+  merge_commit_sha TEXT NOT NULL DEFAULT '',
+  merged_at TEXT NULL,
+  author TEXT NOT NULL DEFAULT '',
+  body_excerpt TEXT NOT NULL,
+  files_json TEXT NOT NULL,
+  synced_at TEXT NULL,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  UNIQUE (provider, repo_url, number)
+);
+CREATE INDEX IF NOT EXISTS idx_pr_library_state ON pull_requests(library_id, state);
+CREATE INDEX IF NOT EXISTS idx_pr_merge_sha ON pull_requests(merge_commit_sha);
+
+-- B4：PR ↔ 受影响库 / PR ↔ 需求
+CREATE TABLE IF NOT EXISTS pr_libraries (
+  pr_id INTEGER NOT NULL,
+  library_id INTEGER NOT NULL,
+  relation TEXT NOT NULL DEFAULT 'affects',
+  created_at TEXT NOT NULL,
+  UNIQUE (pr_id, library_id)
+);
+CREATE TABLE IF NOT EXISTS pr_requirements (
+  pr_id INTEGER NOT NULL,
+  requirement_id INTEGER NOT NULL,
+  created_at TEXT NOT NULL,
+  UNIQUE (pr_id, requirement_id)
+);
+CREATE TABLE IF NOT EXISTS pr_cases (
+  pr_id INTEGER NOT NULL,
+  case_id INTEGER NOT NULL,
+  basis TEXT NOT NULL DEFAULT 'manual',
+  created_at TEXT NOT NULL,
+  UNIQUE (pr_id, case_id)
+);
+CREATE INDEX IF NOT EXISTS idx_pr_cases_case ON pr_cases(case_id);
+
+-- B1：物理快照（每仓库每 commit 一份只读检出）
+CREATE TABLE IF NOT EXISTS repo_snapshots (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  repo_url TEXT NOT NULL,
+  commit_sha TEXT NOT NULL,
+  rel_dir TEXT NOT NULL,
+  version_label TEXT NOT NULL DEFAULT '',
+  source TEXT NOT NULL,
+  source_pr_id INTEGER NULL,
+  status TEXT NOT NULL DEFAULT 'creating',
+  size_bytes INTEGER NOT NULL DEFAULT 0,
+  metadata_json TEXT NOT NULL,
+  error TEXT NOT NULL DEFAULT '',
+  created_by TEXT NOT NULL DEFAULT '',
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  UNIQUE (repo_url, commit_sha)
+);
+CREATE INDEX IF NOT EXISTS idx_repo_snapshots_status ON repo_snapshots(status);
+CREATE INDEX IF NOT EXISTS idx_repo_snapshots_pr ON repo_snapshots(source_pr_id);
+
+-- B1：逻辑基线（每库每 commit）
+CREATE TABLE IF NOT EXISTS test_baselines (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  baseline_no TEXT NOT NULL,
+  snapshot_id INTEGER NOT NULL,
+  library_id INTEGER NOT NULL,
+  repo_subpath TEXT NOT NULL DEFAULT '',
+  version_label TEXT NOT NULL DEFAULT '',
+  source TEXT NOT NULL,
+  status TEXT NOT NULL DEFAULT 'creating',
+  note TEXT NOT NULL DEFAULT '',
+  created_by TEXT NOT NULL DEFAULT '',
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  UNIQUE (baseline_no)
+);
+CREATE UNIQUE INDEX IF NOT EXISTS uk_test_baselines ON test_baselines(snapshot_id, library_id);
+CREATE INDEX IF NOT EXISTS idx_test_baselines_lib ON test_baselines(library_id, status);
+
+-- B1：基线包含的 PR
+CREATE TABLE IF NOT EXISTS baseline_prs (
+  baseline_id INTEGER NOT NULL,
+  pr_id INTEGER NOT NULL,
+  relation TEXT NOT NULL DEFAULT 'source',
+  created_at TEXT NOT NULL,
+  UNIQUE (baseline_id, pr_id)
+);
+
+-- B1：一次计划运行的快照
+CREATE TABLE IF NOT EXISTS test_runs (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  run_no TEXT NOT NULL,
+  plan_id INTEGER NULL,
+  trigger_kind TEXT NOT NULL DEFAULT 'manual',
+  status TEXT NOT NULL DEFAULT 'pending',
+  device_id INTEGER NULL,
+  env_run_id INTEGER NULL,
+  resource_set_id INTEGER NULL,
+  manifest_json TEXT NOT NULL,
+  error TEXT NOT NULL DEFAULT '',
+  started_at TEXT NULL,
+  finished_at TEXT NULL,
+  created_by TEXT NOT NULL DEFAULT '',
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  UNIQUE (run_no)
+);
+CREATE INDEX IF NOT EXISTS idx_test_runs_plan ON test_runs(plan_id, status);
+CREATE INDEX IF NOT EXISTS idx_test_runs_created ON test_runs(created_at);
+
+-- B1：一次运行中每库的目标
+CREATE TABLE IF NOT EXISTS test_run_items (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  run_id INTEGER NOT NULL,
+  library_id INTEGER NOT NULL,
+  baseline_id INTEGER NOT NULL,
+  commit_sha TEXT NOT NULL DEFAULT '',
+  repo_subpath TEXT NOT NULL DEFAULT '',
+  workspace_rel_dir TEXT NOT NULL DEFAULT '',
+  case_versions_json TEXT NOT NULL,
+  resource_set_id INTEGER NULL,
+  env_run_id INTEGER NULL,
+  status TEXT NOT NULL DEFAULT 'pending',
+  error TEXT NOT NULL DEFAULT '',
+  started_at TEXT NULL,
+  finished_at TEXT NULL,
+  UNIQUE (run_id, library_id)
+);
+CREATE INDEX IF NOT EXISTS idx_test_run_items_lib ON test_run_items(library_id, baseline_id);
+
+-- B2：场景扩展资产
+CREATE TABLE IF NOT EXISTS scenario_assets (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  asset_no TEXT NOT NULL,
+  library_id INTEGER NOT NULL,
+  title TEXT NOT NULL,
+  kind TEXT NOT NULL,
+  scenario_kind TEXT NOT NULL DEFAULT 'general',
+  uri TEXT NOT NULL DEFAULT '',
+  rel_dir TEXT NOT NULL DEFAULT '',
+  entry_hint TEXT NOT NULL DEFAULT '',
+  config_guide_md TEXT NOT NULL,
+  compat_json TEXT NOT NULL,
+  status TEXT NOT NULL DEFAULT 'draft',
+  version TEXT NOT NULL DEFAULT '1',
+  sha256 TEXT NOT NULL DEFAULT '',
+  validation_json TEXT NOT NULL,
+  validated_at TEXT NULL,
+  created_by TEXT NOT NULL DEFAULT '',
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  UNIQUE (asset_no)
+);
+CREATE INDEX IF NOT EXISTS idx_scenario_assets_lib ON scenario_assets(library_id, kind, scenario_kind);
+CREATE INDEX IF NOT EXISTS idx_scenario_assets_status ON scenario_assets(status);
+
+-- B2：场景资产子表
+CREATE TABLE IF NOT EXISTS scenario_asset_cases (
+  asset_id INTEGER NOT NULL,
+  case_id INTEGER NOT NULL,
+  role TEXT NOT NULL DEFAULT 'precondition',
+  created_at TEXT NOT NULL,
+  UNIQUE (asset_id, case_id)
+);
+CREATE TABLE IF NOT EXISTS scenario_asset_requirements (
+  asset_id INTEGER NOT NULL,
+  requirement_id INTEGER NOT NULL,
+  created_at TEXT NOT NULL,
+  UNIQUE (asset_id, requirement_id)
+);
+CREATE TABLE IF NOT EXISTS scenario_asset_files (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  asset_id INTEGER NOT NULL,
+  rel_path TEXT NOT NULL,
+  sha256 TEXT NOT NULL DEFAULT '',
+  size INTEGER NOT NULL DEFAULT 0,
+  role TEXT NOT NULL DEFAULT 'page',
+  created_at TEXT NOT NULL,
+  UNIQUE (asset_id, rel_path)
+);
+CREATE TABLE IF NOT EXISTS scenario_asset_versions (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  asset_id INTEGER NOT NULL,
+  version TEXT NOT NULL,
+  sha256 TEXT NOT NULL DEFAULT '',
+  manifest_json TEXT NOT NULL,
+  note TEXT NOT NULL DEFAULT '',
+  created_at TEXT NOT NULL,
+  UNIQUE (asset_id, version)
+);
+
+-- B2：资源集合
+CREATE TABLE IF NOT EXISTS test_resource_sets (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  set_no TEXT NOT NULL,
+  library_id INTEGER NOT NULL,
+  name TEXT NOT NULL,
+  manifest_json TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  UNIQUE (set_no)
+);
+CREATE TABLE IF NOT EXISTS test_resource_set_items (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  set_id INTEGER NOT NULL,
+  kind TEXT NOT NULL,
+  ref_id INTEGER NOT NULL,
+  version TEXT NOT NULL DEFAULT '',
+  role TEXT NOT NULL DEFAULT '',
+  sha256 TEXT NOT NULL DEFAULT '',
+  created_at TEXT NOT NULL,
+  UNIQUE (set_id, kind, ref_id)
+);
+CREATE TABLE IF NOT EXISTS run_item_assets (
+  run_item_id INTEGER NOT NULL,
+  asset_id INTEGER NOT NULL,
+  version TEXT NOT NULL DEFAULT '',
+  apply_status TEXT NOT NULL DEFAULT 'pending',
+  manifest_json TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  UNIQUE (run_item_id, asset_id)
+);
+
+-- B3：Markdown 分析报告索引
+CREATE TABLE IF NOT EXISTS analysis_reports (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  report_no TEXT NOT NULL,
+  kind TEXT NOT NULL,
+  issue_id INTEGER NULL,
+  execution_id INTEGER NULL,
+  test_run_id INTEGER NULL,
+  library_id INTEGER NULL,
+  case_id INTEGER NULL,
+  baseline_id INTEGER NULL,
+  title TEXT NOT NULL,
+  md_path TEXT NOT NULL,
+  content_hash TEXT NOT NULL,
+  content TEXT NOT NULL,
+  created_by TEXT NOT NULL DEFAULT '',
+  created_at TEXT NOT NULL,
+  UNIQUE (report_no)
+);
+CREATE INDEX IF NOT EXISTS idx_analysis_reports_lib ON analysis_reports(library_id, created_at);
 `;
 /** 建表语句拆分（better-sqlite3 exec 支持多语句，这里仍按分号拆便于逐条容错）。 */
 export function sqliteSchemaStatements() {

@@ -3,6 +3,7 @@ import PlansPage from '../views/Plans';
 import TasksPage from '../views/Tasks';
 import DevicesPage from '../views/Devices';
 import DebugPage from '../views/Debug';
+import BaselinesPage from '../views/Baselines';
 
 /**
  * 执行页（R8 Phase 2b）—— 「现在什么在跑」的统一视图。
@@ -13,11 +14,15 @@ import DebugPage from '../views/Debug';
  *
  * 调试会话（Debug）由此从独立页面降级为页内视图——它的定位本来就是
  * "某次执行的轨迹与 AI 思考"，不该占据一级导航。
+ *
+ * B1 新增「测试基线」Tab（设计 §11.4）：基线是执行的锚点——先有可复现的代码基线，
+ * 执行记录才能追溯（BL-… / commit / 用例版本 chips 见「调试会话」）。
  */
-type Tab = 'plans' | 'tasks' | 'devices' | 'debug';
+type Tab = 'plans' | 'baselines' | 'tasks' | 'devices' | 'debug';
 
 const TABS: Array<{ key: Tab; label: string; icon: string }> = [
   { key: 'plans', label: '执行计划', icon: '📅' },
+  { key: 'baselines', label: '测试基线', icon: '🧷' },
   { key: 'tasks', label: '任务', icon: '📋' },
   { key: 'devices', label: '设备', icon: '📱' },
   { key: 'debug', label: '调试会话', icon: '🐞' },
@@ -30,7 +35,7 @@ export default function ExecutionPage() {
     <>
       <div className="page-title">执行</div>
       <div className="page-desc">
-        执行计划、AI 任务、真机设备与调试轨迹。严格真机执行——设备未连接时计划直接失败并写明原因，
+        执行计划、测试基线、AI 任务、真机设备与调试轨迹。严格真机执行——设备未连接时计划直接失败并写明原因，
         不会回退模拟。
       </div>
 
@@ -48,6 +53,7 @@ export default function ExecutionPage() {
       </div>
 
       {tab === 'plans' && <PlansPage />}
+      {tab === 'baselines' && <BaselinesPage />}
       {tab === 'tasks' && <TasksPage />}
       {tab === 'devices' && <DevicesPage />}
       {tab === 'debug' && <DebugPage />}
