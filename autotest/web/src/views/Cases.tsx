@@ -241,7 +241,7 @@ export default function CasesPage({ fixedLibraryId }: { fixedLibraryId?: number 
       await api.batchDeleteCases([...sel]);
       setSel(new Set());
       loadCases(curLib, 1);
-      api.libraries({ pageSize: 100 }).then(setLibs).catch(() => {});
+      api.librariesAll().then(setLibs).catch(() => {});
     } catch (e) {
       setError(String((e as Error).message));
     } finally {
@@ -278,7 +278,7 @@ export default function CasesPage({ fixedLibraryId }: { fixedLibraryId?: number 
   }, [source, caseQ, pageSize]);
 
   useEffect(() => {
-    api.libraries({ pageSize: 100 })
+    api.librariesAll()
       .then((r) => {
         setLibs(r);
         if (r.items.length > 0 && curLib === null) setCurLib(r.items[0].id);
@@ -379,7 +379,7 @@ export default function CasesPage({ fixedLibraryId }: { fixedLibraryId?: number 
       const r = await api.importCases(curLib, file.name, base64);
       setImportMsg(`导入完成：新增 ${r.imported} 条${r.skipped ? `，跳过 ${r.skipped} 条` : ''}${r.errors.length ? `，错误 ${r.errors.length} 条` : ''}`);
       loadCases(curLib, casePage);
-      api.libraries({ pageSize: 100 }).then(setLibs).catch(() => {});
+      api.librariesAll().then(setLibs).catch(() => {});
     } catch (e) {
       setImportMsg('');
       setError(String((e as Error).message));

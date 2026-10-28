@@ -31,7 +31,7 @@ export default function AgentBindingsPage() {
   const [edit, setEdit] = useState<null | { stage: string; label: string; kind: string; scope: 'global' | 'library'; promptId: string; skillPath: string; model: string; externalCmd: string; temperature: string }>(null);
 
   useEffect(() => {
-    api.libraries({ pageSize: 300 }).then((r) => setLibs(r.items)).catch(() => {});
+    api.librariesAll().then((r) => setLibs(r.items)).catch(() => {});
     api.prompts().then((r) => setPrompts(r.map((p) => ({ id: p.id, name: p.name, role: p.role })))).catch(() => {});
   }, []);
 

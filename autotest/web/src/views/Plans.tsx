@@ -42,7 +42,7 @@ export default function PlansPage() {
 
   useEffect(() => {
     load();
-    api.libraries({ pageSize: 100 }).then((r) => setLibs(r.items)).catch(() => {});
+    api.librariesAll().then((r) => setLibs(r.items)).catch(() => {});
   }, [load]);
 
   // 有运行中的计划时每 2 秒轮询刷新进度

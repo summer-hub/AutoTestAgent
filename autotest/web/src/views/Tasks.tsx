@@ -59,7 +59,7 @@ export default function TasksPage() {
 
   useEffect(() => {
     load();
-    api.libraries({ pageSize: 200 }).then((r) => setLibs(r.items)).catch(() => {});
+    api.librariesAll().then((r) => setLibs(r.items)).catch(() => {});
     // B4：连接 WS 并订阅全局频道——任务轨迹事件实时驱动刷新（debounce 300ms 防连续追加打爆）
     taskWs.connect();
     const offMsg = taskWs.onMessage(() => {

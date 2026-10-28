@@ -67,7 +67,7 @@ export default function ScenarioAssetsView() {
   }, [filters, libId]);
 
   useEffect(() => {
-    api.libraries({ pageSize: 100 }).then((r) => {
+    api.librariesAll().then((r) => {
       setLibs(r.items);
       if (r.items.length > 0) setLibId((prev) => prev || r.items[0].id);
     }).catch((e) => setError(String((e as Error).message)));

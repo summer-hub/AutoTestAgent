@@ -40,7 +40,7 @@ export default function HomePage() {
 
   const load = useCallback(() => {
     setError('');
-    api.libraries({ page: 1, pageSize: 200 }).then(setLibs).catch((e) => setError(String(e.message)));
+    api.librariesAll().then(setLibs).catch((e) => setError(String(e.message)));
     api.caseOverview().then(setOverview).catch(() => {});
     api.catalog().then(setCatalog).catch(() => {});
     api.surveyStats().then(setSurvey).catch(() => {});

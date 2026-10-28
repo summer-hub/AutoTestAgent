@@ -80,8 +80,8 @@ export async function executePlan(planId: number): Promise<void> {
       await db.prepare(`UPDATE test_runs SET status='failed', error=?, finished_at=?, updated_at=? WHERE plan_id=? AND status='running'`)
         .run(reason.slice(0, 990), now(), now(), planId);
     } catch { /* 表未建等极端情况不掩盖原始异常 */ }
-    await db.prepare(`UPDATE plans SET status='failed', error=?, progress=100, progress_note=?, updated_at=? WHERE id=?`)
-      .run(reason.slice(0, 480), `失败：${reason.slice(0, 120)}`, now(), planId);
+    await db.prepare(`UPDATE plans SET status='failed', error=?, progress=100, progress_note=?, last_run_at=?, updated_at=? WHERE id=?`)
+      .run(reason.slice(0, 480), `失败：${reason.slice(0, 120)}`, t, now(), planId);
     throw e;
   }
 }
@@ -95,8 +95,8 @@ async function runPlanOnce(planId: number, plan: PlanRow, t: string): Promise<vo
       .run(Math.max(0, Math.min(100, Math.round(pct))), note.slice(0, 280), now(), planId);
   };
   const failPlan = async (reason: string): Promise<void> => {
-    await db.prepare(`UPDATE plans SET status='failed', error=?, progress=100, progress_note=?, updated_at=? WHERE id=?`)
-      .run(reason.slice(0, 480), `失败：${reason.slice(0, 120)}`, now(), planId);
+    await db.prepare(`UPDATE plans SET status='failed', error=?, progress=100, progress_note=?, last_run_at=?, updated_at=? WHERE id=?`)
+      .run(reason.slice(0, 480), `失败：${reason.slice(0, 120)}`, t, now(), planId);
     console.warn(`[plan #${planId}] ${plan.name} 执行失败：${reason}`);
   };
 

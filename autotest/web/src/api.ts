@@ -233,6 +233,23 @@ export const api = {
     if (params.q) qs.set('q', params.q);
     return req<Page<Library>>(`${API_BASE}/libraries?${qs}`);
   },
+  /** 拉全量库列表（服务端 pageSize 上限 100，这里自动翻页聚合，避免大列表被静默截断）。 */
+  librariesAll: async (q?: string): Promise<Page<Library>> => {
+    const pageSize = 100;
+    let page = 1;
+    let items: Library[] = [];
+    let total = 0;
+    let withCases = 0;
+    for (;;) {
+      const r = await api.libraries({ page, pageSize, q });
+      if (page === 1) { total = r.total; withCases = r.withCases ?? 0; }
+      items = items.concat(r.items);
+      if (items.length >= total || r.items.length === 0 || page >= 200) {
+        return { items, total, withCases, page: 1, pageSize: items.length, nextCursor: null };
+      }
+      page += 1;
+    }
+  },
   library: (id: number) => req<Library>(`${API_BASE}/libraries/${id}`),
   sourceStats: () => req<{ items: Array<{ source: string; n: number }>; total: number }>(`${API_BASE}/libraries/stats/sources`),
   // 库管理

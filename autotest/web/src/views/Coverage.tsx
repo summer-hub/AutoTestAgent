@@ -132,7 +132,7 @@ export default function CoveragePage({ fixedLibraryId }: { fixedLibraryId?: numb
   };
 
   useEffect(() => {
-    api.libraries({ pageSize: 300 }).then((r) => {
+    api.librariesAll().then((r) => {
       setLibs(r.items);
       if (r.items.length > 0) setLibId(r.items[0].id);
     }).catch((e) => setError(String((e as Error).message)));

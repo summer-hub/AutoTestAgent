@@ -26,7 +26,7 @@ export default function AnalysisPage() {
   const [detail, setDetail] = useState<Analysis | null>(null);
 
   const loadLibs = useCallback(() => {
-    api.libraries({ pageSize: 100 })
+    api.librariesAll()
       .then((r) => {
         setLibs(r.items);
         const turbo = r.items.find((l) => l.name === 'lottie_turbo');

@@ -39,7 +39,7 @@ export default function PrTrackingView({ fixedLibraryId }: { fixedLibraryId?: nu
 
   useEffect(() => {
     if (fixedLibraryId) { setLibId(fixedLibraryId); return; }
-    api.libraries({ pageSize: 100 }).then((r) => {
+    api.librariesAll().then((r) => {
       setLibs(r.items);
       if (r.items.length > 0) setLibId((prev) => prev || r.items[0].id);
     }).catch((e) => setError(String((e as Error).message)));

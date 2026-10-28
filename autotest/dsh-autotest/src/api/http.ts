@@ -1867,14 +1867,14 @@ function defineRoutes(llm: LlmCall): void {
     try {
       const prs = repoPath ? await fetchPrs(repoPath, 8) : [];
       if (repoPath && prs.length === 0) {
-        const dir = repoDirFor(lib.name);
+        const dir = repoDirFor(lib as RepoLib);
         const gitPrs = fs.existsSync(`${dir}/.git`) ? fetchPrsFromGit(dir, { limit: 8 }) : [];
         return { items: gitPrs.map((p) => ({ number: p.number, title: p.title, state: p.state, createdAt: p.created_at })), source: 'git' };
       }
       return { items: prs.map((p) => ({ number: p.number, title: p.title, state: p.state, createdAt: p.created_at })) };
     } catch (e) {
       // API 失败降级：本地 git 仓库提交
-      const dir = repoDirFor(lib.name);
+      const dir = repoDirFor(lib as RepoLib);
       const gitPrs = fs.existsSync(`${dir}/.git`) ? fetchPrsFromGit(dir, { limit: 8 }) : [];
       return {
         items: gitPrs.map((p) => ({ number: p.number, title: p.title, state: p.state, createdAt: p.created_at })),
@@ -3185,7 +3185,7 @@ ${(row.logs ?? '').slice(0, 4000) || '（无）'}
           setProgress(runId, { stage: '非 GitCode 仓库，直接使用本地 git 仓库分析…' });
         }
         if (!prs) {
-          const dir = repoDirFor(lib.name);
+          const dir = repoDirFor(lib as RepoLib);
           if (!fs.existsSync(`${dir}/.git`)) {
             if (!lib.repo_url) throw new Error(`库「${lib.name}」未配置 repo_url，无法拉取到本地`);
             await pullRepo(lib as RepoLib);
@@ -3233,7 +3233,7 @@ ${(row.logs ?? '').slice(0, 4000) || '（无）'}
           setProgress(runId, { stage: '非 GitCode 仓库，直接使用本地 git 仓库分析…' });
         }
         if (!prs) {
-          const dir = repoDirFor(lib.name);
+          const dir = repoDirFor(lib as RepoLib);
           if (!fs.existsSync(`${dir}/.git`)) {
             if (!lib.repo_url) throw new Error(`库「${lib.name}」未配置 repo_url，无法拉取到本地`);
             await pullRepo(lib as RepoLib);
