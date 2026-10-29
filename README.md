@@ -13,10 +13,10 @@
 - **数据分析 / 归因**：从 GitCode 拉取真实 PR，AI 分析用例更新点、影响范围与风险；失败执行支持自由勾选（可跨库）归因；可指定 #PR 单独分析、实时进度动画、结果小卡片放大查看
 - **前端插件化**：DSH client 插件侧边栏入口 + 主区 iframe 嵌入，复用 DSH 深色风格
 - **并发与缓存**：LRU/Redis 缓存（写路径按前缀失效）、MySQL 连接池；`repository.ts` 预留了 `library_id % 16` 分表路由层，**当前仍是单表**（`caseTableFor()` 恒返回 `cases`），README 中的 QPS 数字来自开发期单机 SQLite 压测
-- **agent 接口层双件套**（CLI + MCP Server）：`agent-tools/` 把平台能力包装成 AI Agent Bot 即插即用的接口——CLI（octo-cli 模式：stdout JSON envelope + stderr 确定性错误分类 + 退出码 0/2/3/4/5 + 零交互）与 MCP stdio server（initialize / tools/list / tools/call）；**44 条命令规格是单一事实源**（CLI help 树 / MCP inputSchema / 路由漂移检测三端消费），危险操作本地 `--confirm` + 服务端审批流双闸门，令牌走平台 RBAC
+- **agent 接口层双件套**（CLI + MCP Server）：`agent-tools/` 把平台能力包装成 AI Agent Bot 即插即用的接口——CLI（octo-cli 模式：stdout JSON envelope + stderr 确定性错误分类 + 退出码 0/2/3/4/5 + 零交互）与 MCP stdio server（initialize / tools/list / tools/call）；**39 条命令规格是单一事实源**（CLI help 树 / MCP inputSchema / 路由漂移检测三端消费），危险操作本地 `--confirm` + 服务端审批流双闸门，令牌走平台 RBAC
 - **规则注入（B3）**：`rules/` 11 条开发纪律（octospec 风格 frontmatter：`inject_when.paths/touches` + `load_bearing` + `priority`）——按代码触碰路径/主题向编码 agent 注入（CLI / MCP `rules.inject` / 本地 `scripts/inject-rules.mjs`，支持 `--from-git`），预算内全文、超预算退摘要行；索引 CI 防漂移
 - **WebSocket 实时通道（B4）**：`/api/autotest/ws`（token 走 query、复用 enforceAuth 鉴权含回环豁免）；task_events 追加即广播，`task:<id>`/`global` 双频道按 (taskId,seq) 去重；零依赖 RFC6455 帧编解码；Web 端 Tasks/Debug「WS 优先 + 轮询兜底」自动切换
-- **可回归自检**：`npm run verify:all` 覆盖 37 套离线自检（事务隔离 / 归档列 / 密钥脱敏 / 运行态清理 / 数据目录迁出 / API 门禁 / 凭据加密 / 认证 RBAC / 指标与日志 / 遍历候选规则 / 仓库路径 / xlsx 同步 / 目录引导 / 接口面提取 / 覆盖矩阵 / demo 场景 / 用例计划 / 可测性与补丁 / oracle 与反假通过 / 分流规则 / 脚本绑定 / 任务 lane 与取消 / 危险操作审批 / 轨迹事件流 / LLM 重试换模型与 token 预算与限流 / 知识库 / 技能供应链锁 / 用例↔接口关联 / Hypium 工程布局与命名契约 / 判据运行期真跑 / 步骤句式契约 / 架构治理 / agent 接口层 / 规则注入 / WS 通道 / envkit 契约与失败分类 / 全量采集流水线 / L2 增量采集 / 环境端到端），CI 逐个接入（详见[autotest/README.md](autotest/README.md)）
+- **可回归自检**：`npm run verify:all` 覆盖 39 套离线自检（事务隔离 / 归档列 / 密钥脱敏 / 运行态清理 / 数据目录迁出 / API 门禁 / 凭据加密 / 认证 RBAC / 指标与日志 / 遍历候选规则 / 仓库路径 / xlsx 同步 / 目录引导 / 接口面提取 / 覆盖矩阵 / demo 场景 / 用例计划 / 可测性与补丁 / oracle 与反假通过 / 分流规则 / 脚本绑定 / 任务 lane 与取消 / 危险操作审批 / 轨迹事件流 / LLM 重试换模型与 token 预算与限流 / 知识库 / 技能供应链锁 / 用例↔接口关联 / Hypium 工程布局与命名契约 / 判据运行期真跑 / 步骤句式契约 / 架构治理 / agent 接口层 / 规则注入 / WS 通道 / envkit 契约与失败分类 / 全量采集流水线 / L2 增量采集 / 环境端到端 / 队列汇总 / 问题归因），CI 逐个接入（详见[autotest/README.md](autotest/README.md)）
 - **环境与资源纵轴（R0–R4，2026-10 重构）**：把平台核心对象从「用例」扩展为「**一次可复现的测试运行**= 代码 × 环境画像 × 资源集 × 用例 × 设备」。此前约 90% 工程量在链尾（用例→矩阵→脚本→执行→归因），而链头（克隆→依赖→构建→装包→资源→环境）近乎为 0；本纵轴补齐它，**不推倒重来**（三入口 / md 唯一事实源 / RBAC / 审批 / WS / agent 接口层全部保留复用）。设计取舍与全量规模化策略见 [docs/重构方案-环境与资源纵轴.md](docs/重构方案-环境与资源纵轴.md)
 - **问题归因闭环（R5）**：对**任意**用例有疑问都能发起一次完整调查——在「测试用例」页填「问题现象」→ AI 克隆工程、组装上下文（用例/oracle/页面源码/真机遍历 dump/接口签名/执行日志/README）定位根因并给出**可回查的证据** → 有真机则自测试复现（**无真机一律失败并写明原因，绝不回退模拟**）→ 人工验收（通过则沉淀为知识条目，下次同类问题可召回；驳回也留理由供反查）。与既有归因分析分工明确：那个分析**执行失败**（输入是失败轨迹），本功能分析**人的疑问**（输入是用例 + 人写的现象）。新增 `cases.symptom` 列与 `issue_tickets` 工单表、`services/issueRoot.ts`、executor `analyze_issue` 任务、`/issues*` 6 条路由（RBAC：读 viewer / 写 operator）、web「问题归因」页、agent-tools `issues.*` 6 条规格
 - **多标签导航 + 主题切换（R7，参考 ruoyi-vue-pro）**：打开过的页面在顶部形成页签，可点击切换、单个关闭、关闭其他/全部、刷新当前页，刷新浏览器后恢复（hash 仍是唯一事实源，首页不可关、不允许关到空）；顶栏支持亮/暗主题与 6 种主题色切换，写 localStorage 持久化，嵌入 DSH 时默认跟随宿主皮肤、显式选择可覆盖（CSS 变量按 `data-theme`/`data-accent` 分组，显式主题用字面量确保压过宿主同步）。另做 UI 视觉体系统一：按钮层级补 danger、统一空状态、表格末行去双线与表头吸顶、浅色主题卡片阴影
@@ -354,7 +354,7 @@ Tauri v2 外壳（~33MB，非 Electron）托管内置独立服务器：随包分
 │   │                     #   assets/presets/   → R2：按库类别的预设方案五件套
 │   │                     #   assets/三方库测试表.xlsx → R0：随包初始种子
 │   ├── web/              # 前端 React 18 + Vite（双构建：build:embed / build:standalone）
-│   ├── agent-tools/      # agent 接口层：CLI + MCP Server（44 条命令规格单一事实源，双端生成）
+│   ├── agent-tools/      # agent 接口层：CLI + MCP Server（39 条命令规格单一事实源，双端生成）
 │   ├── rules/            # B3：11 条开发纪律（octospec frontmatter + inject_when + _index.yaml）
 │   ├── desktop/          # 桌面端（Tauri v2）：Rust 壳托管独立服务器 + WebView
 │   └── shared/           # 前后端共享领域类型
@@ -370,7 +370,7 @@ Tauri v2 外壳（~33MB，非 Electron）托管内置独立服务器：随包分
 ```bash
 cd autotest
 npm run typecheck          # web + 插件 类型检查
-npm run verify:all         # 构建 + 28 套自检（离线可跑；无设备/无 hypium 的项自动跳过）
+npm run verify:all         # 构建 + 39 套自检（离线可跑；无设备/无 hypium 的项自动跳过）
 npm run build:standalone   # 独立版：前端 + 服务端
 npm start                  # 跑独立服务器（3280）
 npm run dev:web            # 前端开发服务器（5173，代理 /api 到 3280）
@@ -411,7 +411,7 @@ npm run verify:theme
 cd autotest && npm run build:agent-tools
 
 # CLI：命令树自动生成；成功 → stdout JSON envelope；失败 → stderr + 确定性退出码；零交互
-node agent-tools/dist/cli.mjs --help                      # 全量命令树（9 组 33 条）
+node agent-tools/dist/cli.mjs --help                      # 全量命令树（12 组 39 条）
 node agent-tools/dist/cli.mjs --help cases.create         # 单命令参数详情 + 示例
 node agent-tools/dist/cli.mjs libraries.list --q lottie --base http://127.0.0.1:3280/api/autotest
 node agent-tools/dist/cli.mjs tasks.create --type pull_repo --libraryId 1
